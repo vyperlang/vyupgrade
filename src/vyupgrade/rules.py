@@ -2254,6 +2254,7 @@ def _replace_shift_builtin(
     all_diagnostics: list[Diagnostic] = []
     while True:
         mask = code_mask(current)
+        constant_values = _integer_constant_values(current)
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []
         edits: list[TextEdit] = []
@@ -2269,15 +2270,33 @@ def _replace_shift_builtin(
             value = args[0].strip()
             shift_by = args[1].strip()
             negative = re.fullmatch(r"-\s*((?:\d|_)+)", shift_by)
+            negative_constant = re.fullmatch(r"-\s*([A-Za-z_][A-Za-z0-9_]*)", shift_by)
             negative_expr = re.fullmatch(r"-\s*(.+)", shift_by)
             positive = re.fullmatch(r"\+?\s*((?:\d|_)+)", shift_by)
+            positive_constant = re.fullmatch(r"\+?\s*([A-Za-z_][A-Za-z0-9_]*)", shift_by)
+            convert_constant = re.fullmatch(
+                r"convert\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*u?int(?:\d+)?\s*\)",
+                shift_by,
+            )
             positive_convert = re.fullmatch(r"convert\s*\((.+),\s*int128\s*\)", shift_by)
             if negative is not None:
                 replacement = f"({value} >> {negative.group(1)})"
+            elif negative_constant is not None and negative_constant.group(1) in constant_values:
+                amount = -constant_values[negative_constant.group(1)]
+                operator = "<<" if amount >= 0 else ">>"
+                replacement = f"({value} {operator} {abs(amount)})"
             elif negative_expr is not None:
                 replacement = f"({value} >> ({negative_expr.group(1).strip()}))"
             elif positive is not None:
                 replacement = f"({value} << {positive.group(1)})"
+            elif positive_constant is not None and positive_constant.group(1) in constant_values:
+                amount = constant_values[positive_constant.group(1)]
+                operator = "<<" if amount >= 0 else ">>"
+                replacement = f"({value} {operator} {abs(amount)})"
+            elif convert_constant is not None and convert_constant.group(1) in constant_values:
+                amount = constant_values[convert_constant.group(1)]
+                operator = "<<" if amount >= 0 else ">>"
+                replacement = f"({value} {operator} {abs(amount)})"
             elif positive_convert is not None and not positive_convert.group(1).lstrip().startswith("-"):
                 replacement = f"({value} << convert({positive_convert.group(1).strip()}, uint256))"
             else:
@@ -2308,3 +2327,16 @@ def _replace_shift_builtin(
         selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
         all_fixes.extend(selected_fixes)
         current = apply_edits(current, selected_edits)
+
+
+def _integer_constant_values(source: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    pattern = re.compile(
+        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\(\s*u?int(?:\d+)?\s*\)\s*=\s*([+-]?(?:\d|_)+)\b",
+        re.MULTILINE,
+    )
+    mask = code_mask(source)
+    for match in pattern.finditer(source):
+        if span_is_code(mask, match.start(), match.end()):
+            values[match.group(1)] = int(match.group(2).replace("_", ""))
+    return values

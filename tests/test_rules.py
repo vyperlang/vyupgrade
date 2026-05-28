@@ -1587,6 +1587,29 @@ def f(x: uint256, i: uint256) -> uint256:
     assert "return (x >> (8 * i))" in result.source
 
 
+def test_shift_builtin_rewrites_signed_constant_amounts() -> None:
+    source = """# @version 0.4.1
+BAL_SHIFT: constant(int128) = -16
+
+@external
+def pack(x: uint256) -> uint256:
+    return shift(x, -BAL_SHIFT)
+
+@external
+def unpack(x: uint256) -> uint256:
+    return shift(x, BAL_SHIFT)
+
+@external
+def unpack_converted(x: uint256) -> uint256:
+    return shift(x, convert(BAL_SHIFT, uint256))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "return (x << 16)" in result.source
+    assert result.source.count("return (x >> 16)") == 2
+
+
 def test_legacy_method_id_output_type_is_removed() -> None:
     source = """# @version 0.2.1
 SIG: constant(bytes4) = method_id("transfer(address,uint256)", output_type=bytes4)
