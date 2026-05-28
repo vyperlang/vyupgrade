@@ -71,6 +71,121 @@ def f(strategy: Strategy, amount: uint256, price: uint256):
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
 
 
+def test_array_loop_type_inference() -> None:
+    source = """# @version 0.3.10
+@external
+def f(items: DynArray[address, 10]):
+    for item in items:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for item: address in items:" in result.source
+
+
+def test_casted_interface_calls_and_assigned_integer_division() -> None:
+    source = """# @version 0.3.10
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+    def transfer(to: address, amount: uint256) -> bool: nonpayable
+
+@external
+def f(token: address, amount: uint256):
+    shares: uint256 = 0
+    shares = amount / 2
+    b: uint256 = Token(token).balanceOf(msg.sender)
+    ok: bool = Token(token).transfer(msg.sender, amount)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "shares = amount // 2" in result.source
+    assert "staticcall Token(token).balanceOf(msg.sender)" in result.source
+    assert "extcall Token(token).transfer(msg.sender, amount)" in result.source
+
+
+def test_integer_expression_division() -> None:
+    source = """# @version 0.3.10
+MAX_BPS: constant(uint256) = 10_000
+
+@external
+def f(total_fees: uint256, protocol_fee_bps: uint16) -> uint256:
+    return total_fees * convert(protocol_fee_bps, uint256) / MAX_BPS
+"""
+
+    result = apply_rules(source, config())
+
+    assert "convert(protocol_fee_bps, uint256) // MAX_BPS" in result.source
+
+
+def test_legacy_numeric_constants() -> None:
+    source = """# @version 0.3.3
+@external
+def f(amount: uint256 = MAX_UINT256) -> bool:
+    return amount == MAX_UINT256
+"""
+
+    result = apply_rules(source, config())
+
+    assert "amount: uint256 = max_value(uint256)" in result.source
+    assert "amount == max_value(uint256)" in result.source
+    assert "ZERO_ADDRESS" not in apply_rules("# @version 0.3.3\nx: address = ZERO_ADDRESS\n", config()).source
+
+
+def test_redundant_convert_after_integer_division() -> None:
+    source = """# @version 0.3.3
+COEFF: constant(uint256) = 10 ** 18
+@external
+def f() -> uint256:
+    return convert(COEFF * 46 / 10 ** 6, uint256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "convert(" not in result.source
+    assert "(COEFF * 46 // 10 ** 6)" in result.source
+
+
+def test_self_storage_interface_not_shadowed_by_later_parameter() -> None:
+    source = """# @version 0.3.10
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+
+token: public(Token)
+
+@external
+def earlier(token: address):
+    pass
+
+@external
+def later():
+    x: uint256 = self.token.balanceOf(self)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall self.token.balanceOf(self)" in result.source
+
+
+def test_multiline_integer_division() -> None:
+    source = """# @version 0.3.10
+totalSupply: public(uint256)
+
+@internal
+def f(shares: uint256) -> uint256:
+    return (
+        shares
+        * self.totalSupply
+        / self.totalSupply
+    )
+"""
+
+    result = apply_rules(source, config())
+
+    assert "// self.totalSupply" in result.source
+
+
 def test_diagnostics_for_ambiguous_cases() -> None:
     source = '''# @version 0.3.10
 
@@ -106,4 +221,3 @@ def __init__():
     once = apply_rules(source, config()).source
     twice = apply_rules(once, config()).source
     assert once == twice
-

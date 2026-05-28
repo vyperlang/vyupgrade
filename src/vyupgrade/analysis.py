@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 from .source import code_mask, span_is_code
+from .source import split_top_level_args
 
 
 INT_TYPE_RE = re.compile(r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$")
@@ -44,13 +45,15 @@ class SourceFacts:
     storage_vars: dict[str, str] = field(default_factory=dict)
     global_vars: dict[str, str] = field(default_factory=dict)
     function_vars: dict[int, dict[str, str]] = field(default_factory=dict)
+    function_ends: dict[int, int] = field(default_factory=dict)
     imported_interfaces: dict[str, str] = field(default_factory=dict)
 
     def vars_at_line(self, line_number: int) -> dict[str, str]:
         merged = dict(self.global_vars)
         merged.update(self.storage_vars)
         for start, vars_for_func in sorted(self.function_vars.items()):
-            if start <= line_number:
+            end = self.function_ends.get(start, 10**9)
+            if start <= line_number <= end:
                 merged.update(vars_for_func)
         return merged
 
@@ -101,12 +104,15 @@ def parse_source_facts(source: str) -> SourceFacts:
 
         def_match = DEF_RE.match(stripped)
         if def_match:
+            if current_function_line is not None:
+                facts.function_ends[current_function_line] = line_no - 1
             current_function_line = line_no
             current_function_indent = indent
             facts.function_vars[current_function_line] = _parse_params(def_match.group(2))
             continue
 
         if current_function_line is not None and indent <= current_function_indent and stripped:
+            facts.function_ends[current_function_line] = line_no - 1
             current_function_line = None
 
         decl = _parse_var_decl(stripped)
@@ -121,17 +127,35 @@ def parse_source_facts(source: str) -> SourceFacts:
         else:
             facts.function_vars[current_function_line][name] = type_name
 
+    if current_function_line is not None:
+        facts.function_ends[current_function_line] = len(lines)
     return facts
 
 
 def is_integer_type(type_name: str | None) -> bool:
     if type_name is None:
         return False
+    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name.strip())
+    if wrapper:
+        type_name = wrapper.group(1)
     return bool(INT_TYPE_RE.match(type_name))
 
 
 def normalize_type(type_name: str) -> str:
     return type_name.split("[", 1)[0].strip()
+
+
+def iterable_element_type(type_name: str | None) -> str | None:
+    if type_name is None:
+        return None
+    type_name = type_name.strip()
+    dyn_match = re.match(r"DynArray\[\s*([^,\]]+)", type_name)
+    if dyn_match:
+        return dyn_match.group(1).strip()
+    static_match = re.match(r"(.+)\[[^\]]+\]$", type_name)
+    if static_match and not type_name.startswith(("HashMap[", "Bytes[", "String[")):
+        return static_match.group(1).strip()
+    return None
 
 
 def infer_expr_type(expr: str, vars_for_line: dict[str, str]) -> str | None:
@@ -154,7 +178,7 @@ def iter_code_matches(source: str, pattern: re.Pattern[str]):
 
 def _parse_params(params: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
-    for raw in params.split(","):
+    for raw in split_top_level_args(params) or []:
         part = raw.strip()
         if not part or ":" not in part:
             continue
@@ -183,4 +207,3 @@ def _unwrap_public_or_constant(type_name: str) -> str | None:
     if TYPE_NAME_RE.fullmatch(type_name):
         return type_name
     return None
-

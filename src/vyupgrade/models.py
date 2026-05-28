@@ -57,6 +57,8 @@ class Config:
     target_vyper: str | None = None
     compiler_search_paths: tuple[Path, ...] = ()
     enable_decimals: bool = False
+    bump_pragma: bool = False
+    format: str = "none"
 
 
 @dataclass
@@ -106,4 +108,3 @@ class RunReport:
             "test_status": self.test_status,
             "test_output": self.test_output,
         }
-
