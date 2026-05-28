@@ -847,6 +847,8 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
         code_line = line.split("#", 1)[0]
         if not code_line.startswith((" ", "\t")) or not (
             re.search(r"[-+*/%<>]=?|==|!=", code_line)
+            or re.search(r":\s*[^=]+=", code_line)
+            or re.search(r"\b(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^=]+\])?\s*=", code_line)
             or re.search(r"\b(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\s*\(", code_line)
             or "[" in code_line
         ):
@@ -1416,12 +1418,17 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
     edits: list[TextEdit] = []
     facts = parse_source_facts(source)
     pattern = re.compile(r"^(\s*)for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?):", re.MULTILINE)
+    inferred_loop_vars: dict[int, dict[str, str]] = {}
 
     for match in pattern.finditer(source):
         iterable = match.group(3).strip()
         if ":" in source[match.start() : match.end()].split(" in ", 1)[0]:
             continue
-        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        line = line_number(source, match.start())
+        function_start = _function_start_at_line(facts, line)
+        vars_for_line = facts.vars_at_line(line)
+        if function_start is not None:
+            vars_for_line.update(inferred_loop_vars.get(function_start, {}))
         var_type = _loop_var_type(iterable, vars_for_line, facts)
         if var_type is None:
             continue
@@ -1429,8 +1436,18 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
         after = f"{match.group(1)}for {match.group(2)}: {var_type} in {iterable}:"
         edits.append(TextEdit(match.start(), match.end(), after))
         fixes.append(Fix("VY070", line_number(source, match.start()), f"added {var_type} loop variable type", before, after))
+        if function_start is not None:
+            inferred_loop_vars.setdefault(function_start, {})[match.group(2)] = var_type
 
     return apply_edits(source, edits), fixes, []
+
+
+def _function_start_at_line(facts: SourceFacts, line: int) -> int | None:
+    for start in sorted(facts.function_vars):
+        end = facts.function_ends.get(start, 10**9)
+        if start <= line <= end:
+            return start
+    return None
 
 
 def _loop_var_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
@@ -1470,7 +1487,13 @@ def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
     args = split_top_level_args(match.group(1))
     if not args:
         return "uint256"
-    bound = args[1] if len(args) > 1 else args[0]
+    positional = [arg for arg in args if not re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*=", arg)]
+    if not positional:
+        return "uint256"
+    start_type = infer_expr_type(positional[0], vars_for_line)
+    if len(positional) > 1 and is_integer_type(start_type) and not _literal_integer(positional[0]):
+        return start_type
+    bound = positional[1] if len(positional) > 1 else positional[0]
     bound_type = infer_expr_type(bound, vars_for_line)
     return bound_type if is_integer_type(bound_type) else "uint256"
 
@@ -1794,10 +1817,10 @@ def _infer_range_bound(start: str, stop: str) -> str | None:
     start = start.strip()
     stop = stop.strip()
     escaped = re.escape(start)
-    plus_match = re.fullmatch(rf"{escaped}\s*\+\s*((?:\d|_)+)", stop)
+    plus_match = re.fullmatch(rf"{escaped}\s*\+\s*([A-Za-z_][A-Za-z0-9_]*|(?:\d|_)+)", stop)
     if plus_match:
         return plus_match.group(1)
-    minus_match = re.fullmatch(rf"{escaped}\s*-\s*((?:\d|_)+)", stop)
+    minus_match = re.fullmatch(rf"{escaped}\s*-\s*([A-Za-z_][A-Za-z0-9_]*|(?:\d|_)+)", stop)
     if minus_match:
         return minus_match.group(1)
     return None
@@ -2246,11 +2269,17 @@ def _replace_shift_builtin(
             value = args[0].strip()
             shift_by = args[1].strip()
             negative = re.fullmatch(r"-\s*((?:\d|_)+)", shift_by)
+            negative_expr = re.fullmatch(r"-\s*(.+)", shift_by)
             positive = re.fullmatch(r"\+?\s*((?:\d|_)+)", shift_by)
+            positive_convert = re.fullmatch(r"convert\s*\((.+),\s*int128\s*\)", shift_by)
             if negative is not None:
                 replacement = f"({value} >> {negative.group(1)})"
+            elif negative_expr is not None:
+                replacement = f"({value} >> ({negative_expr.group(1).strip()}))"
             elif positive is not None:
                 replacement = f"({value} << {positive.group(1)})"
+            elif positive_convert is not None and not positive_convert.group(1).lstrip().startswith("-"):
+                replacement = f"({value} << convert({positive_convert.group(1).strip()}, uint256))"
             else:
                 if _enabled("VYD012", config, context):
                     diagnostics.append(

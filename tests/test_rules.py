@@ -712,6 +712,38 @@ def f(fee: uint256) -> uint256:
     assert "for i: int128 in range(N_COINS):" in result.source
 
 
+def test_signed_constant_converted_in_uint_assignment() -> None:
+    source = """# @version 0.2.8
+MAX_COINS: constant(int128) = 8
+
+@external
+def f() -> uint256:
+    n_coins: uint256 = MAX_COINS
+    return n_coins
+"""
+
+    result = apply_rules(source, config())
+
+    assert "n_coins: uint256 = convert(MAX_COINS, uint256)" in result.source
+
+
+def test_signed_loop_variable_converted_in_uint_assignment() -> None:
+    source = """# @version 0.2.8
+MAX_COINS: constant(int128) = 8
+
+@external
+def f() -> uint256:
+    n_coins: uint256 = convert(MAX_COINS, uint256)
+    for i in range(MAX_COINS):
+        n_coins = i
+    return n_coins
+"""
+
+    result = apply_rules(source, config())
+
+    assert "n_coins = convert(i, uint256)" in result.source
+
+
 def test_signed_loop_index_converted_in_uint_index_arithmetic() -> None:
     source = """# @version 0.2.8
 MAX_COIN: constant(int128) = 1
@@ -1305,6 +1337,54 @@ def f(start: uint256):
     assert "for i: uint256 in range" in result.source
 
 
+def test_range_runtime_stop_with_constant_delta_gets_bound_keyword() -> None:
+    source = """# @version 0.3.10
+MAX_COINS: constant(int128) = 8
+
+@external
+def f():
+    for i in range(MAX_COINS):
+        for x in range(i, i + MAX_COINS):
+            pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(i, i + MAX_COINS, bound=MAX_COINS)" in result.source
+    assert "for i: int128 in range" in result.source
+    assert "for x: int128 in range" in result.source
+
+
+def test_range_loop_type_ignores_bound_keyword() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 2
+
+@external
+def f():
+    for i in range(N_COINS, bound=N_COINS):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: int128 in range(N_COINS, bound=N_COINS):" in result.source
+
+
+def test_range_loop_type_uses_signed_stop_after_literal_start() -> None:
+    source = """# @version 0.3.10
+MAX_COINS: constant(int128) = 8
+
+@external
+def f():
+    for i in range(1, MAX_COINS):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: int128 in range(1, MAX_COINS):" in result.source
+
+
 def test_pr_3679_ambiguous_range_bound_is_diagnostic_only() -> None:
     source = """# @version 0.3.10
 @external
@@ -1481,6 +1561,30 @@ def f(x: uint256, n: int128) -> uint256:
     assert "return shift(x, n)" in result.source
     assert any(fix.rule == "VY111" for fix in result.fixes)
     assert any(diag.rule == "VYD012" for diag in result.diagnostics)
+
+
+def test_shift_builtin_rewrites_positive_convert_amount() -> None:
+    source = """# @version 0.4.1
+@external
+def f(x: uint256, i: int128) -> uint256:
+    return shift(x, convert(i * 8, int128))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "return (x << convert(i * 8, uint256))" in result.source
+
+
+def test_shift_builtin_rewrites_negative_dynamic_amount() -> None:
+    source = """# @version 0.4.1
+@external
+def f(x: uint256, i: uint256) -> uint256:
+    return shift(x, -8 * i)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "return (x >> (8 * i))" in result.source
 
 
 def test_legacy_method_id_output_type_is_removed() -> None:
