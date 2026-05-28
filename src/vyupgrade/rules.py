@@ -64,6 +64,11 @@ RULE_CHANGES = {
     "VY206": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VY207": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VY208": RuleChange(VyperVersion(0, 2, 1), "target"),
+    "VY209": RuleChange(VyperVersion(0, 2, 1), "target"),
+    "VY210": RuleChange(VyperVersion(0, 2, 16)),
+    "VY220": RuleChange(VyperVersion(0, 3, 7)),
+    "VY230": RuleChange(VyperVersion(0, 3, 8)),
+    "VY231": RuleChange(VyperVersion(0, 3, 8)),
     "VYD001": RuleChange(VyperVersion(0, 4, 0)),
     "VYD002": RuleChange(VyperVersion(0, 4, 0)),
     "VYD003": RuleChange(VyperVersion(0, 4, 0)),
@@ -71,6 +76,8 @@ RULE_CHANGES = {
     "VYD010": RuleChange(VyperVersion(0, 4, 0)),
     "VYD011": RuleChange(VyperVersion(0, 4, 0)),
     "VYD012": RuleChange(VyperVersion(0, 4, 2)),
+    "VYD013": RuleChange(VyperVersion(0, 3, 8)),
+    "VYD014": RuleChange(VyperVersion(0, 3, 10)),
 }
 
 
@@ -88,6 +95,8 @@ def apply_rules(source: str, config: Config) -> RewriteResult:
         _legacy_maps_and_interfaces,
         _legacy_dynamic_types,
         _legacy_builtin_calls,
+        _legacy_constructor_locks,
+        _pre_04_expression_rewrites,
         _constructor_deploy,
         _abi_builtins,
         _legacy_constants,
@@ -241,49 +250,65 @@ def _legacy_dynamic_types(source: str, config: Config, context: MigrationContext
 
 
 def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY208", config, context):
+    if not _any_enabled({"VY208", "VY209"}, config, context):
         return source, [], []
     fixes: list[Fix] = []
-    current, new_fixes = _replace_call_keyword(source, "raw_call", "outsize", "max_outsize", "VY208")
-    fixes.extend(new_fixes)
-    current, new_fixes = _replace_call_keyword(current, "extract32", "type", "output_type", "VY208")
-    fixes.extend(new_fixes)
-    current, new_fixes = _replace_assert_modifiable(current)
-    fixes.extend(new_fixes)
+    current = source
+    if _enabled("VY208", config, context):
+        current, new_fixes = _replace_call_keyword(current, "raw_call", "outsize", "max_outsize", "VY208")
+        fixes.extend(new_fixes)
+        current, new_fixes = _replace_call_keyword(current, "extract32", "type", "output_type", "VY208")
+        fixes.extend(new_fixes)
+        current, new_fixes = _replace_assert_modifiable(current)
+        fixes.extend(new_fixes)
+    if _enabled("VY209", config, context):
+        current, new_fixes = _remove_call_keyword_arg(current, "method_id", "output_type", "bytes4", "VY209")
+        fixes.extend(new_fixes)
     return current, fixes, []
+
+
+def _legacy_constructor_locks(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY210", config, context):
+        return source, [], []
+    current, fixes, insertions = _remove_constructor_decorators(
+        source,
+        {"@nonreentrant"},
+        "VY210",
+        "removed nonreentrant constructor decorator",
+    )
+    fixes.extend(insertions)
+    return current, fixes, []
+
+
+def _pre_04_expression_rewrites(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    current = source
+    fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
+    if _enabled("VY220", config, context):
+        current, new_fixes = _replace_identifier_expr(current, "block.difficulty", "block.prevrandao", "VY220", "renamed block.difficulty to block.prevrandao")
+        fixes.extend(new_fixes)
+    if _enabled("VY230", config, context):
+        current, new_fixes = _remove_unary_plus(current)
+        fixes.extend(new_fixes)
+    if _any_enabled({"VY231", "VYD013"}, config, context):
+        current, new_fixes, new_diagnostics = _replace_numeric_not(current, config, context)
+        fixes.extend(new_fixes)
+        diagnostics.extend(new_diagnostics)
+    return current, fixes, diagnostics
 
 
 def _constructor_deploy(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY002", config, context):
         return source, [], []
-    lines = source.splitlines(keepends=True)
-    fixes: list[Fix] = []
-    out = list(lines)
-    offset = 0
-    for index, line in enumerate(lines):
-        if not re.match(r"\s*def\s+__init__\s*\(", line):
-            continue
-        start = index
-        while start > 0 and re.match(r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$", lines[start - 1]):
-            start -= 1
-        decorators = [decor.strip() for decor in lines[start:index]]
-        insert_at = start + offset
-        remove_indices: list[int] = []
-        has_deploy = any(decor.startswith("@deploy") for decor in decorators)
-        for rel, decor in enumerate(decorators):
-            if decor.split("(", 1)[0] in {"@external", "@internal", "@public", "@private"}:
-                remove_indices.append(start + rel)
-        for original_index in sorted(remove_indices, reverse=True):
-            before = out[original_index + offset].rstrip("\n")
-            del out[original_index + offset]
-            offset -= 1
-            fixes.append(Fix("VY002", original_index + 1, "removed invalid constructor decorator", before, ""))
-        if not has_deploy:
-            indent = re.match(r"(\s*)", line).group(1)
-            out.insert(insert_at, f"{indent}@deploy\n")
-            offset += 1
-            fixes.append(Fix("VY002", index + 1, "added @deploy to constructor", "", f"{indent}@deploy"))
-    return "".join(out), fixes, []
+    current, fixes, insertions = _remove_constructor_decorators(
+        source,
+        {"@external", "@internal", "@public", "@private"},
+        "VY002",
+        "removed invalid constructor decorator",
+        add_deploy=True,
+    )
+    fixes.extend(insertions)
+    return current, fixes, []
 
 
 def _abi_builtins(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -314,6 +339,7 @@ def _legacy_constants(source: str, config: Config, context: MigrationContext) ->
         "MIN_INT256": "min_value(int256)",
         "MAX_INT256": "max_value(int256)",
         "ZERO_ADDRESS": "empty(address)",
+        "EMPTY_BYTES32": "empty(bytes32)",
     }
     for before, after in replacements.items():
         current, edits = replace_identifier(current, before, after)
@@ -570,7 +596,7 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
 
 
 def _range_bound(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY071", config, context):
+    if not _any_enabled({"VY071", "VYD011", "VYD014"}, config, context):
         return source, [], []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -587,7 +613,19 @@ def _range_bound(source: str, config: Config, context: MigrationContext) -> tupl
         if "bound" in raw_args:
             continue
         args = split_top_level_args(raw_args)
-        if args is None or len(args) != 2:
+        if args is None:
+            continue
+        if len(args) == 1:
+            if not _literal_integer(args[0]) and _enabled("VYD014", config, context):
+                diagnostics.append(
+                    Diagnostic(
+                        "VYD014",
+                        line_number(source, match.start()),
+                        "range(stop) has a runtime bound; add bound=... manually",
+                    )
+                )
+            continue
+        if len(args) != 2:
             continue
         if _literal_integer(args[0]) and _literal_integer(args[1]):
             continue
@@ -826,6 +864,110 @@ def _insert_import(source: str, line: str) -> str:
     return "".join(lines)
 
 
+def _remove_constructor_decorators(
+    source: str,
+    decorators_to_remove: set[str],
+    rule: str,
+    message: str,
+    add_deploy: bool = False,
+) -> tuple[str, list[Fix], list[Fix]]:
+    lines = source.splitlines(keepends=True)
+    fixes: list[Fix] = []
+    insertions: list[Fix] = []
+    out = list(lines)
+    offset = 0
+    for index, line in enumerate(lines):
+        if not re.match(r"\s*def\s+__init__\s*\(", line):
+            continue
+        start = index
+        while start > 0 and re.match(r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$", lines[start - 1]):
+            start -= 1
+        decorators = [decor.strip() for decor in lines[start:index]]
+        insert_at = start + offset
+        remove_indices: list[int] = []
+        has_deploy = any(decor.startswith("@deploy") for decor in decorators)
+        for rel, decor in enumerate(decorators):
+            decor_name = decor.split("(", 1)[0].split("#", 1)[0].strip()
+            if decor_name in decorators_to_remove:
+                remove_indices.append(start + rel)
+        for original_index in sorted(remove_indices, reverse=True):
+            before = out[original_index + offset].rstrip("\n")
+            del out[original_index + offset]
+            offset -= 1
+            fixes.append(Fix(rule, original_index + 1, message, before, ""))
+        if add_deploy and not has_deploy:
+            indent = re.match(r"(\s*)", line).group(1)
+            out.insert(insert_at, f"{indent}@deploy\n")
+            offset += 1
+            insertions.append(Fix(rule, index + 1, "added @deploy to constructor", "", f"{indent}@deploy"))
+    return "".join(out), fixes, insertions
+
+
+def _replace_identifier_expr(
+    source: str,
+    before: str,
+    after: str,
+    rule: str,
+    message: str,
+) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(rf"(?<![\w.]){re.escape(before)}(?![\w.])", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        edits.append(TextEdit(match.start(), match.end(), after))
+        fixes.append(Fix(rule, line_number(source, match.start()), message, before, after))
+    return apply_edits(source, edits), fixes
+
+
+def _remove_unary_plus(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    pattern = re.compile(r"(?P<prefix>(?:^|[=(,\[\{]\s*))\+(?P<expr>[A-Za-z_][A-Za-z0-9_.]*)", re.MULTILINE)
+    for match in pattern.finditer(source):
+        start = match.start("expr") - 1
+        if not span_is_code(mask, start, match.end("expr")):
+            continue
+        edits.append(TextEdit(start, start + 1, ""))
+        fixes.append(Fix("VY230", line_number(source, start), "removed disabled unary plus", "+", ""))
+    return apply_edits(source, edits), fixes
+
+
+def _replace_numeric_not(
+    source: str,
+    config: Config,
+    context: MigrationContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    facts = parse_source_facts(source)
+    fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    pattern = re.compile(r"\bnot\s+((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)")
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        line = line_number(source, match.start())
+        vars_for_line = facts.vars_at_line(line)
+        expr = match.group(1)
+        expr_type = facts.storage_vars.get(expr[5:]) if expr.startswith("self.") else None
+        expr_type = expr_type or infer_expr_type(expr, vars_for_line)
+        if expr_type is None:
+            if _enabled("VYD013", config, context):
+                diagnostics.append(Diagnostic("VYD013", line, f"cannot infer whether 'not {expr}' is numeric or boolean"))
+            continue
+        if not is_integer_type(expr_type):
+            continue
+        replacement = f"{expr} == 0"
+        if not _enabled("VY231", config, context):
+            continue
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(Fix("VY231", line, "changed numeric boolean negation to equality check", match.group(0), replacement))
+    return apply_edits(source, edits), fixes, diagnostics
+
+
 def _rewrite_legacy_event_declarations(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -925,6 +1067,43 @@ def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
         replacement = f"assert {args[0].strip()}"
         edits.append(TextEdit(match.start(), close + 1, replacement))
         fixes.append(Fix("VY208", line_number(source, match.start()), "replaced assert_modifiable builtin", source[match.start() : close + 1], replacement))
+    return apply_edits(source, edits), fixes
+
+
+def _remove_call_keyword_arg(
+    source: str,
+    call_name: str,
+    keyword: str,
+    value: str | None,
+    rule: str,
+) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        open_index = source.find("(", match.start())
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        raw_args = source[open_index + 1 : close]
+        args = split_top_level_args(raw_args)
+        if args is None:
+            continue
+        kept: list[str] = []
+        removed: str | None = None
+        for arg in args:
+            name, sep, raw_value = arg.partition("=")
+            if sep and name.strip() == keyword and (value is None or raw_value.strip() == value):
+                removed = arg
+                continue
+            kept.append(arg)
+        if removed is None:
+            continue
+        replacement = f"{call_name}({', '.join(kept)})"
+        edits.append(TextEdit(match.start(), close + 1, replacement))
+        fixes.append(Fix(rule, line_number(source, match.start()), f"removed redundant {call_name} {keyword} keyword", source[match.start() : close + 1], replacement))
     return apply_edits(source, edits), fixes
 
 

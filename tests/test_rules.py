@@ -508,3 +508,90 @@ def f(x: uint256, n: int128) -> uint256:
     assert "return shift(x, n)" in result.source
     assert any(fix.rule == "VY111" for fix in result.fixes)
     assert any(diag.rule == "VYD012" for diag in result.diagnostics)
+
+
+def test_legacy_method_id_output_type_is_removed() -> None:
+    source = """# @version 0.2.1
+SIG: constant(bytes4) = method_id("transfer(address,uint256)", output_type=bytes4)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert 'method_id("transfer(address,uint256)")' in result.source
+    assert "output_type=bytes4" not in result.source
+    assert any(fix.rule == "VY209" for fix in result.fixes)
+
+
+def test_constructor_nonreentrant_is_removed_before_deploy_rewrite() -> None:
+    source = """# @version 0.2.15
+@nonreentrant("lock")
+@external
+def __init__():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "@nonreentrant" not in result.source
+    assert "@deploy\ndef __init__" in result.source
+    assert {fix.rule for fix in result.fixes} >= {"VY002", "VY210"}
+
+
+def test_block_difficulty_alias_is_rewritten_when_crossing_0_3_7() -> None:
+    source = """# @version 0.3.6
+@external
+def f() -> uint256:
+    return block.difficulty
+"""
+
+    result = apply_rules(source, config(target_version="0.3.7"))
+
+    assert "block.prevrandao" in result.source
+    assert "block.difficulty" not in result.source
+    assert any(fix.rule == "VY220" for fix in result.fixes)
+
+
+def test_unary_plus_and_numeric_not_rewrite_when_crossing_0_3_8() -> None:
+    source = """# @version 0.3.7
+@external
+def f(amount: uint256, ok: bool) -> bool:
+    x: uint256 = +amount
+    if not amount:
+        return ok
+    return not ok
+"""
+
+    result = apply_rules(source, config(target_version="0.3.8"))
+
+    assert "x: uint256 = amount" in result.source
+    assert "if amount == 0:" in result.source
+    assert "return not ok" in result.source
+    assert {fix.rule for fix in result.fixes} >= {"VY230", "VY231"}
+
+
+def test_numeric_not_unknown_type_is_diagnostic_only() -> None:
+    source = """# @version 0.3.7
+@external
+def f():
+    if not amount:
+        pass
+"""
+
+    result = apply_rules(source, config(target_version="0.3.8"))
+
+    assert "if not amount:" in result.source
+    assert any(diag.rule == "VYD013" for diag in result.diagnostics)
+
+
+def test_dynamic_single_argument_range_gets_bound_diagnostic_at_0_3_10() -> None:
+    source = """# @version 0.3.9
+@external
+def f(stop: uint256):
+    for i in range(stop):
+        pass
+"""
+
+    result = apply_rules(source, config(target_version="0.3.10"))
+
+    assert "range(stop, bound=" not in result.source
+    assert any(diag.rule == "VYD014" for diag in result.diagnostics)
