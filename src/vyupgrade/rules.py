@@ -21,7 +21,6 @@ from .versions import MigrationContext, VyperVersion, infer_pragma
 
 
 IMPORT_RENAMES = {"ERC20": "IERC20", "ERC20Detailed": "IERC20Detailed"}
-REVIEW_RULES = {"VY080", "VY090", "VY100", "VY110"}
 
 
 @dataclass
