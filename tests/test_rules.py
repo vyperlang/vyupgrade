@@ -583,6 +583,21 @@ def f(this_week: uint256, to_distribute: uint256, t: uint256, since_last: uint25
     assert "self.tokens_per_week[this_week] += to_distribute * (block.timestamp - t) // since_last" in result.source
 
 
+def test_integer_division_inside_storage_subscript() -> None:
+    source = """# @version 0.3.10
+packed_factory_versions: HashMap[uint256, uint256]
+
+@internal
+@view
+def _enabled(_version: uint256) -> bool:
+    return self.packed_factory_versions[_version / 256] & (1 << (_version % 256)) > 0
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.packed_factory_versions[_version // 256]" in result.source
+
+
 def test_multiline_function_scope_integer_division_assignment() -> None:
     source = """# @version 0.3.7
 rates: public(uint256[3])

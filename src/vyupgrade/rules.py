@@ -1674,8 +1674,13 @@ def _read_left_operand(source: str, index: int) -> str:
         open_index = _find_matching_open(source, i)
         if open_index is not None:
             return source[open_index : i + 1]
+    if i >= 0 and source[i] == "]":
+        open_index = _find_matching_open_bracket(source, i)
+        if open_index is not None:
+            start = _read_indexed_expression_start(source, open_index)
+            return source[start : i + 1].replace("self.", "")
     end = i + 1
-    while i >= 0 and re.match(r"[A-Za-z0-9_.$\[\]]", source[i]):
+    while i >= 0 and re.match(r"[A-Za-z0-9_.$]", source[i]):
         i -= 1
     return source[i + 1 : end].replace("self.", "")
 
@@ -1690,6 +1695,25 @@ def _find_matching_open(source: str, close_index: int) -> int | None:
             if depth == 0:
                 return i
     return None
+
+
+def _find_matching_open_bracket(source: str, close_index: int) -> int | None:
+    depth = 0
+    for i in range(close_index, -1, -1):
+        if source[i] == "]":
+            depth += 1
+        elif source[i] == "[":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _read_indexed_expression_start(source: str, open_index: int) -> int:
+    i = open_index - 1
+    while i >= 0 and re.match(r"[A-Za-z0-9_.$]", source[i]):
+        i -= 1
+    return i + 1
 
 
 def _read_right_operand(source: str, index: int) -> str:
