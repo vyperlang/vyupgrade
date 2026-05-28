@@ -812,6 +812,39 @@ def f():
     assert "convert(gauge_type, uint256)" not in result.source
 
 
+def test_signed_constant_not_converted_when_external_param_is_signed() -> None:
+    source = """# @version 0.2.16
+interface CurveMeta:
+    def calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> uint256: view
+
+MAX_COIN: constant(int128) = 2
+
+@external
+def f(pool: address, amount: uint256) -> uint256:
+    return CurveMeta(pool).calc_withdraw_one_coin(amount, MAX_COIN)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall CurveMeta(pool).calc_withdraw_one_coin(amount, MAX_COIN)" in result.source
+    assert "convert(MAX_COIN, uint256)" not in result.source
+
+
+def test_external_call_argument_casts_to_interface_param_type() -> None:
+    source = """# @version 0.2.16
+interface CurveBase:
+    def calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> uint256: view
+
+@external
+def f(pool: address, amount: uint256, i: uint256) -> uint256:
+    return CurveBase(pool).calc_withdraw_one_coin(amount, i)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall CurveBase(pool).calc_withdraw_one_coin(amount, convert(i, int128))" in result.source
+
+
 def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name() -> None:
     source = """# @version 0.2.4
 N_COINS: constant(int128) = 2
@@ -966,6 +999,24 @@ def f(slope: uint256, power: uint256, lock_end: uint256):
     result = apply_rules(source, config())
 
     assert "VotedSlope(slope=slope, power=power, end=lock_end)" in result.source
+
+
+def test_struct_constructor_casts_integer_field_arguments() -> None:
+    source = """# @version 0.2.7
+struct SwapData:
+    pool: address
+    coin: address
+    i: int128
+
+@external
+def f(pool: address, coin: address):
+    for i in range(8):
+        data: SwapData = SwapData({pool: pool, coin: coin, i: i})
+"""
+
+    result = apply_rules(source, config())
+
+    assert "SwapData(pool=pool, coin=coin, i=convert(i, int128))" in result.source
 
 
 def test_struct_literal_with_comments_reorders_to_declaration_order() -> None:

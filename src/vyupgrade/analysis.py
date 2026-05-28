@@ -136,6 +136,7 @@ BUILTIN_INTERFACE_RETURNS = {
 class SourceFacts:
     interfaces: dict[str, dict[str, str]] = field(default_factory=lambda: dict(BUILTIN_INTERFACES))
     interface_returns: dict[str, dict[str, str]] = field(default_factory=lambda: dict(BUILTIN_INTERFACE_RETURNS))
+    interface_params: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
     structs: set[str] = field(default_factory=set)
     struct_fields: dict[str, dict[str, str]] = field(default_factory=dict)
     flags_or_enums: set[str] = field(default_factory=set)
@@ -227,6 +228,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_interface = interface_match.group(1)
             facts.interfaces.setdefault(current_interface, {})
             facts.interface_returns.setdefault(current_interface, {})
+            facts.interface_params.setdefault(current_interface, {})
             continue
         if current_interface and indent == 0:
             current_interface = None
@@ -256,6 +258,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             if def_match:
                 mutability = def_match.group(4) or "nonpayable"
                 facts.interfaces[current_interface][def_match.group(1)] = mutability
+                facts.interface_params[current_interface][def_match.group(1)] = _parse_params(def_match.group(2))
                 if def_match.group(3):
                     facts.interface_returns[current_interface][def_match.group(1)] = def_match.group(3).strip()
                 pending_interface_method = None

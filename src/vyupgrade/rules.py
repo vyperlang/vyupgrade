@@ -139,6 +139,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _external_call_subscripts,
         _integer_division,
         _mixed_signed_unsigned_arithmetic,
+        _typed_external_call_arguments,
         _redundant_integer_convert,
         _struct_kwargs,
         _create_from_blueprint,
@@ -622,17 +623,7 @@ def _external_call_keywords_once(source: str, config: Config, context: Migration
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
-    call_matches: list[tuple[int, int, str, str, str | None]] = []
-    variable_call_re = re.compile(
-        r"(?<![\w.])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
-    )
-    call_matches.extend(_interface_cast_call_matches(source, facts.interfaces))
-    call_matches.extend(
-        (match.start(), match.end(), match.group("target"), match.group("method"), None)
-        for match in variable_call_re.finditer(source)
-    )
-
-    for start, end, target, method, cast_type in sorted(call_matches):
+    for start, end, target, method, cast_type in _all_external_call_matches(source, facts):
         if not span_is_code(mask, start, end):
             continue
         prefix = source[max(0, start - 16) : start]
@@ -828,6 +819,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
+                    or _signed_external_call_arg_target_type(source, start, name, facts, vars_for_line) is not None
                     or _signed_subscript_key_target_type(source, start, name, vars_for_line) is not None
                     or not _signed_name_has_unsigned_context(source, start, lhs_type, vars_for_line)
                 ):
@@ -861,6 +853,8 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     _local_expression(source, start), name, vars_for_line
                 ) or _signed_internal_call_arg_target_type(
                     source, start, name, facts
+                ) or _signed_external_call_arg_target_type(
+                    source, start, name, facts, vars_for_line
                 ) or _signed_subscript_key_target_type(source, start, name, vars_for_line)
                 if target_type is None:
                     continue
@@ -907,6 +901,76 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 )
         offset += len(raw_line)
     return apply_edits(source, edits), fixes, []
+
+
+def _typed_external_call_arguments(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY052", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for start, end, target, method, cast_type in _all_external_call_matches(source, facts):
+        if not span_is_code(mask, start, end):
+            continue
+        open_index = end - 1
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, start))
+        if cast_type is not None:
+            target_type = cast_type
+        elif target.startswith("self."):
+            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(target, vars_for_line, facts)
+        else:
+            target_type = infer_expr_type(target, vars_for_line, facts)
+        params = facts.interface_params.get(normalize_type(target_type or ""), {}).get(method)
+        if not params:
+            continue
+        args = split_top_level_args(source[open_index + 1 : close])
+        if args is None:
+            continue
+        cursor = open_index + 1
+        for index, arg in enumerate(args):
+            if index >= len(params):
+                break
+            expected = list(params.values())[index]
+            replacement = _cast_integer_arg_to_expected(arg, expected, vars_for_line, facts)
+            if replacement == arg:
+                cursor += len(arg) + 1
+                continue
+            arg_start = source.find(arg, cursor, close)
+            if arg_start == -1:
+                cursor += len(arg) + 1
+                continue
+            edits.append(TextEdit(arg_start, arg_start + len(arg), replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_number(source, arg_start),
+                    "converted external call argument to expected integer type",
+                    arg,
+                    replacement,
+                )
+            )
+            cursor = arg_start + len(arg) + 1
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _all_external_call_matches(
+    source: str, facts: SourceFacts
+) -> list[tuple[int, int, str, str, str | None]]:
+    variable_call_re = re.compile(
+        r"(?<![\w.])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+    matches: list[tuple[int, int, str, str, str | None]] = []
+    matches.extend(_interface_cast_call_matches(source, facts.interfaces))
+    matches.extend(
+        (match.start(), match.end(), match.group("target"), match.group("method"), None)
+        for match in variable_call_re.finditer(source)
+    )
+    return sorted(matches)
 
 
 def _signed_name_has_unsigned_context(
@@ -1009,6 +1073,46 @@ def _signed_internal_call_arg_target_type(source: str, index: int, name: str, fa
         return None
     target_type = list(params.values())[arg_index]
     return normalize_type(target_type) if _is_signed_integer_type(target_type) else None
+
+
+def _signed_external_call_arg_target_type(
+    source: str, index: int, name: str, facts: SourceFacts, vars_for_line: dict[str, str]
+) -> str | None:
+    target_type = _external_call_arg_expected_type(source, index, name, facts, vars_for_line)
+    return normalize_type(target_type) if _is_signed_integer_type(target_type) else None
+
+
+def _external_call_arg_expected_type(
+    source: str, index: int, arg: str, facts: SourceFacts, vars_for_line: dict[str, str]
+) -> str | None:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("(", line_start, index)
+    if open_index == -1:
+        return None
+    close = find_matching(source, open_index)
+    if close is None or not (open_index < index < close):
+        return None
+    raw_args = source[open_index + 1 : close]
+    arg_index = _top_level_arg_index(raw_args, index - open_index - 1)
+    args = split_top_level_args(raw_args)
+    if arg_index is None or args is None or arg_index >= len(args) or args[arg_index].strip() != arg:
+        return None
+    prefix = source[line_start:open_index]
+    call_match = re.search(
+        r"(?:\b(?:staticcall|extcall)\s+)?(?:(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\([^()\n]*\)|(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?))\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*$",
+        prefix,
+    )
+    if call_match is None:
+        return None
+    if call_match.group("cast"):
+        target_type = call_match.group("cast")
+    else:
+        target = call_match.group("target") or ""
+        target_type = facts.storage_vars.get(target.removeprefix("self.")) or infer_expr_type(target, vars_for_line, facts)
+    params = facts.interface_params.get(normalize_type(target_type or ""), {}).get(call_match.group("method"))
+    if not params or arg_index >= len(params):
+        return None
+    return list(params.values())[arg_index]
 
 
 def _signed_subscript_key_target_type(
@@ -1145,7 +1249,13 @@ def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tu
                 if close is None:
                     continue
                 raw_inner = current[paren + 1 : close]
-                replacement_inner = _ordered_struct_args(raw_inner, field_order)
+                vars_for_line = facts.vars_at_line(line_number(current, match.start()))
+                replacement_inner = _ordered_struct_args(
+                    raw_inner,
+                    facts.struct_fields.get(struct_name, {}),
+                    vars_for_line,
+                    facts,
+                )
                 if replacement_inner is None or replacement_inner == raw_inner:
                     continue
                 replacement = f"{struct_name}({replacement_inner})"
@@ -1166,7 +1276,13 @@ def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tu
         current = apply_edits(current, selected_edits)
 
 
-def _ordered_struct_args(raw_inner: str, field_order: list[str]) -> str | None:
+def _ordered_struct_args(
+    raw_inner: str,
+    struct_fields: dict[str, str],
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
+) -> str | None:
+    field_order = list(struct_fields)
     stripped = raw_inner.strip()
     if stripped.startswith("{") and stripped.endswith("}"):
         fields = split_top_level_args(_strip_arg_comments(stripped[1:-1]))
@@ -1178,7 +1294,7 @@ def _ordered_struct_args(raw_inner: str, field_order: list[str]) -> str | None:
             if pair is None:
                 return None
             pairs.append(pair)
-        return _ordered_kwarg_string(pairs, field_order)
+        return _ordered_kwarg_string(pairs, field_order, struct_fields, vars_for_line, facts)
 
     args = split_top_level_args(_strip_arg_comments(raw_inner))
     if args is None:
@@ -1189,7 +1305,7 @@ def _ordered_struct_args(raw_inner: str, field_order: list[str]) -> str | None:
         if pair is None:
             return None
         pairs.append(pair)
-    ordered = _ordered_kwarg_string(pairs, field_order)
+    ordered = _ordered_kwarg_string(pairs, field_order, struct_fields, vars_for_line, facts)
     return ordered if ordered != ", ".join(arg.strip() for arg in args) else None
 
 
@@ -1203,11 +1319,37 @@ def _split_struct_pair(raw: str, sep: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2).strip()
 
 
-def _ordered_kwarg_string(pairs: list[tuple[str, str]], field_order: list[str]) -> str:
+def _ordered_kwarg_string(
+    pairs: list[tuple[str, str]],
+    field_order: list[str],
+    struct_fields: dict[str, str],
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
+) -> str:
     by_name = dict(pairs)
     ordered_names = [name for name in field_order if name in by_name]
     ordered_names.extend(name for name, _value in pairs if name not in field_order)
-    return ", ".join(f"{name}={by_name[name]}" for name in ordered_names)
+    return ", ".join(
+        f"{name}={_cast_integer_arg_to_expected(by_name[name], struct_fields.get(name), vars_for_line, facts)}"
+        for name in ordered_names
+    )
+
+
+def _cast_integer_arg_to_expected(
+    value: str, expected_type: str | None, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str:
+    if not is_integer_type(expected_type) or value.strip().startswith("convert("):
+        return value
+    actual_type = infer_expr_type(value, vars_for_line, facts)
+    if not is_integer_type(actual_type) or _same_integer_signedness(actual_type, expected_type):
+        return value
+    return f"convert({value}, {normalize_type(expected_type or '')})"
+
+
+def _same_integer_signedness(left: str | None, right: str | None) -> bool:
+    return (_is_signed_integer_type(left) and _is_signed_integer_type(right)) or (
+        _is_unsigned_integer_type(left) and _is_unsigned_integer_type(right)
+    )
 
 
 def _typed_range_loops(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
