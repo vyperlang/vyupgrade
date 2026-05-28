@@ -1039,6 +1039,9 @@ def g():
     assert "VYD003" in rules
     assert "VYD004" in rules
     assert "VY080" in rules
+    assert '@nonreentrant("a")' not in result.source
+    assert '@nonreentrant("b")' not in result.source
+    assert result.source.count("@nonreentrant") == 2
 
 
 def test_idempotent() -> None:

@@ -1591,6 +1591,7 @@ def _nonreentrant(source: str, config: Config, context: MigrationContext) -> tup
     if len(counts) > 1:
         first = pattern.search(source)
         diagnostics.append(Diagnostic("VYD002", line_number(source, first.start() if first else 0), "multiple named reentrancy locks found; 0.4.x uses a global lock"))
+    if not _enabled("VY090", config, context):
         return source, fixes, diagnostics
     diagnostics.extend(Diagnostic("VY090", line_number(source, match.start()), "single named nonreentrant lock rewritten; review callback assumptions") for match in pattern.finditer(source))
 
