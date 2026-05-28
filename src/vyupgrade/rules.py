@@ -875,6 +875,36 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                         replacement,
                     )
                 )
+        unsigned_constant_names = sorted(
+            (
+                name
+                for name, type_name in vars_for_line.items()
+                if _is_unsigned_integer_type(type_name) and name in facts.global_vars
+            ),
+            key=len,
+            reverse=True,
+        )
+        for name in unsigned_constant_names:
+            for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
+                start = rhs_start + match.start()
+                if _inside_convert_call(source, start) or _inside_range_header(source, start) or _inside_type_subscript(source, start):
+                    continue
+                target_type = _unsigned_name_signed_division_target_type(
+                    _local_expression(source, start), name, vars_for_line, facts
+                )
+                if target_type is None:
+                    continue
+                replacement = f"convert({name}, {target_type})"
+                edits.append(TextEdit(start, start + len(name), replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted unsigned integer constant in signed division",
+                        name,
+                        replacement,
+                    )
+                )
         offset += len(raw_line)
     return apply_edits(source, edits), fixes, []
 
@@ -911,6 +941,26 @@ def _signed_comparison_target_type(expr: str, name: str, vars_for_line: dict[str
         other_type = infer_expr_type(right, vars_for_line)
     elif right == name:
         other_type = infer_expr_type(left, vars_for_line)
+    else:
+        return None
+    return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _unsigned_name_signed_division_target_type(
+    expr: str, name: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
+    expr = expr.strip()
+    expr = re.sub(r"^(?:return|assert)\s+", "", expr)
+    if "=" in expr.split("//", 1)[0]:
+        expr = expr.split("=", 1)[1].strip()
+    match = re.match(r"(.+?)\s*//\s*(.+)\Z", expr)
+    if match is None:
+        return None
+    left, right = (part.strip() for part in match.groups())
+    if left == name:
+        other_type = infer_expr_type(right, vars_for_line, facts)
+    elif right == name:
+        other_type = infer_expr_type(left, vars_for_line, facts)
     else:
         return None
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
@@ -1029,7 +1079,17 @@ def _local_expression(source: str, index: int) -> str:
     start = max(source.rfind(",", line_start, index), source.rfind("(", line_start, index), line_start - 1) + 1
     end_candidates = [pos for pos in [source.find(",", index, line_end), source.find(")", index, line_end)] if pos != -1]
     end = min(end_candidates) if end_candidates else line_end
-    return source[start:end]
+    expr = source[start:end]
+    mask = code_mask(expr)
+    comment_start = next(
+        (
+            pos
+            for pos, char in enumerate(expr)
+            if char == "#" and (pos == 0 or mask[pos - 1])
+        ),
+        None,
+    )
+    return expr[:comment_start] if comment_start is not None else expr
 
 
 def _inside_array_subscript(source: str, index: int, vars_for_line: dict[str, str]) -> bool:

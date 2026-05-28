@@ -708,6 +708,44 @@ def f() -> bool:
     assert "self.base_cache_updated + convert(BASE_CACHE_EXPIRES, uint256)" in result.source
 
 
+def test_comment_identifier_does_not_create_unsigned_context() -> None:
+    source = """# @version 0.3.7
+rate: uint256
+sigma: int256
+
+@external
+def f(p: int256) -> int256:
+    power: int256 = (10**18 - p) * 10**18 / sigma  # low rate
+    return power
+"""
+
+    result = apply_rules(source, config())
+
+    assert "// sigma  # low rate" in result.source
+    assert "convert(sigma, uint256)" not in result.source
+
+
+def test_unsigned_constant_converted_in_signed_integer_division() -> None:
+    source = """# @version 0.2.4
+MAXTIME: constant(uint256) = 4 * 365 * 86400
+
+struct LockedBalance:
+    amount: int128
+
+struct Point:
+    slope: int128
+
+@external
+def f(old_locked: LockedBalance):
+    u_old: Point = empty(Point)
+    u_old.slope = old_locked.amount / MAXTIME
+"""
+
+    result = apply_rules(source, config())
+
+    assert "u_old.slope = old_locked.amount // convert(MAXTIME, int128)" in result.source
+
+
 def test_unsigned_range_loop_converted_in_signed_comparison() -> None:
     source = """# @version 0.2.4
 n_gauge_types: int128
