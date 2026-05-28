@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "banteg" }]
-dependencies = ["uv>=0.8.0"]
+dependencies = ["polars>=1.30", "uv>=0.8.0"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

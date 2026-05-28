@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+
+def _load_corpus_module():
+    script = Path(__file__).parents[1] / "scripts" / "corpus.py"
+    spec = importlib.util.spec_from_file_location("vyupgrade_corpus_script", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_import_old_vyper_bug_uses_csv_versions_for_missing_pragmas(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    source = tmp_path / "old-vyper-bug"
+    contracts = source / "contracts" / "ethereum"
+    exports = source / "etherscan-export"
+    contracts.mkdir(parents=True)
+    exports.mkdir(parents=True)
+    (contracts / "0xabc.vy").write_text("# @version 0.2.16\nx: uint256\n", encoding="utf-8")
+    (contracts / "0xdef.vy").write_text("x: uint256\n", encoding="utf-8")
+    (exports / "ethereum.csv").write_text("0xabc,0.2.16\n0xdef,0.3.0\n", encoding="utf-8")
+
+    manifest = corpus.import_old_vyper_bug(source, tmp_path / "corpus" / "vyper")
+
+    assert manifest["counts"]["applicable"] == 2
+    by_address = {item["address"]: item for item in manifest["items"]}
+    assert by_address["0xabc"]["pragma"] == "0.2.16"
+    assert by_address["0xabc"]["source_pragma"] == "0.2.16"
+    assert by_address["0xdef"]["pragma"] == "0.3.0"
+    assert by_address["0xdef"]["source_pragma"] is None
+    assert Path(by_address["0xdef"]["corpus_path"]).read_text(encoding="utf-8") == "x: uint256\n"
+
+
+def test_import_smart_contract_fiesta_uses_metadata_compiler(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    source = tmp_path / "smart-contract-fiesta"
+    contract = source / "organized_contracts" / "ab" / "abcdef"
+    contract.mkdir(parents=True)
+    (contract / "metadata.json").write_text(
+        '{"ContractName":"Vyper_contract","CompilerVersion":"vyper:0.3.7","BytecodeHash":"abcdef"}',
+        encoding="utf-8",
+    )
+    (contract / "main.vy").write_text("x: uint256\n", encoding="utf-8")
+
+    manifest = corpus.import_smart_contract_fiesta(source, tmp_path / "corpus" / "vyper")
+
+    assert manifest["counts"]["applicable"] == 1
+    item = manifest["items"][0]
+    assert item["pragma"] == "0.3.7"
+    assert item["source_pragma"] is None
+    assert item["bytecode_hash"] == "abcdef"
+    assert Path(item["corpus_path"]).read_text(encoding="utf-8") == "x: uint256\n"
+
+
+def test_dedupe_manifests_keeps_one_item_per_source_hash(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    stale = tmp_path / "stale.json"
+    first_source = tmp_path / "corpus" / "a.vy"
+    second_source = tmp_path / "corpus" / "b.vy"
+    first_source.parent.mkdir()
+    first_source.write_text("x: uint256\n", encoding="utf-8")
+    second_source.write_text("x: uint256\n", encoding="utf-8")
+    base_item = {
+        "repo": "first",
+        "relpath": "a.vy",
+        "corpus_path": str(first_source),
+        "corpus_repo_root": str(first_source.parent),
+        "pragma": "0.3.7",
+        "source_compiler": "0.3.7",
+        "sha256": "abc",
+    }
+    first.write_text(
+        '{"items": [%s]}' % json_dumps(base_item),
+        encoding="utf-8",
+    )
+    second.write_text(
+        '{"items": [%s]}'
+        % json_dumps(
+            {
+                **base_item,
+                "repo": "second",
+                "relpath": "b.vy",
+                "corpus_path": str(second_source),
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale.write_text(
+        '{"items": [%s]}' % json_dumps({**base_item, "corpus_path": str(tmp_path / "missing.vy")}),
+        encoding="utf-8",
+    )
+
+    manifest = corpus.dedupe_manifests([first, second, stale], tmp_path / "deduped.json")
+
+    assert manifest["counts"]["items_seen"] == 3
+    assert manifest["counts"]["deduped"] == 1
+    assert manifest["counts"]["duplicates"] == 1
+    assert manifest["counts"]["missing_corpus_path"] == 1
+    assert len(manifest["items"]) == 1
+    assert manifest["items"][0]["duplicate_count"] == 1
+    assert manifest["items"][0]["duplicate_sources"][0]["repo"] == "second"
+
+
+def test_import_vyper_2026_keeps_metadata_when_source_is_not_local(tmp_path: Path) -> None:
+    import polars as pl
+
+    corpus = _load_corpus_module()
+    source = tmp_path / "vyper-2026"
+    data = source / "data"
+    data.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "chain": "ethereum",
+                "address": "0xabc",
+                "source_available": True,
+                "source_origin": "etherscan_getsourcecode",
+                "contract_name": "Example",
+                "compiler_version": "vyper:0.3.7",
+                "normalized_vyper_version": "0.3.7",
+                "source_len": 12,
+                "source_sha256": "abc",
+            }
+        ]
+    ).write_parquet(data / "etherscan_source_metadata.parquet")
+
+    manifest = corpus.import_vyper_2026(source, tmp_path / "corpus" / "vyper")
+
+    assert manifest["counts"]["etherscan_source_metadata.parquet:rows_seen"] == 1
+    assert manifest["counts"]["etherscan_source_metadata.parquet:missing_source_path"] == 1
+    assert manifest["items"] == []
+    assert manifest["metadata_items"][0]["source_compiler"] == "0.3.7"
+    assert manifest["by_metadata_compiler"] == [("0.3.7", 1)]
+
+
+def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "old_vyper_bug" / "ethereum" / "0xdef.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("x: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "old_vyper_bug",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parents[1]),
+        "pragma": "0.3.0",
+    }
+    seen: dict[str, str | None] = {}
+
+    def fake_apply_rules(source, config, path):
+        seen["source_version"] = config.source_version
+        return SimpleNamespace(source=source, fixes=[], diagnostics=[])
+
+    def fake_compile_source_file(path, config, source_version):
+        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+
+    monkeypatch.setattr(corpus, "apply_rules", fake_apply_rules)
+    monkeypatch.setattr(corpus, "compile_source_file", fake_compile_source_file)
+    monkeypatch.setattr(
+        corpus,
+        "compile_target_source",
+        lambda path, source, config: SimpleNamespace(status="passed", artifacts={}, stderr=None),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert seen["source_version"] == "0.3.0"
+    assert result["source_compile"] == "passed"
+    assert result["target_compile"] == "passed"
+
+
+def test_error_excerpt_keeps_nested_compiler_messages() -> None:
+    corpus = _load_corpus_module()
+    stderr = """
+    vyper.exceptions.VyperException: Compilation failed with the following errors:
+
+    vyper.exceptions.CallViolation: Calls to external view functions must use the `staticcall` keyword.
+      contract.vy:42
+    """
+
+    excerpt = corpus._error_excerpt(stderr)
+
+    assert "VyperException" in excerpt
+    assert "CallViolation" in excerpt
+
+
+def json_dumps(value: object) -> str:
+    return json.dumps(value)
