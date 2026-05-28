@@ -370,3 +370,72 @@ def f():
 
     assert "range(1, 4, bound=" not in result.source
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD011"]
+
+
+def test_target_before_change_skips_later_patch_rewrites() -> None:
+    source = """# @version 0.4.1
+@external
+def f(a: uint256, b: uint256) -> uint256:
+    return sqrt(bitwise_and(a, b))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.1"))
+
+    assert "math.sqrt" not in result.source
+    assert "bitwise_and" in result.source
+    assert not [fix for fix in result.fixes if fix.rule in {"VY100", "VY110"}]
+
+
+def test_patch_rewrites_apply_when_crossing_0_4_2() -> None:
+    source = """# @version 0.4.1
+@external
+def f(a: uint256, b: uint256) -> uint256:
+    return sqrt(bitwise_and(a, b))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "import math" in result.source
+    assert "math.sqrt((a & b))" in result.source
+    assert {fix.rule for fix in result.fixes} >= {"VY100", "VY110"}
+
+
+def test_source_at_change_skips_already_current_patch_rewrites() -> None:
+    source = """# @version 0.4.2
+@external
+def f(a: uint256, b: uint256) -> uint256:
+    return sqrt(bitwise_and(a, b))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "math.sqrt" not in result.source
+    assert "bitwise_and" in result.source
+    assert not [fix for fix in result.fixes if fix.rule in {"VY100", "VY110"}]
+
+
+def test_pragma_rewrite_is_gated_by_target_version() -> None:
+    source = """# @version 0.3.8
+@external
+def f():
+    pass
+"""
+
+    before = apply_rules(source, config(target_version="0.3.9"))
+    after = apply_rules(source, config(target_version="0.3.10"))
+
+    assert "# @version 0.3.8" in before.source
+    assert "#pragma version 0.3.8" in after.source
+
+
+def test_0_4_rules_apply_from_0_2_1_source() -> None:
+    source = """# @version 0.2.1
+@external
+def __init__():
+    pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@deploy\ndef __init__" in result.source
+    assert any(fix.rule == "VY002" for fix in result.fixes)

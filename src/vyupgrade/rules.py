@@ -16,7 +16,7 @@ from .source import (
     span_is_code,
     TextEdit,
 )
-from .versions import infer_pragma
+from .versions import MigrationContext, VyperVersion, infer_pragma
 
 
 IMPORT_RENAMES = {"ERC20": "IERC20", "ERC20Detailed": "IERC20Detailed"}
@@ -30,9 +30,44 @@ class RewriteResult:
     diagnostics: list[Diagnostic]
 
 
+@dataclass(frozen=True)
+class RuleChange:
+    introduced: VyperVersion
+    mode: str = "crossing"
+
+
+RULE_CHANGES = {
+    "VY001": RuleChange(VyperVersion(0, 3, 10), "target"),
+    "VY002": RuleChange(VyperVersion(0, 4, 0)),
+    "VY010": RuleChange(VyperVersion(0, 4, 0)),
+    "VY011": RuleChange(VyperVersion(0, 4, 0)),
+    "VY012": RuleChange(VyperVersion(0, 4, 0)),
+    "VY020": RuleChange(VyperVersion(0, 4, 0)),
+    "VY030": RuleChange(VyperVersion(0, 4, 0)),
+    "VY040": RuleChange(VyperVersion(0, 4, 0)),
+    "VY041": RuleChange(VyperVersion(0, 4, 0)),
+    "VY050": RuleChange(VyperVersion(0, 4, 0)),
+    "VY051": RuleChange(VyperVersion(0, 4, 0)),
+    "VY060": RuleChange(VyperVersion(0, 4, 0)),
+    "VY070": RuleChange(VyperVersion(0, 4, 0)),
+    "VY071": RuleChange(VyperVersion(0, 4, 0)),
+    "VY080": RuleChange(VyperVersion(0, 4, 0)),
+    "VY090": RuleChange(VyperVersion(0, 4, 0)),
+    "VY100": RuleChange(VyperVersion(0, 4, 2)),
+    "VY110": RuleChange(VyperVersion(0, 4, 2)),
+    "VYD001": RuleChange(VyperVersion(0, 4, 0)),
+    "VYD002": RuleChange(VyperVersion(0, 4, 0)),
+    "VYD003": RuleChange(VyperVersion(0, 4, 0)),
+    "VYD004": RuleChange(VyperVersion(0, 4, 0)),
+    "VYD010": RuleChange(VyperVersion(0, 4, 0)),
+    "VYD011": RuleChange(VyperVersion(0, 4, 0)),
+}
+
+
 def apply_rules(source: str, config: Config) -> RewriteResult:
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
+    context = MigrationContext.from_specs(config.source_version or infer_pragma(source), config.target_version)
 
     current = source
     for rule in [
@@ -56,27 +91,34 @@ def apply_rules(source: str, config: Config) -> RewriteResult:
         _prevrandao_diagnostic,
         _missing_pragma_diagnostic,
     ]:
-        current, rule_fixes, rule_diagnostics = rule(current, config)
+        current, rule_fixes, rule_diagnostics = rule(current, config, context)
         fixes.extend(rule_fixes)
         diagnostics.extend(rule_diagnostics)
 
-    fixes = [fix for fix in fixes if _enabled(fix.rule, config)]
-    diagnostics = [diag for diag in diagnostics if _enabled(diag.rule, config)]
+    fixes = [fix for fix in fixes if _enabled(fix.rule, config, context)]
+    diagnostics = [diag for diag in diagnostics if _enabled(diag.rule, config, context)]
     return RewriteResult(current, fixes, diagnostics)
 
 
-def _enabled(rule: str, config: Config) -> bool:
+def _enabled(rule: str, config: Config, context: MigrationContext) -> bool:
     if config.select and rule not in config.select:
         return False
-    return rule not in config.ignore
+    if rule in config.ignore:
+        return False
+    change = RULE_CHANGES.get(rule)
+    if change is None:
+        return True
+    if change.mode == "target":
+        return context.target_at_least(change.introduced)
+    return context.crosses(change.introduced)
 
 
-def _any_enabled(rules: set[str], config: Config) -> bool:
-    return any(_enabled(rule, config) for rule in rules)
+def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> bool:
+    return any(_enabled(rule, config, context) for rule in rules)
 
 
-def _pragma(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY001", config):
+def _pragma(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY001", config, context):
         return source, [], []
     fixes: list[Fix] = []
     pattern = re.compile(r"^(\s*)#\s*@version\s+(.+?)\s*$", re.MULTILINE)
@@ -91,8 +133,8 @@ def _pragma(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnosti
     return pattern.sub(repl, source), fixes, []
 
 
-def _constructor_deploy(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY002", config):
+def _constructor_deploy(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY002", config, context):
         return source, [], []
     lines = source.splitlines(keepends=True)
     fixes: list[Fix] = []
@@ -124,14 +166,14 @@ def _constructor_deploy(source: str, config: Config) -> tuple[str, list[Fix], li
     return "".join(out), fixes, []
 
 
-def _abi_builtins(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _abi_builtins(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     fixes: list[Fix] = []
     current = source
     for before, after, rule in [
         ("_abi_encode", "abi_encode", "VY010"),
         ("_abi_decode", "abi_decode", "VY011"),
     ]:
-        if not _enabled(rule, config):
+        if not _enabled(rule, config, context):
             continue
         next_source, edits = replace_identifier(current, before, after)
         for edit in edits:
@@ -140,8 +182,8 @@ def _abi_builtins(source: str, config: Config) -> tuple[str, list[Fix], list[Dia
     return current, fixes, []
 
 
-def _legacy_constants(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY012", config):
+def _legacy_constants(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY012", config, context):
         return source, [], []
     fixes: list[Fix] = []
     current = source
@@ -160,8 +202,8 @@ def _legacy_constants(source: str, config: Config) -> tuple[str, list[Fix], list
     return current, fixes, []
 
 
-def _redundant_integer_convert(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY051", config):
+def _redundant_integer_convert(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY051", config, context):
         return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -189,8 +231,8 @@ def _redundant_integer_convert(source: str, config: Config) -> tuple[str, list[F
     return apply_edits(source, edits), fixes, []
 
 
-def _interface_imports(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY020", "VYD003"}, config):
+def _interface_imports(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _any_enabled({"VY020", "VYD003"}, config, context):
         return source, [], []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -204,13 +246,13 @@ def _interface_imports(source: str, config: Config) -> tuple[str, list[Fix], lis
             continue
         imports = [part.strip() for part in match.group(2).split(",")]
         mapped = [IMPORT_RENAMES.get(name, name) for name in imports]
-        if mapped != imports and _enabled("VY020", config):
+        if mapped != imports and _enabled("VY020", config, context):
             requested_rewrites.update({old: new for old, new in zip(imports, mapped, strict=True) if old != new})
             lines[i] = f"{match.group(1)}from ethereum.ercs import {', '.join(mapped)}{match.group(3)}{match.group(4)}"
             fixes.append(Fix("VY020", i + 1, "updated built-in interface import path", line.rstrip("\n"), lines[i].rstrip("\n")))
             changed = True
         elif "vyper.interfaces" in line:
-            if _enabled("VYD003", config):
+            if _enabled("VYD003", config, context):
                 diagnostics.append(Diagnostic("VYD003", i + 1, "unknown built-in interface import; review manually"))
 
     current = "".join(lines) if changed else source
@@ -222,8 +264,8 @@ def _interface_imports(source: str, config: Config) -> tuple[str, list[Fix], lis
     return current, fixes, diagnostics
 
 
-def _enum_to_flag(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY030"}, config):
+def _enum_to_flag(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _any_enabled({"VY030"}, config, context):
         return source, [], []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -245,8 +287,8 @@ def _enum_to_flag(source: str, config: Config) -> tuple[str, list[Fix], list[Dia
     return pattern.sub(repl, source), fixes, diagnostics
 
 
-def _external_call_keywords(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY040", "VY041", "VYD003"}, config):
+def _external_call_keywords(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _any_enabled({"VY040", "VY041", "VYD003"}, config, context):
         return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
@@ -275,12 +317,12 @@ def _external_call_keywords(source: str, config: Config) -> tuple[str, list[Fix]
             target_type = cast_type or infer_expr_type(target, vars_for_line)
         mutability = facts.interfaces.get(target_type or "", {}).get(method)
         if mutability is None:
-            if _enabled("VYD003", config):
+            if _enabled("VYD003", config, context):
                 diagnostics.append(Diagnostic("VYD003", line_number(source, match.start()), f"cannot infer mutability for external call {target}.{method}"))
             continue
         keyword = "staticcall" if mutability in {"view", "pure"} else "extcall"
         rule = "VY041" if keyword == "staticcall" else "VY040"
-        if not _enabled(rule, config):
+        if not _enabled(rule, config, context):
             continue
         edits.append(TextEdit(match.start(), match.start(), keyword + " "))
         fixes.append(Fix(rule, line_number(source, match.start()), f"added {keyword} to {mutability} external call", source[match.start() : match.end()].rstrip(), keyword + " " + source[match.start() : match.end()].rstrip()))
@@ -288,8 +330,8 @@ def _external_call_keywords(source: str, config: Config) -> tuple[str, list[Fix]
     return apply_edits(source, edits), fixes, diagnostics
 
 
-def _integer_division(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY050", "VYD004"}, config):
+def _integer_division(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _any_enabled({"VY050", "VYD004"}, config, context):
         return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
@@ -332,18 +374,18 @@ def _integer_division(source: str, config: Config) -> tuple[str, list[Fix], list
                 and "decimal" not in line
             )
         ):
-            if not _enabled("VY050", config):
+            if not _enabled("VY050", config, context):
                 continue
             edits.append(TextEdit(match.start(), match.end(), "//"))
             fixes.append(Fix("VY050", line_number(source, match.start()), "changed integer division to //", "/", "//"))
         else:
-            if _enabled("VYD004", config):
+            if _enabled("VYD004", config, context):
                 diagnostics.append(Diagnostic("VYD004", line_number(source, match.start()), "cannot prove / operands are integer typed"))
     return apply_edits(source, edits), fixes, diagnostics
 
 
-def _struct_kwargs(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY060", config):
+def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY060", config, context):
         return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
@@ -379,8 +421,8 @@ def _struct_kwargs(source: str, config: Config) -> tuple[str, list[Fix], list[Di
     return apply_edits(source, edits), fixes, []
 
 
-def _typed_range_loops(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY070", config):
+def _typed_range_loops(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY070", config, context):
         return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -407,8 +449,8 @@ def _typed_range_loops(source: str, config: Config) -> tuple[str, list[Fix], lis
     return apply_edits(source, edits), fixes, []
 
 
-def _range_bound(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY071", config):
+def _range_bound(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY071", config, context):
         return source, [], []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -452,8 +494,8 @@ def _range_bound(source: str, config: Config) -> tuple[str, list[Fix], list[Diag
     return apply_edits(source, edits), fixes, diagnostics
 
 
-def _create_from_blueprint(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY080", config):
+def _create_from_blueprint(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY080", config, context):
         return source, [], []
     diagnostics: list[Diagnostic] = []
     fixes: list[Fix] = []
@@ -475,8 +517,8 @@ def _create_from_blueprint(source: str, config: Config) -> tuple[str, list[Fix],
     return apply_edits(source, edits), fixes, diagnostics
 
 
-def _nonreentrant(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY090", "VYD002"}, config):
+def _nonreentrant(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _any_enabled({"VY090", "VYD002"}, config, context):
         return source, [], []
     pattern = re.compile(r"@nonreentrant\(\s*([\"'])(.+?)\1\s*\)")
     locks = [match.group(2) for match in pattern.finditer(source)]
@@ -498,8 +540,8 @@ def _nonreentrant(source: str, config: Config) -> tuple[str, list[Fix], list[Dia
     return pattern.sub(repl, source), fixes, diagnostics
 
 
-def _sqrt(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY100", config):
+def _sqrt(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY100", config, context):
         return source, [], []
     mask = code_mask(source)
     edits: list[TextEdit] = []
@@ -515,8 +557,8 @@ def _sqrt(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]
     return next_source, fixes, []
 
 
-def _bitwise(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY110", config):
+def _bitwise(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY110", config, context):
         return source, [], []
     fixes: list[Fix] = []
     current = source
@@ -531,16 +573,16 @@ def _bitwise(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnost
     return current, fixes, []
 
 
-def _decimal_diagnostic(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VYD001", config):
+def _decimal_diagnostic(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VYD001", config, context):
         return source, [], []
     if re.search(r"\bdecimal\b", source) and not config.enable_decimals:
         return source, [], [Diagnostic("VYD001", 1, "decimal type is used; target compile may require --enable-decimals")]
     return source, [], []
 
 
-def _prevrandao_diagnostic(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VYD010", config):
+def _prevrandao_diagnostic(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VYD010", config, context):
         return source, [], []
     diagnostics = [
         Diagnostic("VYD010", line_number(source, match.start()), "block.prevrandao signature changed in 0.4.0; review manually")
@@ -549,8 +591,8 @@ def _prevrandao_diagnostic(source: str, config: Config) -> tuple[str, list[Fix],
     return source, [], diagnostics
 
 
-def _missing_pragma_diagnostic(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VYD005", config):
+def _missing_pragma_diagnostic(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VYD005", config, context):
         return source, [], []
     if infer_pragma(source) is None and config.source_version is None:
         return source, [], [Diagnostic("VYD005", 1, "source has no version pragma and no --source-version")]

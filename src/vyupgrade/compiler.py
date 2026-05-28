@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from .models import Config
-from .versions import infer_pragma
+from .versions import compiler_version_for_spec, infer_pragma
 
 
 FORMATS = ("abi", "method_identifiers", "layout")
@@ -71,12 +70,7 @@ def _compiler_command(explicit: str | None, version: str | None, python: str | N
 
 
 def _normalize_version(version: str | None) -> str | None:
-    if not version:
-        return None
-    match = re.search(r"0\.(?:3|4)\.\d+", version)
-    if match:
-        return match.group(0)
-    return None
+    return compiler_version_for_spec(version)
 
 
 def _default_python(version: str) -> str:

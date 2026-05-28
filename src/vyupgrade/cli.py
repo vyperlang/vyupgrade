@@ -12,7 +12,7 @@ from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
 from .reporting import render_text, write_json_report
 from .rules import apply_rules
-from .versions import infer_pragma
+from .versions import MigrationContext, infer_pragma
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,11 +57,11 @@ def main(argv: list[str] | None = None) -> int:
 
     for path in files:
         original = path.read_text(encoding="utf-8")
+        source_version = config.source_version or infer_pragma(original)
         rewrite = apply_rules(original, config)
         changed = original != rewrite.source
         file_report = FileReport(path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics)
 
-        source_version = config.source_version or infer_pragma(original)
         source_compile = compile_source_file(path, config, source_version)
         file_report.source_compile = source_compile.status
         file_report.source_error = source_compile.stderr
@@ -194,7 +194,8 @@ def _add_validation_diagnostics(file_report: FileReport, source_version: str | N
         file_report.diagnostics.append(Diagnostic("VYD007", 1, "method identifiers changed after migration"))
     if file_report.storage_layout_equal is False:
         file_report.diagnostics.append(Diagnostic("VYD008", 1, "storage layout changed after migration"))
-    if source_version and "0.3." in source_version and config.target_version.startswith("0.4."):
+    context = MigrationContext.from_specs(source_version, config.target_version)
+    if context.crosses("0.4.0"):
         file_report.diagnostics.append(Diagnostic("VYD009", 1, "target compiler default EVM version differs from source-era default; review or pin explicitly"))
 
 
