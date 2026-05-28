@@ -142,6 +142,7 @@ class SourceFacts:
     storage_vars: dict[str, str] = field(default_factory=dict)
     global_vars: dict[str, str] = field(default_factory=dict)
     function_vars: dict[int, dict[str, str]] = field(default_factory=dict)
+    function_loop_vars: dict[int, set[str]] = field(default_factory=dict)
     function_ends: dict[int, int] = field(default_factory=dict)
     function_returns: dict[int, str] = field(default_factory=dict)
     function_return_names: dict[str, str] = field(default_factory=dict)
@@ -162,6 +163,13 @@ class SourceFacts:
             if start <= line_number <= end:
                 return return_type
         return None
+
+    def loop_vars_at_line(self, line_number: int) -> set[str]:
+        for start, names in sorted(self.function_loop_vars.items()):
+            end = self.function_ends.get(start, 10**9)
+            if start <= line_number <= end:
+                return names
+        return set()
 
 
 def parse_source_facts(source: str) -> SourceFacts:
@@ -196,6 +204,7 @@ def parse_source_facts(source: str) -> SourceFacts:
                     current_function_line = pending_function_line
                     current_function_indent = pending_function_indent
                     facts.function_vars[current_function_line] = _parse_params(def_match.group(2))
+                    facts.function_loop_vars[current_function_line] = set()
                     if def_match.group(3):
                         facts.function_returns[current_function_line] = def_match.group(3).strip()
                         facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
@@ -268,6 +277,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_function_line = line_no
             current_function_indent = indent
             facts.function_vars[current_function_line] = _parse_params(def_match.group(2))
+            facts.function_loop_vars[current_function_line] = set()
             if def_match.group(3):
                 facts.function_returns[current_function_line] = def_match.group(3).strip()
                 facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
@@ -286,6 +296,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             loop_var = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^:]+?)\s+in\b", stripped)
             if loop_var:
                 facts.function_vars[current_function_line][loop_var.group(1)] = loop_var.group(2).strip()
+                facts.function_loop_vars.setdefault(current_function_line, set()).add(loop_var.group(1))
                 continue
 
         decl = _parse_var_decl(stripped)

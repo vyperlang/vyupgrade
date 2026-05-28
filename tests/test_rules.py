@@ -675,6 +675,39 @@ def f(fee: uint256) -> uint256:
     assert "for i: int128 in range(N_COINS):" in result.source
 
 
+def test_signed_loop_index_converted_in_uint_index_arithmetic() -> None:
+    source = """# @version 0.2.8
+MAX_COIN: constant(int128) = 1
+BASE_N_COINS: constant(int128) = 3
+
+@external
+def f(amounts: uint256[4]) -> uint256[3]:
+    base_amounts: uint256[3] = empty(uint256[3])
+    for i in range(BASE_N_COINS):
+        base_amounts[i] = amounts[i + MAX_COIN]
+    return base_amounts
+"""
+
+    result = apply_rules(source, config())
+
+    assert "base_amounts[i] = amounts[convert(i, uint256) + convert(MAX_COIN, uint256)]" in result.source
+
+
+def test_signed_time_constant_converted_in_uint_comparison() -> None:
+    source = """# @version 0.2.8
+BASE_CACHE_EXPIRES: constant(int128) = 600
+base_cache_updated: public(uint256)
+
+@external
+def f() -> bool:
+    return block.timestamp > self.base_cache_updated + BASE_CACHE_EXPIRES
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.base_cache_updated + convert(BASE_CACHE_EXPIRES, uint256)" in result.source
+
+
 def test_signed_parameter_not_converted_in_uint_arithmetic() -> None:
     source = """# @version 0.3.7
 @internal

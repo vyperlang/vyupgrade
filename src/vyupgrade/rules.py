@@ -795,27 +795,34 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
     for raw_line in source.splitlines(keepends=True):
         line = raw_line.rstrip("\n")
         code_line = line.split("#", 1)[0]
-        if "=" not in code_line or not re.search(r"[-+*/%]", code_line):
+        if not code_line.startswith((" ", "\t")) or not re.search(r"[-+*/%<>]=?|==|!=", code_line):
             offset += len(raw_line)
             continue
         line_no = line_number(source, offset)
         vars_for_line = facts.vars_at_line(line_no)
         lhs_type = _lhs_declared_type(code_line) or _lhs_assigned_type(code_line, vars_for_line)
-        if not _is_unsigned_integer_type(lhs_type):
-            offset += len(raw_line)
-            continue
-        equals_index = code_line.find("=")
-        rhs_start = offset + equals_index + 1
-        rhs = code_line[equals_index + 1 :]
+        rhs_offset = _expression_start_offset(code_line)
+        rhs_start = offset + rhs_offset
+        rhs = code_line[rhs_offset:]
+        loop_vars = facts.loop_vars_at_line(line_no)
         signed_names = sorted(
-            (name for name, type_name in facts.global_vars.items() if _is_signed_integer_type(type_name)),
+            (
+                name
+                for name, type_name in vars_for_line.items()
+                if _is_signed_integer_type(type_name) and (name in facts.global_vars or name in loop_vars)
+            ),
             key=len,
             reverse=True,
         )
         for name in signed_names:
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
-                if _inside_convert_call(source, start):
+                if (
+                    _inside_convert_call(source, start)
+                    or _inside_range_header(source, start)
+                    or _inside_type_subscript(source, start)
+                    or not _signed_name_has_unsigned_context(source, start, lhs_type, vars_for_line)
+                ):
                     continue
                 replacement = f"convert({name}, uint256)"
                 edits.append(TextEdit(start, start + len(name), replacement))
@@ -830,6 +837,77 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 )
         offset += len(raw_line)
     return apply_edits(source, edits), fixes, []
+
+
+def _signed_name_has_unsigned_context(
+    source: str, index: int, lhs_type: str | None, vars_for_line: dict[str, str]
+) -> bool:
+    if _is_unsigned_integer_type(lhs_type):
+        return True
+    if _inside_array_subscript(source, index, vars_for_line):
+        return True
+    return _has_unsigned_context(_local_expression(source, index), vars_for_line)
+
+
+def _has_unsigned_context(line: str, vars_for_line: dict[str, str]) -> bool:
+    if re.search(r"\bconvert\s*\([^,\n]+,\s*uint(?:\d+)?\s*\)", line):
+        return True
+    if re.search(r"\b(?:block\.(?:timestamp|number|difficulty|basefee|prevhash)|chain\.id|msg\.value|max_value\s*\(\s*uint)", line):
+        return True
+    for name, type_name in vars_for_line.items():
+        if _is_unsigned_integer_type(type_name) and re.search(rf"\b(?:self\.)?{re.escape(name)}\b", line):
+            return True
+    return False
+
+
+def _expression_start_offset(line: str) -> int:
+    for pattern in [r"\b(?:if|assert|return)\s+", r"=\s*"]:
+        match = re.search(pattern, line)
+        if match:
+            return match.end()
+    return 0
+
+
+def _local_expression(source: str, index: int) -> str:
+    line_start = source.rfind("\n", 0, index) + 1
+    line_end = source.find("\n", index)
+    if line_end == -1:
+        line_end = len(source)
+    start = max(source.rfind(",", line_start, index), source.rfind("(", line_start, index), line_start - 1) + 1
+    end_candidates = [pos for pos in [source.find(",", index, line_end), source.find(")", index, line_end)] if pos != -1]
+    end = min(end_candidates) if end_candidates else line_end
+    return source[start:end]
+
+
+def _inside_array_subscript(source: str, index: int, vars_for_line: dict[str, str]) -> bool:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("[", line_start, index)
+    if open_index == -1:
+        return False
+    close_index = source.find("]", index)
+    if close_index == -1:
+        return False
+    root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    if root_match is None:
+        return False
+    root = root_match.group(1)
+    return indexed_value_type(infer_expr_type(root, vars_for_line)) is not None
+
+
+def _inside_type_subscript(source: str, index: int) -> bool:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("[", line_start, index)
+    if open_index == -1:
+        return False
+    close_index = source.find("]", index)
+    if close_index == -1:
+        return False
+    return bool(
+        re.search(
+            r"(?:u?int(?:\d+)?|bool|address|bytes\d*|Bytes|String|DynArray|HashMap)\s*$",
+            source[line_start:open_index],
+        )
+    )
 
 
 def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -1172,6 +1250,12 @@ def _is_signed_integer_type(type_name: str | None) -> bool:
 def _inside_convert_call(source: str, index: int) -> bool:
     prefix = source[max(0, index - 24) : index]
     return bool(re.search(r"\bconvert\s*\([^,\n]*$", prefix))
+
+
+def _inside_range_header(source: str, index: int) -> bool:
+    line_start = source.rfind("\n", 0, index) + 1
+    prefix = source[line_start:index]
+    return bool(re.search(r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*(?::[^:]+)?\s+in\s+range\s*\([^)]*$", prefix))
 
 
 def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None) -> bool:
