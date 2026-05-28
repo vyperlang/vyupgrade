@@ -439,3 +439,72 @@ def __init__():
 
     assert "@deploy\ndef __init__" in result.source
     assert any(fix.rule == "VY002" for fix in result.fixes)
+
+
+def test_legacy_0_2_1_syntax_rewrites_are_granular() -> None:
+    source = """# @version 0.2.1
+Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})
+
+contract Token:
+    def transfer(to: address, amount: uint256) -> bool: modifying
+
+balances: map(address, uint256)
+payload: bytes[100]
+name: string[32]
+
+@constant
+@public
+def f(token: Token, amount: uint256(wei), data: bytes[32]) -> uint256:
+    log.Transfer(msg.sender, self, amount)
+    assert_modifiable(token.transfer(msg.sender, amount))
+    raw_call(msg.sender, data, outsize=32)
+    return extract32(data, 0, type=uint256)
+
+@private
+def _g():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "event Transfer:\n    _from: indexed(address)" in result.source
+    assert "interface Token:" in result.source
+    assert "balances: HashMap[address, uint256]" in result.source
+    assert "payload: Bytes[100]" in result.source
+    assert "name: String[32]" in result.source
+    assert "@view\n@external" in result.source
+    assert "amount: uint256," in result.source
+    assert "data: Bytes[32]" in result.source
+    assert "log Transfer(msg.sender, self, amount)" in result.source
+    assert "assert token.transfer(msg.sender, amount)" in result.source
+    assert "max_outsize=32" in result.source
+    assert "output_type=uint256" in result.source
+    assert "@internal\ndef _g" in result.source
+    assert {fix.rule for fix in result.fixes} >= {
+        "VY201",
+        "VY202",
+        "VY203",
+        "VY204",
+        "VY205",
+        "VY206",
+        "VY207",
+        "VY208",
+    }
+
+
+def test_shift_builtin_rewrites_literals_and_flags_dynamic_amounts() -> None:
+    source = """# @version 0.4.1
+@external
+def f(x: uint256, n: int128) -> uint256:
+    a: uint256 = shift(x, 3)
+    b: uint256 = shift(x, -2)
+    return shift(x, n)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "a: uint256 = (x << 3)" in result.source
+    assert "b: uint256 = (x >> 2)" in result.source
+    assert "return shift(x, n)" in result.source
+    assert any(fix.rule == "VY111" for fix in result.fixes)
+    assert any(diag.rule == "VYD012" for diag in result.diagnostics)
