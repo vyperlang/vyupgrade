@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from vyupgrade.cli import main
@@ -25,3 +26,76 @@ def __init__():
     assert data["files"][0]["changed"] is True
     assert any(fix["rule"] == "VY002" for fix in data["files"][0]["fixes"])
 
+
+def test_write_mode_is_idempotent_with_target_compile(tmp_path: Path) -> None:
+    contract = tmp_path / "migration_03.vy"
+    shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)
+
+    report = tmp_path / "report.json"
+    code = main([str(contract), "--write", "--bump-pragma", "--report-json", str(report)])
+
+    assert code in {0, 3}
+    rewritten = contract.read_text()
+    assert "#pragma version 0.4.3" in rewritten
+    assert "staticcall self.token.balanceOf(msg.sender)" in rewritten
+    assert "for i: uint256 in range(3):" in rewritten
+    assert json.loads(report.read_text())["files"][0]["validation"]["target_compile"] == "passed"
+
+    second_report = tmp_path / "second.json"
+    second = main([str(contract), "--check", "--bump-pragma", "--report-json", str(second_report)])
+    assert second in {0, 3}
+    assert json.loads(second_report.read_text())["files"][0]["changed"] is False
+
+
+def test_write_mode_does_not_write_when_target_compile_fails(tmp_path: Path) -> None:
+    contract = tmp_path / "bad.vy"
+    original = """# @version 0.3.10
+@external
+def f(target: address):
+    target.unknown()
+"""
+    contract.write_text(original, encoding="utf-8")
+
+    code = main([str(contract), "--write", "--bump-pragma"])
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original
+
+
+def test_pyproject_config_paths(tmp_path: Path, monkeypatch) -> None:
+    contract = tmp_path / "migration_03.vy"
+    shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)
+    report = tmp_path / "configured-report.json"
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f"""[tool.vyupgrade]
+paths = ["{contract}"]
+report-json = "{report}"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    code = main(["--check", "--bump-pragma"])
+
+    assert code in {1, 3}
+    assert report.exists()
+
+
+def test_select_limits_applied_rules(tmp_path: Path) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(
+        """# @version 0.3.10
+@external
+def __init__():
+    pass
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--check", "--select", "VY001", "--report-json", str(report)])
+
+    assert code in {1, 2, 3}
+    fixes = json.loads(report.read_text())["files"][0]["fixes"]
+    assert {fix["rule"] for fix in fixes} == {"VY001"}

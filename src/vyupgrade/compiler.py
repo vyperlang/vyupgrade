@@ -35,7 +35,6 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
     with tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
-        dir=path.parent,
         prefix=f".{path.stem}.vyupgrade.",
         suffix=".vy",
         delete=False,
@@ -44,7 +43,7 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
         tmp_path = Path(tmp.name)
     try:
         command = _compiler_command(config.target_vyper, config.target_version)
-        return _run_compile(command, tmp_path, config)
+        return _run_compile(command, tmp_path, config, extra_paths=(path.parent,))
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -63,7 +62,7 @@ def _compiler_command(explicit: str | None, version: str | None) -> list[str]:
     if explicit:
         return [explicit]
     normalized = _normalize_version(version) or "0.4.3"
-    return ["uv", "tool", "run", f"vyper=={normalized}"]
+    return ["uv", "run", "--with", f"vyper=={normalized}", "vyper"]
 
 
 def _normalize_version(version: str | None) -> str | None:
@@ -75,9 +74,13 @@ def _normalize_version(version: str | None) -> str | None:
     return None
 
 
-def _run_compile(command: list[str], path: Path, config: Config) -> CompileResult:
+def _run_compile(
+    command: list[str], path: Path, config: Config, extra_paths: tuple[Path, ...] = ()
+) -> CompileResult:
     full = [*command, "-f", ",".join(FORMATS)]
     for search_path in config.compiler_search_paths:
+        full.extend(["-p", str(search_path)])
+    for search_path in extra_paths:
         full.extend(["-p", str(search_path)])
     full.extend(["-p", str(path.parent)])
     if config.enable_decimals:
@@ -99,4 +102,3 @@ def _parse_outputs(stdout: str) -> dict[str, object]:
     for name, raw in zip(FORMATS, chunks, strict=False):
         artifacts[name] = json.loads(raw)
     return artifacts
-
