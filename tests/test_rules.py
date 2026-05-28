@@ -595,3 +595,38 @@ def f(stop: uint256):
 
     assert "range(stop, bound=" not in result.source
     assert any(diag.rule == "VYD014" for diag in result.diagnostics)
+
+
+def test_not_in_comparator_rewrites_when_crossing_0_2_8() -> None:
+    source = """# @version 0.2.7
+@external
+def f(x: uint256, values: uint256[3]) -> bool:
+    return not (x in values)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.8"))
+
+    assert "return x not in values" in result.source
+    assert any(fix.rule == "VY211" for fix in result.fixes)
+
+
+def test_legacy_0_2_1_hard_cases_emit_diagnostics() -> None:
+    source = '''# @version 0.2.1
+xs: Bytes[5] = "hello"
+name: String[5] = b"hello"
+
+@external
+def f(value: int128, data: Bytes[32], start: int128, length: int128, target: address):
+    n: int128 = len(data)
+    slice(data, start, length)
+    target.foo(value=value, gas=start)
+
+@external
+def g(items: RLPList(uint256)):
+    pass
+'''
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+    rules = {diag.rule for diag in result.diagnostics}
+
+    assert {"VYD210", "VYD211", "VYD212", "VYD213", "VYD214", "VYD215"} <= rules
