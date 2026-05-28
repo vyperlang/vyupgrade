@@ -630,3 +630,32 @@ def g(items: RLPList(uint256)):
     rules = {diag.rule for diag in result.diagnostics}
 
     assert {"VYD210", "VYD211", "VYD212", "VYD213", "VYD214", "VYD215"} <= rules
+
+
+def test_nested_bare_import_is_diagnostic_when_crossing_0_4_1() -> None:
+    source = """# @version 0.4.0
+import sibling
+import math
+"""
+
+    result = apply_rules(
+        source,
+        config(paths=(Path("contracts"),), target_version="0.4.1"),
+        Path("contracts/subdir/foo.vy"),
+    )
+
+    assert [diag.rule for diag in result.diagnostics] == ["VYD015"]
+
+
+def test_top_level_bare_import_is_not_absolute_relative_diagnostic() -> None:
+    source = """# @version 0.4.0
+import sibling
+"""
+
+    result = apply_rules(
+        source,
+        config(paths=(Path("contracts"),), target_version="0.4.1"),
+        Path("contracts/foo.vy"),
+    )
+
+    assert not [diag for diag in result.diagnostics if diag.rule == "VYD015"]

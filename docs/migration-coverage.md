@@ -42,8 +42,8 @@ the supported range.
   remains valid.
 - Native hex string literals added: no-op. Existing byte literals remain valid.
 - `mana` call kwarg alias added: no-op. Existing `gas=` spelling remains valid.
-- Absolute relative imports disallowed: no automated rule yet. The syntax
-  history contains no concrete rejected source form to rewrite safely.
+- Absolute relative imports disallowed: `VYD015` flags nested modules with bare
+  sibling-style imports for manual `from . import ...` review.
 
 ### v0.4.0
 

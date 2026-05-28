@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in files:
         original = path.read_text(encoding="utf-8")
         source_version = config.source_version or infer_pragma(original)
-        rewrite = apply_rules(original, config)
+        rewrite = apply_rules(original, config, path)
         changed = original != rewrite.source
         file_report = FileReport(path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics)
 

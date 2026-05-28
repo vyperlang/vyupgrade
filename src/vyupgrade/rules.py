@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
 from .analysis import infer_expr_type, is_integer_type, iterable_element_type, parse_source_facts
 from .models import Config, Diagnostic, Fix
@@ -79,6 +80,7 @@ RULE_CHANGES = {
     "VYD012": RuleChange(VyperVersion(0, 4, 2)),
     "VYD013": RuleChange(VyperVersion(0, 3, 8)),
     "VYD014": RuleChange(VyperVersion(0, 3, 10)),
+    "VYD015": RuleChange(VyperVersion(0, 4, 1)),
     "VYD210": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VYD211": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VYD212": RuleChange(VyperVersion(0, 2, 1), "target"),
@@ -88,7 +90,7 @@ RULE_CHANGES = {
 }
 
 
-def apply_rules(source: str, config: Config) -> RewriteResult:
+def apply_rules(source: str, config: Config, path: Path | None = None) -> RewriteResult:
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     context = MigrationContext.from_specs(config.source_version or infer_pragma(source), config.target_version)
@@ -110,6 +112,7 @@ def apply_rules(source: str, config: Config) -> RewriteResult:
         _abi_builtins,
         _legacy_constants,
         _interface_imports,
+        _absolute_relative_imports(path),
         _enum_to_flag,
         _external_call_keywords,
         _integer_division,
@@ -455,6 +458,27 @@ def _interface_imports(source: str, config: Config, context: MigrationContext) -
             fixes.append(Fix("VY020", line_number(current, edit.start), f"renamed interface type {old} to {new}", old, new))
         current = next_source
     return current, fixes, diagnostics
+
+
+def _absolute_relative_imports(path: Path | None):
+    def rule(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+        if not _enabled("VYD015", config, context) or path is None or not _nested_under_config_path(path, config):
+            return source, [], []
+        diagnostics: list[Diagnostic] = []
+        for match in re.finditer(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*(?:#.*)?$", source, re.MULTILINE):
+            module = match.group(1)
+            if module in {"math"}:
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    "VYD015",
+                    line_number(source, match.start()),
+                    "nested module uses bare import; 0.4.1 disallows implicit relative imports, review as 'from . import ...'",
+                )
+            )
+        return source, [], diagnostics
+
+    return rule
 
 
 def _enum_to_flag(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -948,6 +972,20 @@ def _remove_constructor_decorators(
             offset += 1
             insertions.append(Fix(rule, index + 1, "added @deploy to constructor", "", f"{indent}@deploy"))
     return "".join(out), fixes, insertions
+
+
+def _nested_under_config_path(path: Path, config: Config) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for root in config.paths:
+        try:
+            resolved.relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        return resolved.parent != root.resolve()
+    return path.parent != Path(".")
 
 
 def _replace_identifier_expr(
