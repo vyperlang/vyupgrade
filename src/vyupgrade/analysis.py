@@ -183,6 +183,9 @@ def parse_source_facts(source: str) -> SourceFacts:
         if not stripped or stripped.startswith("#"):
             continue
 
+        if current_struct and indent <= current_struct_indent:
+            current_struct = None
+
         if pending_function_line is not None:
             pending_function_header.append(stripped)
             if _balanced_parens(" ".join(pending_function_header)):
@@ -224,8 +227,6 @@ def parse_source_facts(source: str) -> SourceFacts:
             facts.structs.add(current_struct)
             facts.struct_fields.setdefault(current_struct, {})
             continue
-        if current_struct and indent <= current_struct_indent:
-            current_struct = None
 
         if current_struct:
             decl = _parse_var_decl(stripped)
@@ -280,6 +281,12 @@ def parse_source_facts(source: str) -> SourceFacts:
         if current_function_line is not None and indent <= current_function_indent and stripped:
             facts.function_ends[current_function_line] = line_no - 1
             current_function_line = None
+
+        if current_function_line is not None:
+            loop_var = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^:]+?)\s+in\b", stripped)
+            if loop_var:
+                facts.function_vars[current_function_line][loop_var.group(1)] = loop_var.group(2).strip()
+                continue
 
         decl = _parse_var_decl(stripped)
         if decl is None:
@@ -480,7 +487,10 @@ def _parse_var_decl(line: str) -> tuple[str, str] | None:
     match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^=#]+)", line)
     if not match:
         return None
-    return match.group(1), _strip_default(match.group(2).strip())
+    type_name = _strip_default(match.group(2).strip().rstrip(","))
+    if not _looks_like_type(type_name):
+        return None
+    return match.group(1), type_name
 
 
 def _strip_default(type_part: str) -> str:
@@ -494,3 +504,16 @@ def _unwrap_public_or_constant(type_name: str) -> str | None:
     if TYPE_NAME_RE.fullmatch(type_name):
         return type_name
     return None
+
+
+def _looks_like_type(type_name: str) -> bool:
+    if re.fullmatch(r"(?:public|constant|immutable)\(.+\)", type_name):
+        return True
+    if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:u?int(?:\d+)?|bool|address|bytes\d*|decimal|[A-Z][A-Za-z0-9_]*)(?:\[.*\])?",
+            type_name,
+        )
+    )

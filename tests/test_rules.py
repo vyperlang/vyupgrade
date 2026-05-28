@@ -394,6 +394,111 @@ def f(ilk: bytes32, urn: address) -> uint256:
     assert "return (staticcall Vat(vat).urns(ilk, urn)).ink" in result.source
 
 
+def test_interface_after_struct_keeps_method_mutability() -> None:
+    source = """# @version 0.3.7
+struct StrategyParams:
+    activation: uint256
+
+interface IVault:
+    def strategies(strategy: address) -> StrategyParams: view
+    def deposit(assets: uint256, receiver: address) -> uint256: nonpayable
+
+@external
+def f(vault: address, strategy: address) -> StrategyParams:
+    return IVault(vault).strategies(strategy)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall IVault(vault).strategies(strategy)" in result.source
+
+
+def test_external_call_on_interface_struct_field() -> None:
+    source = """# @version 0.3.7
+interface Stableswap:
+    def price_oracle() -> uint256: view
+
+struct PricePair:
+    pool: Stableswap
+
+price_pairs: PricePair[2]
+
+@external
+def f() -> uint256:
+    price_pair: PricePair = self.price_pairs[0]
+    return price_pair.pool.price_oracle()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall price_pair.pool.price_oracle()" in result.source
+
+
+def test_external_call_on_typed_loop_variable() -> None:
+    source = """# @version 0.3.7
+interface PegKeeper:
+    def debt() -> uint256: view
+
+peg_keepers: PegKeeper[5]
+
+@external
+def f() -> uint256:
+    total: uint256 = 0
+    for pk: PegKeeper in self.peg_keepers:
+        total += pk.debt()
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "total += staticcall pk.debt()" in result.source
+
+
+def test_external_call_on_local_interface_variable_after_returning_call() -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC20
+
+interface Registry:
+    def tokens(index: uint256) -> ERC20: view
+
+registry: Registry
+
+@external
+def f(user: address) -> uint256:
+    token: ERC20 = registry.tokens(0)
+    return token.balanceOf(user)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "token: IERC20 = staticcall registry.tokens(0)" in result.source
+    assert "return staticcall token.balanceOf(user)" in result.source
+
+
+def test_struct_literal_field_does_not_shadow_interface_local() -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC20
+
+struct TokenInfo:
+    token: address
+    token_balance: uint256
+
+@external
+def f(user: address, token_address: address) -> TokenInfo:
+    token: ERC20 = ERC20(token_address)
+    token_balance: uint256 = token.balanceOf(user)
+    return TokenInfo({
+        token: token.address,
+        token_balance: token_balance,
+    })
+"""
+
+    result = apply_rules(source, config())
+
+    assert "token_balance: uint256 = staticcall token.balanceOf(user)" in result.source
+    assert "token=token.address" in result.source
+
+
 def test_integer_expression_division() -> None:
     source = """# @version 0.3.10
 MAX_BPS: constant(uint256) = 10_000

@@ -5,7 +5,14 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .analysis import infer_expr_type, indexed_value_type, is_integer_type, iterable_element_type, parse_source_facts
+from .analysis import (
+    infer_expr_type,
+    indexed_value_type,
+    is_integer_type,
+    iterable_element_type,
+    normalize_type,
+    parse_source_facts,
+)
 from .models import Config, Diagnostic, Fix
 from .source import (
     apply_edits,
@@ -124,14 +131,14 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _interface_imports,
         _absolute_relative_imports(path),
         _enum_to_flag,
+        _range_bound,
+        _typed_range_loops,
         _external_call_keywords,
         _external_call_subscripts,
         _integer_division,
         _mixed_signed_unsigned_arithmetic,
         _redundant_integer_convert,
         _struct_kwargs,
-        _range_bound,
-        _typed_range_loops,
         _create_from_blueprint,
         _nonreentrant,
         _sqrt,
@@ -596,6 +603,18 @@ def _enum_to_flag(source: str, config: Config, context: MigrationContext) -> tup
 def _external_call_keywords(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _any_enabled({"VY040", "VY041", "VYD003"}, config, context):
         return source, [], []
+    current = source
+    all_fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
+    for _ in range(3):
+        current, fixes, diagnostics = _external_call_keywords_once(current, config, context)
+        all_fixes.extend(fixes)
+        if not fixes:
+            break
+    return current, all_fixes, diagnostics
+
+
+def _external_call_keywords_once(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -603,7 +622,7 @@ def _external_call_keywords(source: str, config: Config, context: MigrationConte
     mask = code_mask(source)
     call_matches: list[tuple[int, int, str, str, str | None]] = []
     variable_call_re = re.compile(
-        r"(?<![\w.])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+        r"(?<![\w.])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
     )
     call_matches.extend(_interface_cast_call_matches(source, facts.interfaces))
     call_matches.extend(
@@ -621,10 +640,10 @@ def _external_call_keywords(source: str, config: Config, context: MigrationConte
             continue
         vars_for_line = facts.vars_at_line(line_number(source, start))
         if target.startswith("self."):
-            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(target, vars_for_line)
+            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(target, vars_for_line, facts)
         else:
-            target_type = cast_type or infer_expr_type(target, vars_for_line)
-        mutability = facts.interfaces.get(target_type or "", {}).get(method)
+            target_type = cast_type or infer_expr_type(target, vars_for_line, facts)
+        mutability = facts.interfaces.get(normalize_type(target_type or ""), {}).get(method)
         if mutability is None:
             if _enabled("VYD003", config, context):
                 diagnostics.append(Diagnostic("VYD003", line_number(source, start), f"cannot infer mutability for external call {target}.{method}"))
