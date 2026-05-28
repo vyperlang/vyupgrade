@@ -58,6 +58,7 @@ RULE_CHANGES = {
     "VY010": RuleChange(VyperVersion(0, 4, 0)),
     "VY011": RuleChange(VyperVersion(0, 4, 0)),
     "VY012": RuleChange(VyperVersion(0, 4, 0)),
+    "VY013": RuleChange(VyperVersion(0, 4, 0)),
     "VY020": RuleChange(VyperVersion(0, 4, 0)),
     "VY030": RuleChange(VyperVersion(0, 4, 0)),
     "VY040": RuleChange(VyperVersion(0, 4, 0)),
@@ -131,6 +132,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _constructor_deploy,
         _abi_builtins,
         _legacy_constants,
+        _immutable_accessor_collisions,
         _interface_imports,
         _absolute_relative_imports(path),
         _enum_to_flag,
@@ -497,6 +499,115 @@ def _legacy_constants(source: str, config: Config, context: MigrationContext) ->
         for edit in edits:
             fixes.append(Fix("VY012", line_number(current, edit.start), f"replaced legacy constant {before}", before, after))
     return current, fixes, []
+
+
+def _immutable_accessor_collisions(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY013", config, context):
+        return source, [], []
+    immutable_names = {
+        match.group(1)
+        for match in re.finditer(
+            r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*immutable\s*\(",
+            source,
+            re.MULTILINE,
+        )
+    }
+    if not immutable_names:
+        return source, [], []
+    function_names = {
+        match.group(1)
+        for match in re.finditer(
+            r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            source,
+            re.MULTILINE,
+        )
+    }
+    collisions = sorted(immutable_names & function_names)
+    if not collisions:
+        return source, [], []
+
+    mask = code_mask(source)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    taken = immutable_names | function_names
+    for name in collisions:
+        replacement = _private_backing_name(name, taken)
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        name_edits: list[TextEdit] = []
+        for match in pattern.finditer(source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            if _is_function_definition_name(source, match.start()):
+                continue
+            if _is_attribute_name(source, match.start()):
+                continue
+            if _is_type_declaration_name(source, match.start(), match.end()) and not _is_immutable_declaration_name(source, match.start()):
+                continue
+            if _is_keyword_argument_name(source, match.start(), match.end()):
+                continue
+            name_edits.append(TextEdit(match.start(), match.end(), replacement))
+        edits.extend(name_edits)
+        fixes.extend(
+            Fix(
+                "VY013",
+                line_number(source, edit.start),
+                "renamed immutable backing variable that collides with accessor",
+                name,
+                replacement,
+            )
+            for edit in name_edits
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _private_backing_name(name: str, taken: set[str]) -> str:
+    candidate = f"_{name}"
+    while candidate in taken:
+        candidate = f"_{candidate}"
+    taken.add(candidate)
+    return candidate
+
+
+def _is_function_definition_name(source: str, start: int) -> bool:
+    line_start = source.rfind("\n", 0, start) + 1
+    return bool(re.fullmatch(r"[ \t]*def\s+", source[line_start:start]))
+
+
+def _is_attribute_name(source: str, start: int) -> bool:
+    i = start - 1
+    while i >= 0 and source[i].isspace() and source[i] != "\n":
+        i -= 1
+    return i >= 0 and source[i] == "."
+
+
+def _is_keyword_argument_name(source: str, start: int, end: int) -> bool:
+    i = end
+    while i < len(source) and source[i].isspace() and source[i] != "\n":
+        i += 1
+    if i >= len(source) or source[i] != "=":
+        return False
+    j = start - 1
+    while j >= 0 and source[j].isspace():
+        j -= 1
+    return j >= 0 and source[j] in "(,{"
+
+
+def _is_type_declaration_name(source: str, start: int, end: int) -> bool:
+    line_start = source.rfind("\n", 0, start) + 1
+    prefix = source[line_start:start]
+    if prefix.strip():
+        return False
+    i = end
+    while i < len(source) and source[i].isspace() and source[i] != "\n":
+        i += 1
+    return i < len(source) and source[i] == ":"
+
+
+def _is_immutable_declaration_name(source: str, start: int) -> bool:
+    line_end = source.find("\n", start)
+    if line_end == -1:
+        line_end = len(source)
+    return bool(re.search(r":\s*immutable\s*\(", source[start:line_end]))
 
 
 def _redundant_integer_convert(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:

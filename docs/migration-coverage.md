@@ -71,6 +71,8 @@ the supported range.
   with `--aggressive`.
 - Builtin constants removed: `VY012` rewrites `MAX_UINT256`, integer min/max
   constants, `ZERO_ADDRESS`, and `EMPTY_BYTES32`.
+- Immutable variables now collide with explicit same-name accessors: `VY013`
+  renames the immutable backing variable and preserves the external getter name.
 - Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
   ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and

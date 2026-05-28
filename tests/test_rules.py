@@ -550,6 +550,53 @@ def f(total_fees: uint256, protocol_fee_bps: uint16) -> uint256:
     assert "convert(protocol_fee_bps, uint256) // MAX_BPS" in result.source
 
 
+def test_immutable_accessor_collision_renames_backing_variable() -> None:
+    source = """# @version 0.3.10
+x: immutable(uint256)
+
+@external
+def __init__(initial_x: uint256):
+    x = initial_x
+
+@view
+@external
+def x() -> uint256:
+    return x
+"""
+
+    result = apply_rules(source, config())
+
+    assert "_x: immutable(uint256)" in result.source
+    assert "def x() -> uint256:" in result.source
+    assert "_x = initial_x" in result.source
+    assert "return _x" in result.source
+    assert any(fix.rule == "VY013" for fix in result.fixes)
+
+
+def test_immutable_accessor_collision_preserves_keyword_and_attribute_names() -> None:
+    source = """# @version 0.3.10
+x: immutable(uint256)
+
+event Changed:
+    x: uint256
+
+@external
+def __init__(initial_x: uint256):
+    x = initial_x
+
+@external
+def x() -> uint256:
+    log Changed(x=x)
+    return self.x()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "log Changed(x=_x)" in result.source
+    assert "x: uint256" in result.source
+    assert "return self.x()" in result.source
+
+
 def test_compound_assignment_integer_division() -> None:
     source = """# @version 0.3.7
 MAX_BPS: constant(uint256) = 10_000
