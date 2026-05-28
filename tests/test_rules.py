@@ -71,6 +71,114 @@ def f(strategy: Strategy, amount: uint256, price: uint256):
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
 
 
+def test_modern_erc_interface_imports() -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC4626, ERC721
+
+asset: public(ERC4626)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC4626, IERC721" in result.source
+    assert "asset: public(IERC4626)" in result.source
+
+
+def test_erc4626_builtin_calls() -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC4626
+
+@external
+def f(vault: address) -> uint256:
+    return ERC4626(vault).convertToAssets(10**18)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall IERC4626(vault).convertToAssets(10**18)" in result.source
+
+
+def test_nested_struct_literals_rewrite_without_overlapping_edits() -> None:
+    source = """# @version 0.3.10
+struct TokenPermissions:
+    token: address
+    amount: uint256
+
+struct PermitTransferFrom:
+    permitted: TokenPermissions
+    nonce: uint256
+
+@external
+def f(token: address, amount: uint256):
+    permit: PermitTransferFrom = PermitTransferFrom({
+        permitted: TokenPermissions({token: token, amount: amount}),
+        nonce: 1,
+    })
+"""
+
+    result = apply_rules(source, config())
+
+    assert "TokenPermissions(token=token, amount=amount)" in result.source
+    assert "PermitTransferFrom(permitted=TokenPermissions" in result.source
+
+
+def test_nested_shift_rewrites_without_overlapping_edits() -> None:
+    source = """# @version 0.3.0
+@external
+def f(indexes: uint256) -> uint256:
+    return shift(shift(indexes, -128), 128)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "shift(" not in result.source
+    assert "return ((indexes >> 128) << 128)" in result.source
+
+
+def test_event_logs_rewrite_to_keyword_arguments() -> None:
+    source = """# @version 0.3.0
+event Transfer:
+    sender: indexed(address)
+    receiver: indexed(address)
+    value: uint256
+
+@external
+def f(receiver: address, value: uint256):
+    log Transfer(msg.sender, receiver, value)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "log Transfer(sender=msg.sender, receiver=receiver, value=value)" in result.source
+
+
+def test_event_logs_rewrite_multiline_arguments_with_comments() -> None:
+    source = """# @version 0.3.10
+event StrategyReported:
+    strategy: indexed(address)
+    gain: uint256
+    loss: uint256
+    protocol_fees: uint256
+    total_fees: uint256
+
+@external
+def f(strategy: address, gain: uint256, loss: uint256, total_fees: uint256):
+    log StrategyReported(
+        strategy,
+        gain,
+        loss,
+        total_fees / 100,  # Protocol Fees
+        total_fees
+    )
+"""
+
+    result = apply_rules(source, config())
+
+    assert "protocol_fees=total_fees // 100" in result.source
+    assert "total_fees=#" not in result.source
+    assert "total_fees=total_fees" in result.source
+
+
 def test_array_loop_type_inference() -> None:
     source = """# @version 0.3.10
 @external
@@ -82,6 +190,21 @@ def f(items: DynArray[address, 10]):
     result = apply_rules(source, config())
 
     assert "for item: address in items:" in result.source
+
+
+def test_range_loop_uses_known_bound_integer_type() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 2
+
+@external
+def f():
+    for i in range(N_COINS):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: int128 in range(N_COINS):" in result.source
 
 
 def test_casted_interface_calls_and_assigned_integer_division() -> None:
@@ -105,6 +228,172 @@ def f(token: address, amount: uint256):
     assert "extcall Token(token).transfer(msg.sender, amount)" in result.source
 
 
+def test_lowercase_c_prefix_interface_calls() -> None:
+    source = """# @version 0.2.4
+interface cERC20:
+    def balanceOf(owner: address) -> uint256: view
+
+@external
+def f(token: address) -> uint256:
+    return cERC20(token).balanceOf(self)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall cERC20(token).balanceOf(self)" in result.source
+
+
+def test_nested_interface_cast_calls() -> None:
+    source = """# @version 0.3.7
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+    def allowance(owner: address, spender: address) -> uint256: view
+
+@external
+def f(token: address, owner: address) -> uint256:
+    return min(Token(token).balanceOf(owner), Token(token).allowance(owner, self))
+"""
+
+    result = apply_rules(source, config())
+
+    assert "min(staticcall Token(token).balanceOf(owner), staticcall Token(token).allowance(owner, self))" in result.source
+
+
+def test_immutable_interface_storage_var_calls() -> None:
+    source = """# @version 0.3.10
+interface Pool:
+    def set_management(account: address): nonpayable
+
+pool: immutable(Pool)
+
+@external
+def __init__(_pool: address):
+    pool = Pool(_pool)
+
+@external
+def f(account: address):
+    pool.set_management(account)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "extcall pool.set_management(account)" in result.source
+
+
+def test_legacy_interface_header_calls() -> None:
+    source = """# @version ^0.3.3
+interface Vault():
+    def transferFrom(_from: address, _to: address, _value: uint256) -> bool: nonpayable
+
+VAULT: immutable(Vault)
+
+@external
+def __init__(vault: address):
+    VAULT = Vault(vault)
+
+@external
+def f(amount: uint256):
+    VAULT.transferFrom(msg.sender, self, amount)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "extcall VAULT.transferFrom(msg.sender, self, amount)" in result.source
+
+
+def test_multiline_interface_def_calls() -> None:
+    source = """# @version 0.3.7
+interface Vault:
+    def initialize(
+        asset: address,
+        name: String[64]
+    ): nonpayable
+
+@external
+def f(vault: address, asset: address, name: String[64]):
+    Vault(vault).initialize(asset, name)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "extcall Vault(vault).initialize(asset, name)" in result.source
+
+
+def test_nested_cast_expression_call() -> None:
+    source = """# @version 0.3.7
+interface Vault:
+    def asset() -> address: view
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+
+vault: address
+
+@external
+def f() -> uint256:
+    return Token(staticcall Vault(self.vault).asset()).balanceOf(self)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall Token(staticcall Vault(self.vault).asset()).balanceOf(self)" in result.source
+
+
+def test_external_call_subscript_parentheses() -> None:
+    source = """# @version 0.3.10
+interface Auction:
+    def auctions(account: address) -> (uint256, uint256): view
+
+auction: Auction
+
+@external
+def f(account: address) -> bool:
+    return auction.auctions(account)[1] == 0
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return (staticcall auction.auctions(account))[1] == 0" in result.source
+
+
+def test_external_call_cast_subscript_parentheses() -> None:
+    source = """# @version 0.3.1
+interface Registry:
+    def get_fees(pool: address) -> uint256[2]: view
+
+registry: address
+
+@external
+def f(pool: address) -> uint256:
+    return Registry(registry).get_fees(pool)[0]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return (staticcall Registry(registry).get_fees(pool))[0]" in result.source
+
+
+def test_external_call_result_attribute_parentheses() -> None:
+    source = """# @version 0.2.16
+interface Vat:
+    def urns(ilk: bytes32, urn: address) -> Vault: view
+
+struct Vault:
+    ink: uint256
+    art: uint256
+
+vat: address
+
+@external
+def f(ilk: bytes32, urn: address) -> uint256:
+    return Vat(vat).urns(ilk, urn).ink
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return (staticcall Vat(vat).urns(ilk, urn)).ink" in result.source
+
+
 def test_integer_expression_division() -> None:
     source = """# @version 0.3.10
 MAX_BPS: constant(uint256) = 10_000
@@ -117,6 +406,185 @@ def f(total_fees: uint256, protocol_fee_bps: uint16) -> uint256:
     result = apply_rules(source, config())
 
     assert "convert(protocol_fee_bps, uint256) // MAX_BPS" in result.source
+
+
+def test_compound_assignment_integer_division() -> None:
+    source = """# @version 0.3.7
+MAX_BPS: constant(uint256) = 10_000
+
+struct Fee:
+    performance_fee: uint16
+
+@external
+def f(gain: uint256, fee: Fee) -> uint256:
+    total_fees: uint256 = 0
+    total_fees += (gain * fee.performance_fee) / MAX_BPS
+    return total_fees
+"""
+
+    result = apply_rules(source, config())
+
+    assert "total_fees += (gain * fee.performance_fee) // MAX_BPS" in result.source
+
+
+def test_indexed_storage_compound_assignment_integer_division() -> None:
+    source = """# @version 0.3.7
+tokens_per_week: public(HashMap[uint256, uint256])
+
+@external
+def f(this_week: uint256, to_distribute: uint256, t: uint256, since_last: uint256):
+    self.tokens_per_week[this_week] += to_distribute * (block.timestamp - t) / since_last
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.tokens_per_week[this_week] += to_distribute * (block.timestamp - t) // since_last" in result.source
+
+
+def test_multiline_function_scope_integer_division_assignment() -> None:
+    source = """# @version 0.3.7
+rates: public(uint256[3])
+
+@external
+def exchange(
+    i: uint256,
+    j: uint256,
+    amount: uint256,
+) -> uint256:
+    rates: uint256[3] = self.rates
+    dy: uint256 = amount
+    dy = dy * 10**18 / rates[j]
+    return dy
+"""
+
+    result = apply_rules(source, config())
+
+    assert "dy = dy * 10**18 // rates[j]" in result.source
+
+
+def test_struct_attribute_integer_division() -> None:
+    source = """# @version 0.3.7
+struct Loan:
+    initial_debt: uint256
+    rate_mul: uint256
+
+@external
+def f(loan: Loan, rate_mul: uint256) -> (uint256, uint256):
+    return (loan.initial_debt * rate_mul / loan.rate_mul, rate_mul)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return (loan.initial_debt * rate_mul // loan.rate_mul, rate_mul)" in result.source
+
+
+def test_external_call_integer_division_operand() -> None:
+    source = """# @version 0.3.7
+interface Pool:
+    def virtual_balance(asset: uint256) -> uint256: view
+    def rate(asset: uint256) -> uint256: view
+
+@external
+def f(pool: Pool, asset: uint256, rate: uint256) -> uint256:
+    return pool.virtual_balance(asset) * rate / pool.rate(asset)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall pool.virtual_balance(asset) * rate // staticcall pool.rate(asset)" in result.source
+
+
+def test_multiline_return_internal_call_integer_division() -> None:
+    source = """# @version 0.2.12
+totalSupply: public(uint256)
+
+@internal
+def _totalAssets() -> uint256:
+    return 1
+
+@external
+def f(amount: uint256) -> uint256:
+    return (
+        amount
+        * self.totalSupply
+        / self._totalAssets()
+    )
+"""
+
+    result = apply_rules(source, config())
+
+    assert "* self.totalSupply\n        // self._totalAssets()" in result.source
+
+
+def test_multiline_parenthesized_assignment_integer_division() -> None:
+    source = """# @version 0.3.1
+struct StrategyParams:
+    performanceFee: uint256
+
+strategies: HashMap[address, StrategyParams]
+
+@internal
+def f(strategy: address, gain: uint256) -> uint256:
+    strategist_fee: uint256 = 0
+    strategist_fee = (
+        gain * self.strategies[strategy].performanceFee
+    ) / 10_000
+    return strategist_fee
+"""
+
+    result = apply_rules(source, config())
+
+    assert ") // 10_000" in result.source
+
+
+def test_return_integer_division_uses_function_return_type() -> None:
+    source = """# @version 0.3.7
+votes_used: HashMap[address, uint256]
+voted: uint256
+
+@external
+def claimable(user: address, amount: uint256) -> uint256:
+    return amount * self.votes_used[user] / self.voted
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return amount * self.votes_used[user] // self.voted" in result.source
+
+
+def test_signed_constant_converted_in_uint_arithmetic() -> None:
+    source = """# @version 0.2.8
+N_COINS: constant(int128) = 3
+
+@external
+def f(fee: uint256) -> uint256:
+    adjusted: uint256 = fee * N_COINS / (4 * (N_COINS - 1))
+    for i in range(N_COINS):
+        pass
+    return adjusted
+"""
+
+    result = apply_rules(source, config())
+
+    assert "fee * convert(N_COINS, uint256) // (4 * (convert(N_COINS, uint256) - 1))" in result.source
+    assert "for i: int128 in range(N_COINS):" in result.source
+
+
+def test_signed_parameter_not_converted_in_uint_arithmetic() -> None:
+    source = """# @version 0.3.7
+@internal
+def g(i: int128) -> int128:
+    return i
+
+@external
+def f(i: int128, x: uint256) -> uint256:
+    y: uint256 = x + i
+    return y
+"""
+
+    result = apply_rules(source, config())
+
+    assert "x + i" in result.source
 
 
 def test_legacy_numeric_constants() -> None:
@@ -426,6 +894,18 @@ def f():
 
     assert "# @version 0.3.8" in before.source
     assert "#pragma version 0.3.8" in after.source
+
+
+def test_bump_pragma_updates_existing_pragma_version() -> None:
+    source = """# pragma version 0.3.10
+@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3", bump_pragma=True))
+
+    assert "#pragma version 0.4.3" in result.source
 
 
 def test_0_4_rules_apply_from_0_2_1_source() -> None:

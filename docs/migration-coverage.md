@@ -38,8 +38,8 @@ the supported range.
   decorators remain valid.
 - `module.__at__()` casts added: no-op. Existing interface cast syntax is not
   mechanically equivalent in the general case.
-- Event instantiation keyword arguments added: no-op. Positional event logging
-  remains valid.
+- Event instantiation keyword arguments added: `VY112` rewrites positional
+  event logs to keyword arguments when the event declaration is locally known.
 - Native hex string literals added: no-op. Existing byte literals remain valid.
 - `mana` call kwarg alias added: no-op. Existing `gas=` spelling remains valid.
 - Absolute relative imports disallowed: `VYD015` flags nested modules with bare
@@ -55,10 +55,14 @@ the supported range.
 - `_abi_encode` and `_abi_decode` renamed: `VY010` and `VY011`.
 - `@internal` became optional: no-op. Existing `@internal` source remains valid.
 - External calls require keywords: `VY040` adds `extcall`; `VY041` adds
-  `staticcall`. `VYD003` flags calls whose mutability cannot be inferred.
+  `staticcall`. `VY042` parenthesizes keyworded calls before subscripting.
+  `VYD003` flags calls whose mutability cannot be inferred.
 - Integer division uses `//`: `VY050` rewrites proven integer division.
   `VYD004` flags ambiguous `/` expressions.
 - Redundant integer `convert(..., uint256)` after division: `VY051`.
+- Signed constants in unsigned arithmetic: `VY052` converts known signed global
+  constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
+  arithmetic expressions.
 - Struct literals require keyword arguments: `VY060`.
 - Loop variables require type annotations: `VY070`.
 - `enum` replaced by `flag`: `VY030` diagnoses by default and rewrites only

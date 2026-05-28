@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .analysis import infer_expr_type, is_integer_type, iterable_element_type, parse_source_facts
+from .analysis import infer_expr_type, indexed_value_type, is_integer_type, iterable_element_type, parse_source_facts
 from .models import Config, Diagnostic, Fix
 from .source import (
     apply_edits,
@@ -20,7 +20,14 @@ from .source import (
 from .versions import MigrationContext, VyperVersion, infer_pragma
 
 
-IMPORT_RENAMES = {"ERC20": "IERC20", "ERC20Detailed": "IERC20Detailed"}
+IMPORT_RENAMES = {
+    "ERC20": "IERC20",
+    "ERC20Detailed": "IERC20Detailed",
+    "ERC165": "IERC165",
+    "ERC4626": "IERC4626",
+    "ERC721": "IERC721",
+    "ERC1155": "IERC1155",
+}
 
 
 @dataclass
@@ -46,8 +53,10 @@ RULE_CHANGES = {
     "VY030": RuleChange(VyperVersion(0, 4, 0)),
     "VY040": RuleChange(VyperVersion(0, 4, 0)),
     "VY041": RuleChange(VyperVersion(0, 4, 0)),
+    "VY042": RuleChange(VyperVersion(0, 4, 0)),
     "VY050": RuleChange(VyperVersion(0, 4, 0)),
     "VY051": RuleChange(VyperVersion(0, 4, 0)),
+    "VY052": RuleChange(VyperVersion(0, 4, 0)),
     "VY060": RuleChange(VyperVersion(0, 4, 0)),
     "VY070": RuleChange(VyperVersion(0, 4, 0)),
     "VY071": RuleChange(VyperVersion(0, 4, 0)),
@@ -56,6 +65,7 @@ RULE_CHANGES = {
     "VY100": RuleChange(VyperVersion(0, 4, 2)),
     "VY110": RuleChange(VyperVersion(0, 4, 2)),
     "VY111": RuleChange(VyperVersion(0, 4, 2)),
+    "VY112": RuleChange(VyperVersion(0, 4, 1)),
     "VY201": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VY202": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VY203": RuleChange(VyperVersion(0, 2, 1), "target"),
@@ -100,6 +110,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _legacy_decorators,
         _legacy_type_units,
         _legacy_events,
+        _event_kwargs,
         _legacy_maps_and_interfaces,
         _legacy_dynamic_types,
         _legacy_diagnostics,
@@ -114,7 +125,9 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _absolute_relative_imports(path),
         _enum_to_flag,
         _external_call_keywords,
+        _external_call_subscripts,
         _integer_division,
+        _mixed_signed_unsigned_arithmetic,
         _redundant_integer_convert,
         _struct_kwargs,
         _range_bound,
@@ -153,11 +166,23 @@ def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> 
     return any(_enabled(rule, config, context) for rule in rules)
 
 
+def _innermost_non_overlapping(
+    edits: list[TextEdit], fixes: list[Fix]
+) -> tuple[list[TextEdit], list[Fix]]:
+    selected: list[tuple[TextEdit, Fix]] = []
+    for edit, fix in sorted(zip(edits, fixes, strict=True), key=lambda item: (item[0].end - item[0].start, item[0].start)):
+        if any(edit.start < kept.end and kept.start < edit.end for kept, _fix in selected):
+            continue
+        selected.append((edit, fix))
+    selected.sort(key=lambda item: item[0].start)
+    return [edit for edit, _fix in selected], [fix for _edit, fix in selected]
+
+
 def _pragma(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY001", config, context):
         return source, [], []
     fixes: list[Fix] = []
-    pattern = re.compile(r"^(\s*)#\s*@version\s+(.+?)\s*$", re.MULTILINE)
+    pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
 
     def repl(match: re.Match[str]) -> str:
         before = match.group(0)
@@ -224,6 +249,71 @@ def _legacy_events(source: str, config: Config, context: MigrationContext) -> tu
             fixes.append(Fix("VY204", line_number(current, match.start()), "changed legacy log call to statement", match.group(0), replacement))
         current = apply_edits(current, edits)
     return current, fixes, []
+
+
+def _event_kwargs(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY112", config, context):
+        return source, [], []
+    event_fields = _collect_event_fields(source)
+    if not event_fields:
+        return source, [], []
+
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\blog\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        event_name = match.group(1)
+        fields = event_fields.get(event_name)
+        if fields is None:
+            continue
+        open_index = source.find("(", match.start(), match.end())
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        raw_args = source[open_index + 1 : close]
+        args = split_top_level_args(_strip_arg_comments(raw_args))
+        if args is None or len(args) != len(fields) or any("=" in arg for arg in args):
+            continue
+        kwargs = [f"{field}={arg}" for field, arg in zip(fields, args, strict=True)]
+        if "\n" in raw_args:
+            indent = source[source.rfind("\n", 0, match.start()) + 1 : match.start()]
+            child_indent = indent + "    "
+            joined = ",\n".join(f"{child_indent}{kwarg}" for kwarg in kwargs)
+            replacement = f"log {event_name}(\n{joined}\n{indent})"
+        else:
+            replacement = f"log {event_name}({', '.join(kwargs)})"
+        edits.append(TextEdit(match.start(), close + 1, replacement))
+        fixes.append(
+            Fix(
+                "VY112",
+                line_number(source, match.start()),
+                "changed positional event log to keyword arguments",
+                source[match.start() : close + 1],
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _strip_arg_comments(raw_args: str) -> str:
+    lines: list[str] = []
+    for line in raw_args.splitlines():
+        mask = code_mask(line)
+        comment_start = next(
+            (
+                index
+                for index, char in enumerate(line)
+                if char == "#" and (index == 0 or mask[index - 1])
+            ),
+            None,
+        )
+        if comment_start is not None:
+            line = line[:comment_start]
+        if line.strip():
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -511,22 +601,25 @@ def _external_call_keywords(source: str, config: Config, context: MigrationConte
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
-    call_re = re.compile(
-        r"(?<![\w.])((?P<cast>[A-Z][A-Za-z0-9_]*)\([^)\n]*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+    call_matches: list[tuple[int, int, str, str, str | None]] = []
+    variable_call_re = re.compile(
+        r"(?<![\w.])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+    call_matches.extend(_interface_cast_call_matches(source, facts.interfaces))
+    call_matches.extend(
+        (match.start(), match.end(), match.group("target"), match.group("method"), None)
+        for match in variable_call_re.finditer(source)
     )
 
-    for match in call_re.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()):
+    for start, end, target, method, cast_type in sorted(call_matches):
+        if not span_is_code(mask, start, end):
             continue
-        prefix = source[max(0, match.start() - 16) : match.start()]
+        prefix = source[max(0, start - 16) : start]
         if re.search(r"\b(?:extcall|staticcall)\s+$", prefix):
             continue
-        target = match.group(1)
-        cast_type = match.group("cast")
-        method = match.group("method")
         if target == "self" or method in {"append", "pop"}:
             continue
-        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        vars_for_line = facts.vars_at_line(line_number(source, start))
         if target.startswith("self."):
             target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(target, vars_for_line)
         else:
@@ -534,16 +627,85 @@ def _external_call_keywords(source: str, config: Config, context: MigrationConte
         mutability = facts.interfaces.get(target_type or "", {}).get(method)
         if mutability is None:
             if _enabled("VYD003", config, context):
-                diagnostics.append(Diagnostic("VYD003", line_number(source, match.start()), f"cannot infer mutability for external call {target}.{method}"))
+                diagnostics.append(Diagnostic("VYD003", line_number(source, start), f"cannot infer mutability for external call {target}.{method}"))
             continue
         keyword = "staticcall" if mutability in {"view", "pure"} else "extcall"
         rule = "VY041" if keyword == "staticcall" else "VY040"
         if not _enabled(rule, config, context):
             continue
-        edits.append(TextEdit(match.start(), match.start(), keyword + " "))
-        fixes.append(Fix(rule, line_number(source, match.start()), f"added {keyword} to {mutability} external call", source[match.start() : match.end()].rstrip(), keyword + " " + source[match.start() : match.end()].rstrip()))
+        edits.append(TextEdit(start, start, keyword + " "))
+        fixes.append(Fix(rule, line_number(source, start), f"added {keyword} to {mutability} external call", source[start:end].rstrip(), keyword + " " + source[start:end].rstrip()))
 
-    return apply_edits(source, edits), fixes, diagnostics
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes, diagnostics
+
+
+def _interface_cast_call_matches(
+    source: str, interfaces: dict[str, dict[str, str]]
+) -> list[tuple[int, int, str, str, str]]:
+    matches: list[tuple[int, int, str, str, str]] = []
+    mask = code_mask(source)
+    for interface_name in sorted(interfaces, key=len, reverse=True):
+        for match in re.finditer(rf"(?<![\w.]){re.escape(interface_name)}\s*\(", source):
+            open_index = source.find("(", match.start())
+            close = find_matching(source, open_index)
+            if close is None or not span_is_code(mask, match.start(), min(close + 1, len(source))):
+                continue
+            tail = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
+            if tail is None:
+                continue
+            end = close + 1 + tail.end()
+            matches.append((match.start(), end, source[match.start() : close + 1], tail.group(1), interface_name))
+    return matches
+
+
+def _external_call_subscripts(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY042", config, context):
+        return source, [], []
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\b(?:staticcall|extcall)\s+", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        expression_end = _external_call_expression_end(source, match.end())
+        if expression_end is None:
+            continue
+        if expression_end >= len(source) or source[expression_end] not in "[.":
+            continue
+        before = source[match.start() : expression_end]
+        after = f"({before})"
+        edits.append(TextEdit(match.start(), expression_end, after))
+        fixes.append(
+            Fix(
+                "VY042",
+                line_number(source, match.start()),
+                "parenthesized external call before subscript",
+                before,
+                after,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _external_call_expression_end(source: str, start: int) -> int | None:
+    cast_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*\(", source[start:])
+    if cast_match is not None:
+        cast_open = start + cast_match.end() - 1
+        cast_close = find_matching(source, cast_open)
+        if cast_close is not None:
+            method_match = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[cast_close + 1 :])
+            if method_match is not None:
+                method_open = cast_close + 1 + method_match.end() - 1
+                method_close = find_matching(source, method_open)
+                if method_close is not None:
+                    return method_close + 1
+
+    open_index = source.find("(", start)
+    if open_index == -1:
+        return None
+    close = find_matching(source, open_index)
+    return None if close is None else close + 1
 
 
 def _integer_division(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -567,25 +729,29 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
         left = _read_left_operand(source, match.start())
         right = _read_right_operand(source, match.end())
         vars_for_line = facts.vars_at_line(line_number(source, match.start()))
-        left_type = infer_expr_type(left, vars_for_line)
-        right_type = infer_expr_type(right, vars_for_line)
+        left_type = infer_expr_type(left, vars_for_line, facts)
+        right_type = infer_expr_type(right, vars_for_line, facts)
         lhs_type = _lhs_declared_type(line)
         assigned_type = _lhs_assigned_type(line, vars_for_line)
+        return_type = facts.return_type_at_line(line_number(source, match.start()))
         slash_col = match.start() - line_start
         if (
             (is_integer_type(left_type) and is_integer_type(right_type))
+            or (_integerish_expression(left, vars_for_line, facts) and is_integer_type(right_type))
+            or (is_integer_type(left_type) and _integerish_expression(right, vars_for_line, facts))
             or is_integer_type(lhs_type)
             or is_integer_type(assigned_type)
+            or (line.lstrip().startswith("return ") and is_integer_type(return_type))
             or (
-                _integerish_expression(line[:slash_col], vars_for_line)
-                and _integerish_expression(line[slash_col + 1 :], vars_for_line)
+                _integerish_expression(line[:slash_col], vars_for_line, facts)
+                and _integerish_expression(line[slash_col + 1 :], vars_for_line, facts)
             )
             or (
-                _integerish_expression(line[slash_col + 1 :], vars_for_line)
+                _integerish_expression(line[slash_col + 1 :], vars_for_line, facts)
                 and _multiline_integer_division_context(source, line_start)
             )
             or (
-                _integerish_expression(line[slash_col + 1 :], vars_for_line)
+                _integerish_expression(line[slash_col + 1 :], vars_for_line, facts)
                 and line.lstrip().startswith("assert ")
                 and "decimal" not in line
             )
@@ -600,41 +766,103 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
     return apply_edits(source, edits), fixes, diagnostics
 
 
-def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY060", config, context):
+def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY052", config, context):
         return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for struct_name in sorted(facts.structs):
-        for match in re.finditer(rf"\b{re.escape(struct_name)}\s*\(\s*\{{", source):
-            if not span_is_code(mask, match.start(), match.end()):
-                continue
-            paren = source.find("(", match.start())
-            close = find_matching(source, paren)
-            if close is None:
-                continue
-            inner = source[paren + 1 : close].strip()
-            if not (inner.startswith("{") and inner.endswith("}")):
-                continue
-            fields = split_top_level_args(inner[1:-1])
-            if fields is None:
-                continue
-            pairs: list[str] = []
-            ok = True
-            for field in fields:
-                if ":" not in field:
-                    ok = False
-                    break
-                name, value = field.split(":", 1)
-                pairs.append(f"{name.strip()}={value.strip()}")
-            if not ok:
-                continue
-            replacement = f"{struct_name}({', '.join(pairs)})"
-            edits.append(TextEdit(match.start(), close + 1, replacement))
-            fixes.append(Fix("VY060", line_number(source, match.start()), "changed struct literal to keyword arguments", source[match.start() : close + 1], replacement))
+    offset = 0
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line.rstrip("\n")
+        code_line = line.split("#", 1)[0]
+        if "=" not in code_line or not re.search(r"[-+*/%]", code_line):
+            offset += len(raw_line)
+            continue
+        line_no = line_number(source, offset)
+        vars_for_line = facts.vars_at_line(line_no)
+        lhs_type = _lhs_declared_type(code_line) or _lhs_assigned_type(code_line, vars_for_line)
+        if not _is_unsigned_integer_type(lhs_type):
+            offset += len(raw_line)
+            continue
+        equals_index = code_line.find("=")
+        rhs_start = offset + equals_index + 1
+        rhs = code_line[equals_index + 1 :]
+        signed_names = sorted(
+            (name for name, type_name in facts.global_vars.items() if _is_signed_integer_type(type_name)),
+            key=len,
+            reverse=True,
+        )
+        for name in signed_names:
+            for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
+                start = rhs_start + match.start()
+                if _inside_convert_call(source, start):
+                    continue
+                replacement = f"convert({name}, uint256)"
+                edits.append(TextEdit(start, start + len(name), replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted signed integer constant in uint256 arithmetic",
+                        name,
+                        replacement,
+                    )
+                )
+        offset += len(raw_line)
     return apply_edits(source, edits), fixes, []
+
+
+def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY060", config, context):
+        return source, [], []
+    current = source
+    all_fixes: list[Fix] = []
+    while True:
+        facts = parse_source_facts(current)
+        fixes: list[Fix] = []
+        edits: list[TextEdit] = []
+        mask = code_mask(current)
+        for struct_name in sorted(facts.structs):
+            for match in re.finditer(rf"\b{re.escape(struct_name)}\s*\(\s*\{{", current):
+                if not span_is_code(mask, match.start(), match.end()):
+                    continue
+                paren = current.find("(", match.start())
+                close = find_matching(current, paren)
+                if close is None:
+                    continue
+                inner = current[paren + 1 : close].strip()
+                if not (inner.startswith("{") and inner.endswith("}")):
+                    continue
+                fields = split_top_level_args(inner[1:-1])
+                if fields is None:
+                    continue
+                pairs: list[str] = []
+                ok = True
+                for field in fields:
+                    if ":" not in field:
+                        ok = False
+                        break
+                    name, value = field.split(":", 1)
+                    pairs.append(f"{name.strip()}={value.strip()}")
+                if not ok:
+                    continue
+                replacement = f"{struct_name}({', '.join(pairs)})"
+                edits.append(TextEdit(match.start(), close + 1, replacement))
+                fixes.append(
+                    Fix(
+                        "VY060",
+                        line_number(current, match.start()),
+                        "changed struct literal to keyword arguments",
+                        current[match.start() : close + 1],
+                        replacement,
+                    )
+                )
+        if not edits:
+            return current, all_fixes, []
+        selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+        all_fixes.extend(selected_fixes)
+        current = apply_edits(current, selected_edits)
 
 
 def _typed_range_loops(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -650,7 +878,7 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
         if ":" in source[match.start() : match.end()].split(" in ", 1)[0]:
             continue
         if iterable.startswith("range("):
-            var_type = "uint256"
+            var_type = _range_loop_var_type(iterable, facts.vars_at_line(line_number(source, match.start())))
         else:
             vars_for_line = facts.vars_at_line(line_number(source, match.start()))
             iterable_name = iterable.replace("self.", "")
@@ -663,6 +891,18 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
         fixes.append(Fix("VY070", line_number(source, match.start()), f"added {var_type} loop variable type", before, after))
 
     return apply_edits(source, edits), fixes, []
+
+
+def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
+    match = re.match(r"range\s*\((.*)\)\s*$", iterable)
+    if match is None:
+        return "uint256"
+    args = split_top_level_args(match.group(1))
+    if not args:
+        return "uint256"
+    bound = args[1] if len(args) > 1 else args[0]
+    bound_type = infer_expr_type(bound, vars_for_line)
+    return bound_type if is_integer_type(bound_type) else "uint256"
 
 
 def _range_bound(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -837,10 +1077,26 @@ def _read_left_operand(source: str, index: int) -> str:
     i = index - 1
     while i >= 0 and source[i].isspace():
         i -= 1
+    if i >= 0 and source[i] == ")":
+        open_index = _find_matching_open(source, i)
+        if open_index is not None:
+            return source[open_index : i + 1]
     end = i + 1
-    while i >= 0 and re.match(r"[A-Za-z0-9_.$\]]", source[i]):
+    while i >= 0 and re.match(r"[A-Za-z0-9_.$\[\]]", source[i]):
         i -= 1
     return source[i + 1 : end].replace("self.", "")
+
+
+def _find_matching_open(source: str, close_index: int) -> int | None:
+    depth = 0
+    for i in range(close_index, -1, -1):
+        if source[i] == ")":
+            depth += 1
+        elif source[i] == "(":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
 
 
 def _read_right_operand(source: str, index: int) -> str:
@@ -848,8 +1104,16 @@ def _read_right_operand(source: str, index: int) -> str:
     while i < len(source) and source[i].isspace():
         i += 1
     start = i
+    if source.startswith(("staticcall ", "extcall "), i):
+        i = source.find(" ", i) + 1
+        while i < len(source) and source[i].isspace():
+            i += 1
     while i < len(source) and re.match(r"[A-Za-z0-9_.$\[]", source[i]):
         i += 1
+    if i < len(source) and source[i] == "(":
+        close = find_matching(source, i)
+        if close is not None:
+            i = close + 1
     return source[start:i].replace("self.", "")
 
 
@@ -859,15 +1123,44 @@ def _lhs_declared_type(line: str) -> str | None:
 
 
 def _lhs_assigned_type(line: str, vars_for_line: dict[str, str]) -> str | None:
-    match = re.match(r"\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+    match = re.match(r"\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)(\s*\[[^=]+\])?\s*(?:[-+*/%]?=)", line)
     if not match:
         return None
-    return vars_for_line.get(match.group(1))
+    type_name = vars_for_line.get(match.group(1))
+    if match.group(2):
+        return indexed_value_type(type_name)
+    return type_name
 
 
-def _integerish_expression(expr: str, vars_for_line: dict[str, str]) -> bool:
+def _is_unsigned_integer_type(type_name: str | None) -> bool:
+    if type_name is None:
+        return False
+    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name.strip())
+    if wrapper:
+        type_name = wrapper.group(1).strip()
+    return bool(re.fullmatch(r"uint(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?", type_name))
+
+
+def _is_signed_integer_type(type_name: str | None) -> bool:
+    if type_name is None:
+        return False
+    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name.strip())
+    if wrapper:
+        type_name = wrapper.group(1).strip()
+    return bool(re.fullmatch(r"int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?", type_name))
+
+
+def _inside_convert_call(source: str, index: int) -> bool:
+    prefix = source[max(0, index - 24) : index]
+    return bool(re.search(r"\bconvert\s*\([^,\n]*$", prefix))
+
+
+def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None) -> bool:
     expr = expr.split("#", 1)[0]
+    if facts is not None:
+        expr = _replace_integerish_subexpressions(expr, vars_for_line, facts)
     expr = expr.replace("self.", "")
+    expr = re.sub(r"\b(?:block\.(?:timestamp|number|difficulty|basefee|prevhash)|chain\.id|msg\.value)\b", "1", expr)
     expr = re.sub(r"^\s*(?:return|assert)\s+", "", expr)
     if "=" in expr:
         expr = expr.rsplit("=", 1)[-1]
@@ -891,6 +1184,26 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str]) -> bool:
             return False
         typed = True
     return typed
+
+
+def _replace_integerish_subexpressions(expr: str, vars_for_line: dict[str, str], facts) -> str:
+    edits: list[TextEdit] = []
+    for pattern in [
+        r"(?:staticcall|extcall)\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
+        r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])+(?:\.[A-Za-z_][A-Za-z0-9_]*)?",
+        r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*",
+    ]:
+        for match in re.finditer(pattern, expr):
+            end = match.end()
+            if expr[end - 1] == "(":
+                close = find_matching(expr, end - 1)
+                if close is None:
+                    continue
+                end = close + 1
+            candidate = expr[match.start() : end]
+            if is_integer_type(infer_expr_type(candidate, vars_for_line, facts)):
+                edits.append(TextEdit(match.start(), end, "1"))
+    return apply_edits(expr, _innermost_non_overlapping(edits, [Fix("VY050", 1, "", "", "") for _ in edits])[0])
 
 
 def _multiline_integer_division_context(source: str, line_start: int) -> bool:
@@ -1174,6 +1487,36 @@ def _rewrite_legacy_event_declarations(source: str) -> tuple[str, list[Fix]]:
     return apply_edits(source, edits), fixes
 
 
+def _collect_event_fields(source: str) -> dict[str, list[str]]:
+    events: dict[str, list[str]] = {}
+    lines = source.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(?P<indent>\s*)event\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:#.*)?$", line)
+        if match is None:
+            index += 1
+            continue
+        indent = len(match.group("indent"))
+        fields: list[str] = []
+        index += 1
+        while index < len(lines):
+            child = lines[index]
+            if not child.strip() or child.lstrip().startswith("#"):
+                index += 1
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= indent:
+                break
+            field = re.match(r"^\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:", child)
+            if field is not None:
+                fields.append(field.group("name"))
+            index += 1
+        if fields:
+            events[match.group("name")] = fields
+    return events
+
+
 def _rewrite_map_types(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -1307,33 +1650,56 @@ def _replace_shift_builtin(
     config: Config,
     context: MigrationContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    mask = code_mask(source)
-    fixes: list[Fix] = []
-    diagnostics: list[Diagnostic] = []
-    edits: list[TextEdit] = []
-    for match in re.finditer(r"\bshift\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        close = find_matching(source, source.find("(", match.start()))
-        if close is None:
-            continue
-        args = split_top_level_args(source[match.end() : close])
-        if args is None or len(args) != 2:
-            continue
-        value = args[0].strip()
-        shift_by = args[1].strip()
-        negative = re.fullmatch(r"-\s*((?:\d|_)+)", shift_by)
-        positive = re.fullmatch(r"\+?\s*((?:\d|_)+)", shift_by)
-        if negative is not None:
-            replacement = f"({value} >> {negative.group(1)})"
-        elif positive is not None:
-            replacement = f"({value} << {positive.group(1)})"
-        else:
-            if _enabled("VYD012", config, context):
-                diagnostics.append(Diagnostic("VYD012", line_number(source, match.start()), "shift() with non-literal amount needs manual << or >> review"))
-            continue
-        if not _enabled("VY111", config, context):
-            continue
-        edits.append(TextEdit(match.start(), close + 1, replacement))
-        fixes.append(Fix("VY111", line_number(source, match.start()), "replaced shift builtin", source[match.start() : close + 1], replacement))
-    return apply_edits(source, edits), fixes, diagnostics
+    current = source
+    all_fixes: list[Fix] = []
+    all_diagnostics: list[Diagnostic] = []
+    while True:
+        mask = code_mask(current)
+        fixes: list[Fix] = []
+        diagnostics: list[Diagnostic] = []
+        edits: list[TextEdit] = []
+        for match in re.finditer(r"\bshift\s*\(", current):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            close = find_matching(current, current.find("(", match.start()))
+            if close is None:
+                continue
+            args = split_top_level_args(current[match.end() : close])
+            if args is None or len(args) != 2:
+                continue
+            value = args[0].strip()
+            shift_by = args[1].strip()
+            negative = re.fullmatch(r"-\s*((?:\d|_)+)", shift_by)
+            positive = re.fullmatch(r"\+?\s*((?:\d|_)+)", shift_by)
+            if negative is not None:
+                replacement = f"({value} >> {negative.group(1)})"
+            elif positive is not None:
+                replacement = f"({value} << {positive.group(1)})"
+            else:
+                if _enabled("VYD012", config, context):
+                    diagnostics.append(
+                        Diagnostic(
+                            "VYD012",
+                            line_number(current, match.start()),
+                            "shift() with non-literal amount needs manual << or >> review",
+                        )
+                    )
+                continue
+            if not _enabled("VY111", config, context):
+                continue
+            edits.append(TextEdit(match.start(), close + 1, replacement))
+            fixes.append(
+                Fix(
+                    "VY111",
+                    line_number(current, match.start()),
+                    "replaced shift builtin",
+                    current[match.start() : close + 1],
+                    replacement,
+                )
+            )
+        all_diagnostics.extend(diagnostics)
+        if not edits:
+            return current, all_fixes, all_diagnostics
+        selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+        all_fixes.extend(selected_fixes)
+        current = apply_edits(current, selected_edits)
