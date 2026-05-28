@@ -221,3 +221,152 @@ def __init__():
     once = apply_rules(source, config()).source
     twice = apply_rules(once, config()).source
     assert once == twice
+
+
+def test_pr_3777_struct_dict_instantiation_to_kwargs() -> None:
+    source = """# @version 0.3.10
+struct Point:
+    x: uint256
+    y: uint256
+
+@external
+def f():
+    p: Point = Point({x: 1, y: 2})
+"""
+
+    result = apply_rules(source, config())
+
+    assert "Point(x=1, y=2)" in result.source
+
+
+def test_pr_3697_enum_to_flag_is_review_by_default_and_aggressive_fix() -> None:
+    source = """# @version 0.3.10
+enum Roles:
+    ADMIN
+    KEEPER
+"""
+
+    default = apply_rules(source, config())
+    aggressive = apply_rules(source, config(aggressive=True))
+
+    assert "enum Roles:" in default.source
+    assert any(diag.rule == "VY030" for diag in default.diagnostics)
+    assert "flag Roles:" in aggressive.source
+
+
+def test_pr_3729_constructor_deploy_replaces_external() -> None:
+    source = """# @version 0.3.10
+@external
+def __init__():
+    pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@external\ndef __init__" not in result.source
+    assert "@deploy\ndef __init__" in result.source
+
+
+def test_pr_2938_extcall_and_staticcall_keywords() -> None:
+    source = """# @version 0.3.10
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+    def transfer(to: address, amount: uint256) -> bool: nonpayable
+
+@external
+def f(token: Token):
+    balance: uint256 = token.balanceOf(msg.sender)
+    sent: bool = token.transfer(msg.sender, balance)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall token.balanceOf(msg.sender)" in result.source
+    assert "extcall token.transfer(msg.sender, balance)" in result.source
+
+
+def test_pr_3596_loop_variable_type_annotation_for_range_and_arrays() -> None:
+    source = """# @version 0.3.10
+@external
+def f(items: DynArray[address, 10]):
+    for i in range(3):
+        pass
+    for item in items:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint256 in range(3):" in result.source
+    assert "for item: address in items:" in result.source
+
+
+def test_pr_3769_single_named_reentrancy_lock_is_rewritten() -> None:
+    source = """# @version 0.3.10
+@nonreentrant("lock")
+@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert '@nonreentrant("lock")' not in result.source
+    assert "@nonreentrant\n@external" in result.source
+
+
+def test_pr_2937_integer_division_to_floordiv_and_decimal_diagnostic() -> None:
+    source = """# @version 0.3.10
+@external
+def f(amount: uint256, scale: decimal):
+    shares: uint256 = amount / 2
+    ratio: decimal = scale / 2.0
+"""
+
+    result = apply_rules(source, config())
+
+    assert "amount // 2" in result.source
+    assert "scale / 2.0" in result.source
+    assert any(diag.rule == "VYD001" for diag in result.diagnostics)
+
+
+def test_pr_3679_range_runtime_stop_gets_bound_keyword() -> None:
+    source = """# @version 0.3.10
+@external
+def f(start: uint256):
+    for i in range(start, start + 101):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(start, start + 101, bound=101)" in result.source
+    assert "for i: uint256 in range" in result.source
+
+
+def test_pr_3679_ambiguous_range_bound_is_diagnostic_only() -> None:
+    source = """# @version 0.3.10
+@external
+def f(start: uint256, stop: uint256):
+    for i in range(start, stop):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(start, stop, bound=" not in result.source
+    assert any(diag.rule == "VYD011" for diag in result.diagnostics)
+
+
+def test_pr_3679_literal_range_bounds_are_left_alone() -> None:
+    source = """# @version 0.3.10
+@external
+def f():
+    for i in range(1, 4):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(1, 4, bound=" not in result.source
+    assert not [diag for diag in result.diagnostics if diag.rule == "VYD011"]

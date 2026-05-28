@@ -46,6 +46,7 @@ def apply_rules(source: str, config: Config) -> RewriteResult:
         _integer_division,
         _redundant_integer_convert,
         _struct_kwargs,
+        _range_bound,
         _typed_range_loops,
         _create_from_blueprint,
         _nonreentrant,
@@ -406,6 +407,51 @@ def _typed_range_loops(source: str, config: Config) -> tuple[str, list[Fix], lis
     return apply_edits(source, edits), fixes, []
 
 
+def _range_bound(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY071", config):
+        return source, [], []
+    fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\brange\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        open_index = source.find("(", match.start())
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        raw_args = source[open_index + 1 : close]
+        if "bound" in raw_args:
+            continue
+        args = split_top_level_args(raw_args)
+        if args is None or len(args) != 2:
+            continue
+        if _literal_integer(args[0]) and _literal_integer(args[1]):
+            continue
+        bound = _infer_range_bound(args[0], args[1])
+        if bound is None:
+            diagnostics.append(
+                Diagnostic(
+                    "VYD011",
+                    line_number(source, match.start()),
+                    "range(start, stop) has runtime bounds; add bound=... manually",
+                )
+            )
+            continue
+        edits.append(TextEdit(close, close, f", bound={bound}"))
+        fixes.append(
+            Fix(
+                "VY071",
+                line_number(source, match.start()),
+                "added range bound keyword",
+                f"range({raw_args})",
+                f"range({raw_args}, bound={bound})",
+            )
+        )
+    return apply_edits(source, edits), fixes, diagnostics
+
+
 def _create_from_blueprint(source: str, config: Config) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY080", config):
         return source, [], []
@@ -577,6 +623,23 @@ def _multiline_integer_division_context(source: str, line_start: int) -> bool:
     if re.search(r"\bdecimal\b|\d+\.\d+", block):
         return False
     return bool(re.search(r"return\s*\($|:\s*u?int(?:\d+)?\s*=\s*\($", block, re.MULTILINE))
+
+
+def _infer_range_bound(start: str, stop: str) -> str | None:
+    start = start.strip()
+    stop = stop.strip()
+    escaped = re.escape(start)
+    plus_match = re.fullmatch(rf"{escaped}\s*\+\s*((?:\d|_)+)", stop)
+    if plus_match:
+        return plus_match.group(1)
+    minus_match = re.fullmatch(rf"{escaped}\s*-\s*((?:\d|_)+)", stop)
+    if minus_match:
+        return minus_match.group(1)
+    return None
+
+
+def _literal_integer(value: str) -> bool:
+    return bool(re.fullmatch(r"\s*(?:\d|_)+\s*", value))
 
 
 def _insert_import(source: str, line: str) -> str:
