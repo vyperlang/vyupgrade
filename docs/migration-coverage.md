@@ -1,0 +1,287 @@
+# Migration Coverage
+
+This document maps the syntax history in
+[`vyper-syntax-history.md`](vyper-syntax-history.md) to `vyupgrade` behavior.
+Each source-visible entry is classified as an automated rewrite, a diagnostic,
+or an explicit no-op when the historical change only introduced newly accepted
+syntax and does not imply a necessary migration from older source.
+
+Rules are version-gated. Unless noted as a target rule, a rule runs only when
+the inferred source version is older than the listed change and the target
+version is at or after it. Target rules cover the legacy `0.2.1` cleanup pass,
+where the tool normalizes pre-`0.2.1` syntax whenever the requested target is in
+the supported range.
+
+## v0.4.x
+
+### v0.4.3
+
+- `@raw_return` added: no-op. This is new opt-in syntax, not a source form that
+  older contracts must rewrite to compile.
+
+### v0.4.2
+
+- Decimal `sqrt` moved into `math`: `VY100` rewrites `sqrt(x)` to
+  `math.sqrt(x)` and inserts `import math`.
+- Deprecated bitwise builtins removed: `VY110` rewrites `bitwise_and`,
+  `bitwise_or`, `bitwise_xor`, and `bitwise_not` to operators. `VY111`
+  rewrites literal `shift(x, N)` and `shift(x, -N)`. `VYD012` flags
+  non-literal shift amounts for manual `<<` or `>>` review.
+- `raw_create()` added: no-op. This is new deployment syntax, not a required
+  migration.
+- File-level nonreentrancy pragma, `@reentrant`, and
+  `public(reentrant(...))` added: no-op. These are new opt-in forms.
+
+### v0.4.1
+
+- `@external` became optional in `.vyi` files: no-op. Existing explicit
+  decorators remain valid.
+- `module.__at__()` casts added: no-op. Existing interface cast syntax is not
+  mechanically equivalent in the general case.
+- Event instantiation keyword arguments added: no-op. Positional event logging
+  remains valid.
+- Native hex string literals added: no-op. Existing byte literals remain valid.
+- `mana` call kwarg alias added: no-op. Existing `gas=` spelling remains valid.
+- Absolute relative imports disallowed: no automated rule yet. The syntax
+  history contains no concrete rejected source form to rewrite safely.
+
+### v0.4.0
+
+- Constructor visibility changed to `@deploy`: `VY002` removes invalid
+  constructor visibility decorators and inserts `@deploy`.
+- Named reentrancy locks removed: `VY090` removes the single-lock case and emits
+  a review diagnostic. `VYD002` flags multiple named locks because global-lock
+  behavior may change callback assumptions.
+- `_abi_encode` and `_abi_decode` renamed: `VY010` and `VY011`.
+- `@internal` became optional: no-op. Existing `@internal` source remains valid.
+- External calls require keywords: `VY040` adds `extcall`; `VY041` adds
+  `staticcall`. `VYD003` flags calls whose mutability cannot be inferred.
+- Integer division uses `//`: `VY050` rewrites proven integer division.
+  `VYD004` flags ambiguous `/` expressions.
+- Redundant integer `convert(..., uint256)` after division: `VY051`.
+- Struct literals require keyword arguments: `VY060`.
+- Loop variables require type annotations: `VY070`.
+- `enum` replaced by `flag`: `VY030` diagnoses by default and rewrites only
+  with `--aggressive`.
+- Builtin constants removed: `VY012` rewrites `MAX_UINT256`, integer min/max
+  constants, `ZERO_ADDRESS`, and `EMPTY_BYTES32`.
+- Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
+  ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
+- Builtin ERC interface import path changed: `VY020` rewrites known imports and
+  interface type names. `VYD003` flags unknown `vyper.interfaces` imports.
+- Module import and ownership declarations added: no-op. This is new module
+  syntax, not a required rewrite.
+- Module exports added: no-op. This is new opt-in syntax.
+- Imported events auto-exported: no-op. This changes module composition rather
+  than legacy source spelling.
+- Decimal feature flag required: `VYD001`.
+- `block.prevrandao` type changed: `VYD010`.
+
+## v0.3.x
+
+### v0.3.10
+
+- `#pragma` directives added and version pragma parsing relaxed: `VY001`
+  rewrites `# @version` to `#pragma version`.
+- Dynamic single-argument `range` bounds: `VYD014` flags `range(stop)` when
+  `stop` is not literal and the target crosses `0.3.10`.
+
+### v0.3.9
+
+- No source syntax changes identified.
+
+### v0.3.8
+
+- `transient(...)` added: no-op. This is new opt-in storage syntax.
+- Ternary operator added: no-op. Existing `if`/`return` source remains valid.
+- Shift operators added: no-op for `0.3.8` targets; `VY111` handles later
+  removal of `shift()` at `0.4.2`.
+- `raw_revert()` added: no-op. Existing `raise` syntax remains valid.
+- `send(..., gas=...)` added: no-op. Existing two-argument `send` remains valid.
+- `custom:` NatSpec tags added: no-op.
+- Unary plus disabled: `VY230`.
+- Numeric boolean negation blocked: `VY231` rewrites integer `not x` to
+  `x == 0`; `VYD013` flags unknown types.
+- Enum values became valid mapping keys: no-op.
+
+### v0.3.7
+
+- `isqrt()` added: no-op. This is a new builtin, not a required migration.
+- `epsilon()` added: no-op. This is a new builtin.
+- `block.prevrandao` alias added: `VY220` rewrites `block.difficulty` to
+  `block.prevrandao`.
+- Public constants and immutables added: no-op. Existing declarations remain
+  valid.
+
+### v0.3.6
+
+- No source syntax changes identified.
+
+### v0.3.5
+
+- `create_from_blueprint` accepts arbitrary data: no-op for source migration;
+  `VY080` handles the later `0.4.0` default `code_offset` behavior change.
+- `empty()` accepted in constants/default arguments: no-op. This only accepts a
+  form previously rejected.
+
+### v0.3.4
+
+- `enum` custom type added: no-op for migrations into `0.3.4`; `VY030` handles
+  the later `0.4.0` `enum` to `flag` migration.
+- `_abi_decode()` added: no-op for `0.3.4`; `VY011` handles the later `0.4.0`
+  rename to `abi_decode`.
+- `create_from_blueprint()` and `create_copy_of()` added: no-op for `0.3.4`;
+  `VY080` handles the later `0.4.0` review point.
+- `default_return_value=` added: no-op. This is new optional syntax.
+- `min_value()` and `max_value()` added: no-op for `0.3.4`; `VY012` uses these
+  forms for the later builtin constant migration.
+- `uint2str()` added: no-op. This is a new builtin.
+- `msg.data` accepted directly in `raw_call`: no-op.
+- `shift()` supports signed integers: no-op for `0.3.4`; `VY111` handles the
+  later `0.4.2` removal.
+- Dynamic arrays of strings enabled: no-op.
+
+### v0.3.3
+
+- `print()` debug builtin added: no-op.
+
+### v0.3.2
+
+- `convert()` semantics generalized: no-op.
+- Hex and bytes literals restricted: `VYD210` flags mismatched `Bytes` and
+  `String` literal forms when migrating legacy code.
+- `DynArray[T, N]` added: no-op. The syntax history entry is a newly accepted
+  type form, not a reliable array rewrite.
+- Full ABI v2 integer and bytes types added: no-op.
+- `<address>.code` added: no-op.
+- `tx.gasprice` added: no-op.
+- Struct constants accepted: no-op.
+- `skip_contract_check=` added: no-op.
+- `unsafe_*` builtins added: no-op.
+- Lists of any type can be loop variables: no-op.
+
+### v0.3.1
+
+- `immutable(T)` added: no-op.
+- `uint8` added: no-op.
+- `block.gaslimit` and `block.basefee` added: no-op.
+- Checkable `raw_call()` added: no-op.
+- Non-constant revert strings accepted: no-op.
+- Slices of complex expressions accepted: no-op.
+- Lists of structs can be function arguments: no-op.
+
+### v0.3.0
+
+- ABI-encodable function argument and return types expanded: no-op.
+- `create_minimal_proxy_to(..., salt=...)` added: no-op.
+
+## v0.2.x
+
+### v0.2.16
+
+- `_abi_encode()` exposed: no-op for `0.2.16`; `VY010` handles the later
+  `0.4.0` rename.
+- Event arguments can be any ABI-encodable type: no-op.
+- Interfaces can appear in lists, structs, and maps: no-op.
+- `@nonreentrant` on constructors disallowed: `VY210`.
+
+### v0.2.15
+
+- No source syntax changes identified.
+
+### v0.2.14
+
+- No source syntax changes identified.
+
+### v0.2.13
+
+- `abs()` added: no-op.
+
+### v0.2.12
+
+- `int256` added: no-op.
+- `msg.data` added: no-op.
+
+### v0.2.11
+
+- No source syntax changes identified.
+
+### v0.2.10
+
+- No source syntax changes identified.
+
+### v0.2.9
+
+- Reserved keyword checks updated: `VYD211` covers the concrete legacy
+  parameter name case from `0.2.1`, including `value`.
+
+### v0.2.8
+
+- `not in` comparator added: `VY211`.
+- `empty(...)` accepted as a function-call argument: no-op.
+- Empty static arrays accepted in `log`: no-op.
+- `Bytes` variables can be mapping keys: no-op.
+
+### v0.2.7
+
+- No source syntax changes identified.
+
+### v0.2.6
+
+- `uint256` implicit range-loop iterator type: no-op. The source spelling did
+  not change; later `VY070` handles explicit loop-variable annotations for
+  `0.4.0`.
+
+### v0.2.5
+
+- Local-variable scoping restrictions removed: no-op.
+
+### v0.2.4
+
+- No source syntax changes identified.
+
+### v0.2.3
+
+- No source syntax changes identified.
+
+### v0.2.2
+
+- No source syntax changes identified.
+
+### v0.2.1
+
+- `@public` and `@private` renamed: `VY201`.
+- `@constant` renamed: `VY201`.
+- Type units removed: `VY202`.
+- Event declaration syntax changed: `VY203`.
+- `log` became a statement: `VY204`.
+- Mapping declarations changed to `HashMap`: `VY205`.
+- Interfaces use `interface`: `VY206`.
+- Dynamic byte and string type names capitalized: `VY207`.
+- Byte and string literals are no longer interchangeable: `VYD210`.
+- `assert_modifiable()` removed: `VY208`.
+- Function input name `value` reserved: `VYD211`.
+- `slice()` start and length must be `uint256`: `VYD212`.
+- `len()` returns `uint256`: `VYD213`.
+- External-call `value=` and `gas=` kwargs must be `uint256`: `VYD214`.
+- `raw_call` kwarg `outsize` renamed: `VY208`.
+- `extract32` kwarg `type` renamed: `VY208`.
+- Public array getter indexes use `uint256`: no-op. This is ABI shape, not a
+  source rewrite.
+- Public struct getters return all values: no-op. This is ABI shape, not a
+  source rewrite.
+- `RLPList` removed: `VYD215`.
+- `empty()` added: no-op.
+- `@pure` added: no-op.
+- `raise` can omit a reason string: no-op.
+- `method_id()` type argument made optional: `VY209`.
+- `raw_call` can perform `STATICCALL`: no-op.
+
+## Global Diagnostics
+
+- `VYD005`: source has no version pragma and no `--source-version`.
+- `VYD006`: source compilation failed under the declared or inferred source
+  compiler.
+- `VYD007`: ABI or method identifiers changed after migration.
+- `VYD008`: storage layout changed after migration.
+- `VYD009`: target compiler default EVM version differs from source-era default.
