@@ -63,6 +63,8 @@ the supported range.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
   arithmetic expressions.
+- Dynamic `Bytes[N]` declarations initialized from hex byte literals: `VY053`
+  rewrites the literal to a byte string form accepted by modern Vyper.
 - Struct literals require keyword arguments: `VY060`.
 - Loop variables require type annotations: `VY070`.
 - `enum` replaced by `flag`: `VY030` diagnoses by default and rewrites only

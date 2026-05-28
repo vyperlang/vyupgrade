@@ -66,6 +66,7 @@ RULE_CHANGES = {
     "VY050": RuleChange(VyperVersion(0, 4, 0)),
     "VY051": RuleChange(VyperVersion(0, 4, 0)),
     "VY052": RuleChange(VyperVersion(0, 4, 0)),
+    "VY053": RuleChange(VyperVersion(0, 4, 0)),
     "VY060": RuleChange(VyperVersion(0, 4, 0)),
     "VY070": RuleChange(VyperVersion(0, 4, 0)),
     "VY071": RuleChange(VyperVersion(0, 4, 0)),
@@ -141,6 +142,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _mixed_signed_unsigned_arithmetic,
         _typed_external_call_arguments,
         _redundant_integer_convert,
+        _dynamic_bytes_hex_literals,
         _struct_kwargs,
         _create_from_blueprint,
         _nonreentrant,
@@ -524,6 +526,39 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
         edits.append(TextEdit(match.start(), close + 1, replacement))
         fixes.append(Fix("VY051", line_number(source, match.start()), "removed redundant uint256 convert around integer expression", source[match.start() : close + 1], replacement))
     return apply_edits(source, edits), fixes, []
+
+
+def _dynamic_bytes_hex_literals(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY053", config, context):
+        return source, [], []
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    pattern = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*Bytes\[[^\]]+\]\s*=\s*(0x[0-9A-Fa-f]*)\b")
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        replacement = _hex_literal_to_byte_string(match.group(1))
+        if replacement is None:
+            continue
+        edits.append(TextEdit(match.start(1), match.end(1), replacement))
+        fixes.append(
+            Fix(
+                "VY053",
+                line_number(source, match.start()),
+                "changed dynamic bytes hex literal to byte string literal",
+                match.group(1),
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _hex_literal_to_byte_string(literal: str) -> str | None:
+    raw = literal.removeprefix("0x")
+    if len(raw) % 2 != 0:
+        return None
+    return 'b"' + "".join(f"\\x{raw[index:index + 2].lower()}" for index in range(0, len(raw), 2)) + '"'
 
 
 def _interface_imports(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:

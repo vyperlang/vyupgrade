@@ -1268,6 +1268,29 @@ def f(amount: uint256, scale: decimal):
     assert any(diag.rule == "VYD001" for diag in result.diagnostics)
 
 
+def test_dynamic_bytes_hex_literal_becomes_byte_string_literal() -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> Bytes[256]:
+    call_data: Bytes[256] = 0x00
+    return call_data
+"""
+
+    result = apply_rules(source, config())
+
+    assert 'call_data: Bytes[256] = b"\\x00"' in result.source
+
+
+def test_fixed_bytes_hex_literal_is_left_alone() -> None:
+    source = """# @version 0.3.10
+value: bytes32 = 0x00
+"""
+
+    result = apply_rules(source, config())
+
+    assert "value: bytes32 = 0x00" in result.source
+
+
 def test_pr_3679_range_runtime_stop_gets_bound_keyword() -> None:
     source = """# @version 0.3.10
 @external
