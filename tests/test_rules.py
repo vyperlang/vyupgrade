@@ -1142,6 +1142,103 @@ def f(items: DynArray[address, 10]):
     assert "for item: address in items:" in result.source
 
 
+def test_loop_variable_type_annotation_for_self_storage_array() -> None:
+    source = """# @version 0.3.10
+queue: address[10]
+
+@external
+def f():
+    for strategy in self.queue:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for strategy: address in self.queue:" in result.source
+
+
+def test_loop_variable_type_annotation_after_multiline_param_comment() -> None:
+    source = """# @version 0.3.10
+interface ERC20:
+    def totalSupply() -> uint256: view
+
+@external
+def __init__(
+    owner: address,  # admin
+    accepted_tokens: DynArray[ERC20, 20],
+):
+    for token in accepted_tokens:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for token: ERC20 in accepted_tokens:" in result.source
+
+
+def test_loop_variable_type_annotation_for_literal_address_list() -> None:
+    source = """# @version 0.3.10
+@external
+def f(_from: address, _to: address):
+    for addr in [_from, _to]:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for addr: address in [_from, _to]:" in result.source
+
+
+def test_loop_variable_type_annotation_for_literal_interface_list() -> None:
+    source = """# @version 0.3.10
+interface Registry:
+    def numTokens() -> uint256: view
+
+@external
+def f(registry_a: Registry, registry_b: Registry):
+    for registry in [registry_a, registry_b]:
+        n: uint256 = staticcall registry.numTokens()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for registry: Registry in [registry_a, registry_b]:" in result.source
+
+
+def test_loop_variable_type_annotation_for_literal_empty_address() -> None:
+    source = """# @version 0.3.10
+@external
+def f(_gauge: address):
+    for target in [_gauge, empty(address)]:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for target: address in [_gauge, empty(address)]:" in result.source
+
+
+def test_loop_variable_type_annotation_for_struct_array_attribute() -> None:
+    source = """# @version 0.3.10
+struct Action:
+    target: address
+
+struct Proposal:
+    actions: DynArray[Action, 10]
+
+proposals: HashMap[uint256, Proposal]
+
+@external
+def f(pid: uint256):
+    for action in self.proposals[pid].actions:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for action: Action in self.proposals[pid].actions:" in result.source
+
+
 def test_pr_3769_single_named_reentrancy_lock_is_rewritten() -> None:
     source = """# @version 0.3.10
 @nonreentrant("lock")

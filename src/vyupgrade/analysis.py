@@ -198,7 +198,9 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_struct = None
 
         if pending_function_line is not None:
-            pending_function_header.append(stripped)
+            header_line = _strip_inline_comment(stripped).strip()
+            if header_line:
+                pending_function_header.append(header_line)
             if _balanced_parens(" ".join(pending_function_header)):
                 def_match = DEF_RE.match(" ".join(pending_function_header))
                 if def_match:
@@ -261,7 +263,9 @@ def parse_source_facts(source: str) -> SourceFacts:
                 pending_interface_method = None
                 continue
             if pending_interface_header:
-                pending_interface_header.append(stripped)
+                header_line = _strip_inline_comment(stripped).strip()
+                if header_line:
+                    pending_interface_header.append(header_line)
                 if _balanced_parens(" ".join(pending_interface_header)):
                     def_match = DEF_RE.match(" ".join(pending_interface_header))
                     if def_match:
@@ -284,10 +288,11 @@ def parse_source_facts(source: str) -> SourceFacts:
                 continue
             multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
             if multiline_def:
-                pending_interface_header = [stripped]
+                pending_interface_header = [_strip_inline_comment(stripped).strip()]
             continue
 
-        def_match = DEF_RE.match(stripped)
+        function_header = _strip_inline_comment(stripped).strip()
+        def_match = DEF_RE.match(function_header)
         if def_match:
             if current_function_line is not None:
                 facts.function_ends[current_function_line] = line_no - 1
@@ -301,10 +306,10 @@ def parse_source_facts(source: str) -> SourceFacts:
                 facts.function_returns[current_function_line] = def_match.group(3).strip()
                 facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
             continue
-        if re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+        if re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", function_header):
             pending_function_line = line_no
             pending_function_indent = indent
-            pending_function_header = [stripped]
+            pending_function_header = [function_header]
             continue
 
         if current_function_line is not None and indent <= current_function_indent and stripped:
@@ -400,6 +405,9 @@ def infer_expr_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts
     convert_match = re.fullmatch(r"convert\s*\(.+,\s*([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\s*\)", expr)
     if convert_match:
         return convert_match.group(1)
+    empty_match = re.fullmatch(r"empty\s*\(\s*(.+?)\s*\)", expr)
+    if empty_match:
+        return empty_match.group(1).strip()
     if facts is not None:
         internal_call_type = _infer_internal_call_type(expr, facts)
         if internal_call_type is not None:
@@ -535,6 +543,10 @@ def _parse_var_decl(line: str) -> tuple[str, str] | None:
 
 def _strip_default(type_part: str) -> str:
     return type_part.split("=", 1)[0].strip()
+
+
+def _strip_inline_comment(line: str) -> str:
+    return line.split("#", 1)[0].rstrip()
 
 
 def _unwrap_public_or_constant(type_name: str) -> str | None:

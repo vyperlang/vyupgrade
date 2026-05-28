@@ -1386,12 +1386,8 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
         iterable = match.group(3).strip()
         if ":" in source[match.start() : match.end()].split(" in ", 1)[0]:
             continue
-        if iterable.startswith("range("):
-            var_type = _range_loop_var_type(iterable, facts.vars_at_line(line_number(source, match.start())))
-        else:
-            vars_for_line = facts.vars_at_line(line_number(source, match.start()))
-            iterable_name = iterable.replace("self.", "")
-            var_type = iterable_element_type(vars_for_line.get(iterable_name) or infer_expr_type(iterable_name, vars_for_line))
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        var_type = _loop_var_type(iterable, vars_for_line, facts)
         if var_type is None:
             continue
         before = match.group(0)
@@ -1400,6 +1396,36 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
         fixes.append(Fix("VY070", line_number(source, match.start()), f"added {var_type} loop variable type", before, after))
 
     return apply_edits(source, edits), fixes, []
+
+
+def _loop_var_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
+    if iterable.startswith("range("):
+        return _range_loop_var_type(iterable, vars_for_line)
+    literal_type = _literal_list_element_type(iterable, vars_for_line, facts)
+    if literal_type is not None:
+        return literal_type
+    iterable_type = vars_for_line.get(iterable)
+    if iterable_type is None and re.fullmatch(r"self\.[A-Za-z_][A-Za-z0-9_]*", iterable):
+        iterable_type = vars_for_line.get(iterable.removeprefix("self."))
+    if iterable_type is None:
+        iterable_type = infer_expr_type(iterable, vars_for_line, facts)
+    return iterable_element_type(iterable_type)
+
+
+def _literal_list_element_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
+    if not (iterable.startswith("[") and iterable.endswith("]")):
+        return None
+    args = split_top_level_args(iterable[1:-1])
+    if not args:
+        return None
+    types = [infer_expr_type(arg, vars_for_line, facts) for arg in args]
+    if any(type_name is None for type_name in types):
+        return None
+    clean_types = [type_name.strip() for type_name in types if type_name is not None]
+    if len(set(clean_types)) == 1:
+        return clean_types[0]
+    normalized_types = [normalize_type(type_name) for type_name in clean_types]
+    return normalized_types[0] if len(set(normalized_types)) == 1 else None
 
 
 def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
