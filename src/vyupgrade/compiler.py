@@ -63,6 +63,25 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
         tmp_path.unlink(missing_ok=True)
 
 
+def compile_source_ast(path: Path, config: Config, source_version: str | None) -> CompileResult:
+    if path.suffix != ".vy":
+        return CompileResult("skipped")
+    normalized = _normalize_version(source_version or infer_pragma(path.read_text()))
+    command = _compiler_command(
+        config.source_vyper,
+        normalized,
+        config.source_python,
+    )
+    return _run_compile_with_formats(
+        command,
+        path,
+        config,
+        ("ast",),
+        (),
+        _supports_warning_policy(normalized),
+    )
+
+
 def compare_artifacts(source: CompileResult, target: CompileResult) -> tuple[bool | None, bool | None, bool | None]:
     if source.artifacts is None or target.artifacts is None:
         return None, None, None
