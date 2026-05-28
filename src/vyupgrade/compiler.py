@@ -6,6 +6,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from uv import find_uv_bin
+
 from .models import Config
 from .versions import compiler_version_for_spec, infer_pragma
 
@@ -66,7 +68,7 @@ def _compiler_command(explicit: str | None, version: str | None, python: str | N
         return [explicit]
     normalized = _normalize_version(version) or "0.4.3"
     python = python or _default_python(normalized)
-    return ["uv", "run", "--python", python, "--with", f"vyper=={normalized}", "vyper"]
+    return [find_uv_bin(), "run", "--python", python, "--with", f"vyper=={normalized}", "vyper"]
 
 
 def _normalize_version(version: str | None) -> str | None:

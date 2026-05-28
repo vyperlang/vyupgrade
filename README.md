@@ -33,7 +33,8 @@ For the local Yearn smoke contracts:
 sh scripts/smoke-yearn.sh
 ```
 
-Compiler subprocesses run through `uv run --python 3.11 --with vyper==...` by
-default so older source compilers do not inherit an incompatible project
-interpreter. Override with `--source-python`, `--target-python`,
-`--source-vyper`, or `--target-vyper` when needed.
+Compiler subprocesses run through the packaged `uv` executable discovered with
+`uv.find_uv_bin()`, using `uv run --python 3.11 --with vyper==...` by default
+so older source compilers do not inherit an incompatible project interpreter.
+Override with `--source-python`, `--target-python`, `--source-vyper`, or
+`--target-vyper` when needed.

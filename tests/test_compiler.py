@@ -3,9 +3,17 @@ from __future__ import annotations
 from vyupgrade.compiler import _compiler_command
 
 
-def test_compiler_command_pins_python_for_uv() -> None:
+def test_compiler_command_uses_packaged_uv_bin(monkeypatch) -> None:
+    monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
+
+    assert _compiler_command(None, "0.3.7", None)[0] == "/tmp/uv"
+
+
+def test_compiler_command_pins_python_for_uv(monkeypatch) -> None:
+    monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
+
     assert _compiler_command(None, "0.3.7", None) == [
-        "uv",
+        "/tmp/uv",
         "run",
         "--python",
         "3.11",
@@ -15,9 +23,11 @@ def test_compiler_command_pins_python_for_uv() -> None:
     ]
 
 
-def test_compiler_command_allows_python_override() -> None:
+def test_compiler_command_allows_python_override(monkeypatch) -> None:
+    monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
+
     assert _compiler_command(None, "0.4.3", "3.12") == [
-        "uv",
+        "/tmp/uv",
         "run",
         "--python",
         "3.12",
@@ -29,4 +39,3 @@ def test_compiler_command_allows_python_override() -> None:
 
 def test_explicit_compiler_path_skips_uv_wrapper() -> None:
     assert _compiler_command("/tmp/vyper", "0.3.7", "3.11") == ["/tmp/vyper"]
-
