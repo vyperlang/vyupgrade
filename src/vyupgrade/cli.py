@@ -36,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         test_command=args.test_command,
         source_vyper=args.source_vyper,
         target_vyper=args.target_vyper,
+        source_python=args.source_python or _string_or_none(pyproject.get("source-python")),
+        target_python=args.target_python or _string_or_none(pyproject.get("target-python")),
         compiler_search_paths=tuple(Path(path) for path in (args.compiler_search_paths or pyproject.get("compiler-search-paths", []))),
         enable_decimals=args.enable_decimals,
         bump_pragma=args.bump_pragma,
@@ -143,6 +145,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-command")
     parser.add_argument("--source-vyper")
     parser.add_argument("--target-vyper")
+    parser.add_argument("--source-python")
+    parser.add_argument("--target-python")
     parser.add_argument("--compiler-search-paths", nargs="*", default=[])
     parser.add_argument("--enable-decimals", action="store_true")
     parser.add_argument("--bump-pragma", action="store_true")
@@ -175,6 +179,10 @@ def _none_if_infer(value: object) -> str | None:
     if value in {None, "infer"}:
         return None
     return str(value)
+
+
+def _string_or_none(value: object) -> str | None:
+    return None if value is None else str(value)
 
 
 def _add_validation_diagnostics(file_report: FileReport, source_version: str | None, config: Config) -> None:

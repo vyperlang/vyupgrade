@@ -55,6 +55,8 @@ class Config:
     test_command: str | None = None
     source_vyper: str | None = None
     target_vyper: str | None = None
+    source_python: str | None = None
+    target_python: str | None = None
     compiler_search_paths: tuple[Path, ...] = ()
     enable_decimals: bool = False
     bump_pragma: bool = False

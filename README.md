@@ -24,6 +24,7 @@ For the local Yearn smoke contracts:
 sh scripts/smoke-yearn.sh
 ```
 
-On modern Python, old Vyper source compilers may fail before target validation;
-the report records that as `VYD006` while still checking the rewritten target
-source with Vyper `0.4.3`.
+Compiler subprocesses run through `uv run --python 3.11 --with vyper==...` by
+default so older source compilers do not inherit an incompatible project
+interpreter. Override with `--source-python`, `--target-python`,
+`--source-vyper`, or `--target-vyper` when needed.

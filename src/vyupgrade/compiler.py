@@ -25,7 +25,11 @@ class CompileResult:
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    command = _compiler_command(config.source_vyper, source_version or infer_pragma(path.read_text()))
+    command = _compiler_command(
+        config.source_vyper,
+        source_version or infer_pragma(path.read_text()),
+        config.source_python,
+    )
     return _run_compile(command, path, config)
 
 
@@ -42,7 +46,7 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
         tmp.write(source)
         tmp_path = Path(tmp.name)
     try:
-        command = _compiler_command(config.target_vyper, config.target_version)
+        command = _compiler_command(config.target_vyper, config.target_version, config.target_python)
         return _run_compile(command, tmp_path, config, extra_paths=(path.parent,))
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -58,11 +62,12 @@ def compare_artifacts(source: CompileResult, target: CompileResult) -> tuple[boo
     )
 
 
-def _compiler_command(explicit: str | None, version: str | None) -> list[str]:
+def _compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
     if explicit:
         return [explicit]
     normalized = _normalize_version(version) or "0.4.3"
-    return ["uv", "run", "--with", f"vyper=={normalized}", "vyper"]
+    python = python or _default_python(normalized)
+    return ["uv", "run", "--python", python, "--with", f"vyper=={normalized}", "vyper"]
 
 
 def _normalize_version(version: str | None) -> str | None:
@@ -72,6 +77,13 @@ def _normalize_version(version: str | None) -> str | None:
     if match:
         return match.group(0)
     return None
+
+
+def _default_python(version: str) -> str:
+    # Vyper 0.3.x and 0.4.3 both run cleanly on Python 3.11. Pinning the
+    # subprocess interpreter avoids accidentally using a bleeding-edge project
+    # venv, where old compiler dependencies can break.
+    return "3.11"
 
 
 def _run_compile(
