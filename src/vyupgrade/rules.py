@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .analysis import (
+    SourceFacts,
     infer_expr_type,
+    indexed_key_type,
     indexed_value_type,
     is_integer_type,
     iterable_element_type,
@@ -795,7 +797,11 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
     for raw_line in source.splitlines(keepends=True):
         line = raw_line.rstrip("\n")
         code_line = line.split("#", 1)[0]
-        if not code_line.startswith((" ", "\t")) or not re.search(r"[-+*/%<>]=?|==|!=", code_line):
+        if not code_line.startswith((" ", "\t")) or not (
+            re.search(r"[-+*/%<>]=?|==|!=", code_line)
+            or re.search(r"\b(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\s*\(", code_line)
+            or "[" in code_line
+        ):
             offset += len(raw_line)
             continue
         line_no = line_number(source, offset)
@@ -821,6 +827,8 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     _inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
+                    or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
+                    or _signed_subscript_key_target_type(source, start, name, vars_for_line) is not None
                     or not _signed_name_has_unsigned_context(source, start, lhs_type, vars_for_line)
                 ):
                     continue
@@ -831,6 +839,38 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                         "VY052",
                         line_no,
                         "converted signed integer constant in uint256 arithmetic",
+                        name,
+                        replacement,
+                    )
+                )
+        unsigned_loop_names = sorted(
+            (
+                name
+                for name in loop_vars
+                if _is_unsigned_integer_type(_nearest_loop_var_type(source, rhs_start, name) or vars_for_line.get(name))
+            ),
+            key=len,
+            reverse=True,
+        )
+        for name in unsigned_loop_names:
+            for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
+                start = rhs_start + match.start()
+                if _inside_convert_call(source, start) or _inside_range_header(source, start):
+                    continue
+                target_type = _signed_comparison_target_type(
+                    _local_expression(source, start), name, vars_for_line
+                ) or _signed_internal_call_arg_target_type(
+                    source, start, name, facts
+                ) or _signed_subscript_key_target_type(source, start, name, vars_for_line)
+                if target_type is None:
+                    continue
+                replacement = f"convert({name}, {target_type})"
+                edits.append(TextEdit(start, start + len(name), replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted unsigned loop variable in signed comparison",
                         name,
                         replacement,
                     )
@@ -858,6 +898,119 @@ def _has_unsigned_context(line: str, vars_for_line: dict[str, str]) -> bool:
         if _is_unsigned_integer_type(type_name) and re.search(rf"\b(?:self\.)?{re.escape(name)}\b", line):
             return True
     return False
+
+
+def _signed_comparison_target_type(expr: str, name: str, vars_for_line: dict[str, str]) -> str | None:
+    expr = expr.strip().removesuffix(":").strip()
+    expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
+    if match is None:
+        return None
+    left, _op, right = (part.strip() for part in match.groups())
+    if left == name:
+        other_type = infer_expr_type(right, vars_for_line)
+    elif right == name:
+        other_type = infer_expr_type(left, vars_for_line)
+    else:
+        return None
+    return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _nearest_loop_var_type(source: str, index: int, name: str) -> str | None:
+    line_start = source.rfind("\n", 0, index) + 1
+    current_line = source[line_start : source.find("\n", line_start) if source.find("\n", line_start) != -1 else len(source)]
+    current_indent = len(current_line) - len(current_line.lstrip(" "))
+    prefix = source[:line_start].splitlines()
+    for line in reversed(prefix):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent >= current_indent:
+            continue
+        loop_match = re.match(rf"for\s+{re.escape(name)}\s*:\s*([^:]+?)\s+in\b", stripped)
+        if loop_match:
+            return loop_match.group(1).strip()
+        if re.match(r"(?:@|\s*def\s+)", stripped) and indent < current_indent:
+            return None
+    return None
+
+
+def _signed_internal_call_arg_target_type(source: str, index: int, name: str, facts: SourceFacts) -> str | None:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("(", line_start, index)
+    if open_index == -1:
+        return None
+    close = find_matching(source, open_index)
+    if close is None or not (open_index < index < close):
+        return None
+    func_match = re.search(r"(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    if func_match is None:
+        return None
+    params = facts.function_params.get(func_match.group(1))
+    if not params:
+        return None
+    raw_args = source[open_index + 1 : close]
+    arg_index = _top_level_arg_index(raw_args, index - open_index - 1)
+    if arg_index is None or arg_index >= len(params):
+        return None
+    arg = split_top_level_args(raw_args)
+    if arg is None or arg_index >= len(arg) or arg[arg_index].strip() != name:
+        return None
+    target_type = list(params.values())[arg_index]
+    return normalize_type(target_type) if _is_signed_integer_type(target_type) else None
+
+
+def _signed_subscript_key_target_type(
+    source: str, index: int, name: str, vars_for_line: dict[str, str]
+) -> str | None:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("[", line_start, index)
+    if open_index == -1:
+        return None
+    close_index = source.find("]", index)
+    if close_index == -1:
+        return None
+    if source[open_index + 1 : close_index].strip() != name:
+        return None
+    root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    if root_match is None:
+        return None
+    root = root_match.group(1)
+    root_name = root[5:] if root.startswith("self.") else root
+    root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
+    key_type = indexed_key_type(root_type)
+    return normalize_type(key_type) if _is_signed_integer_type(key_type) else None
+
+
+def _top_level_arg_index(raw_args: str, offset: int) -> int | None:
+    start = 0
+    depth = 0
+    quote: str | None = None
+    arg_index = 0
+    for index, char in enumerate(raw_args):
+        if quote is not None:
+            if char == "\\":
+                continue
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "," and depth == 0:
+            if start <= offset < index:
+                return arg_index
+            start = index + 1
+            arg_index += 1
+    if start <= offset <= len(raw_args):
+        return arg_index
+    return None
 
 
 def _expression_start_offset(line: str) -> int:
@@ -921,36 +1074,27 @@ def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tu
         edits: list[TextEdit] = []
         mask = code_mask(current)
         for struct_name in sorted(facts.structs):
-            for match in re.finditer(rf"\b{re.escape(struct_name)}\s*\(\s*\{{", current):
+            field_order = list(facts.struct_fields.get(struct_name, {}))
+            if not field_order:
+                continue
+            for match in re.finditer(rf"\b{re.escape(struct_name)}\s*\(", current):
                 if not span_is_code(mask, match.start(), match.end()):
                     continue
                 paren = current.find("(", match.start())
                 close = find_matching(current, paren)
                 if close is None:
                     continue
-                inner = current[paren + 1 : close].strip()
-                if not (inner.startswith("{") and inner.endswith("}")):
+                raw_inner = current[paren + 1 : close]
+                replacement_inner = _ordered_struct_args(raw_inner, field_order)
+                if replacement_inner is None or replacement_inner == raw_inner:
                     continue
-                fields = split_top_level_args(inner[1:-1])
-                if fields is None:
-                    continue
-                pairs: list[str] = []
-                ok = True
-                for field in fields:
-                    if ":" not in field:
-                        ok = False
-                        break
-                    name, value = field.split(":", 1)
-                    pairs.append(f"{name.strip()}={value.strip()}")
-                if not ok:
-                    continue
-                replacement = f"{struct_name}({', '.join(pairs)})"
+                replacement = f"{struct_name}({replacement_inner})"
                 edits.append(TextEdit(match.start(), close + 1, replacement))
                 fixes.append(
                     Fix(
                         "VY060",
                         line_number(current, match.start()),
-                        "changed struct literal to keyword arguments",
+                        "ordered struct constructor keyword arguments",
                         current[match.start() : close + 1],
                         replacement,
                     )
@@ -960,6 +1104,50 @@ def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tu
         selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
         all_fixes.extend(selected_fixes)
         current = apply_edits(current, selected_edits)
+
+
+def _ordered_struct_args(raw_inner: str, field_order: list[str]) -> str | None:
+    stripped = raw_inner.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        fields = split_top_level_args(_strip_arg_comments(stripped[1:-1]))
+        if fields is None:
+            return None
+        pairs: list[tuple[str, str]] = []
+        for field in fields:
+            pair = _split_struct_pair(field, ":")
+            if pair is None:
+                return None
+            pairs.append(pair)
+        return _ordered_kwarg_string(pairs, field_order)
+
+    args = split_top_level_args(_strip_arg_comments(raw_inner))
+    if args is None:
+        return None
+    pairs = []
+    for arg in args:
+        pair = _split_struct_pair(arg, "=")
+        if pair is None:
+            return None
+        pairs.append(pair)
+    ordered = _ordered_kwarg_string(pairs, field_order)
+    return ordered if ordered != ", ".join(arg.strip() for arg in args) else None
+
+
+def _split_struct_pair(raw: str, sep: str) -> tuple[str, str] | None:
+    if sep == "=":
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)\Z", raw, re.DOTALL)
+    else:
+        match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)\Z", raw, re.DOTALL)
+    if match is None:
+        return None
+    return match.group(1), match.group(2).strip()
+
+
+def _ordered_kwarg_string(pairs: list[tuple[str, str]], field_order: list[str]) -> str:
+    by_name = dict(pairs)
+    ordered_names = [name for name in field_order if name in by_name]
+    ordered_names.extend(name for name, _value in pairs if name not in field_order)
+    return ", ".join(f"{name}={by_name[name]}" for name in ordered_names)
 
 
 def _typed_range_loops(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:

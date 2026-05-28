@@ -708,6 +708,33 @@ def f() -> bool:
     assert "self.base_cache_updated + convert(BASE_CACHE_EXPIRES, uint256)" in result.source
 
 
+def test_unsigned_range_loop_converted_in_signed_comparison() -> None:
+    source = """# @version 0.2.4
+n_gauge_types: int128
+points_sum: HashMap[int128, uint256]
+
+@internal
+def _get_sum(gauge_type: int128) -> uint256:
+    return 0
+
+@internal
+def f():
+    _n_gauge_types: int128 = self.n_gauge_types
+    for gauge_type in range(100):
+        if gauge_type == _n_gauge_types:
+            break
+        self._get_sum(gauge_type)
+        value: uint256 = self.points_sum[gauge_type]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for gauge_type: uint256 in range(100):" in result.source
+    assert "if convert(gauge_type, int128) == _n_gauge_types:" in result.source
+    assert "self._get_sum(convert(gauge_type, int128))" in result.source
+    assert "self.points_sum[convert(gauge_type, int128)]" in result.source
+
+
 def test_signed_parameter_not_converted_in_uint_arithmetic() -> None:
     source = """# @version 0.3.7
 @internal
@@ -723,6 +750,47 @@ def f(i: int128, x: uint256) -> uint256:
     result = apply_rules(source, config())
 
     assert "x + i" in result.source
+
+
+def test_signed_internal_call_argument_not_converted_for_uint_assignment() -> None:
+    source = """# @version 0.2.4
+points_sum: HashMap[int128, uint256]
+
+@internal
+def _get_sum(gauge_type: int128) -> uint256:
+    return 0
+
+@external
+def f():
+    gauge_type: int128 = 0
+    old_sum_bias: uint256 = self._get_sum(gauge_type)
+    old_sum_slope: uint256 = self.points_sum[gauge_type]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self._get_sum(gauge_type)" in result.source
+    assert "self.points_sum[gauge_type]" in result.source
+    assert "convert(gauge_type, uint256)" not in result.source
+
+
+def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name() -> None:
+    source = """# @version 0.2.4
+N_COINS: constant(int128) = 2
+
+@external
+def f(i: int128):
+    for _i in range(N_COINS):
+        if _i != i:
+            pass
+    for _i in range(2):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for _i: int128 in range(N_COINS):\n        if _i != i:" in result.source
+    assert "convert(_i, int128)" not in result.source
 
 
 def test_legacy_numeric_constants() -> None:
@@ -843,6 +911,47 @@ def f():
     result = apply_rules(source, config())
 
     assert "Point(x=1, y=2)" in result.source
+
+
+def test_struct_keyword_constructor_reorders_to_declaration_order() -> None:
+    source = """# @version 0.3.10
+struct VotedSlope:
+    slope: uint256
+    power: uint256
+    end: uint256
+
+@external
+def f(slope: uint256, power: uint256, lock_end: uint256):
+    new_slope: VotedSlope = VotedSlope(slope=slope, end=lock_end, power=power)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "VotedSlope(slope=slope, power=power, end=lock_end)" in result.source
+
+
+def test_struct_literal_with_comments_reorders_to_declaration_order() -> None:
+    source = """# @version 0.3.10
+struct StrategyParams:
+    performanceFee: uint256
+    activation: uint256
+    enforceChangeLimit: bool
+    profitLimitRatio: uint256
+
+@external
+def f(fee: uint256, ts: uint256, ratio: uint256):
+    params: StrategyParams = StrategyParams({
+        performanceFee: fee,
+        # use current timestamp
+        activation: ts,
+        profitLimitRatio: ratio,
+        enforceChangeLimit: True,
+    })
+"""
+
+    result = apply_rules(source, config())
+
+    assert "StrategyParams(performanceFee=fee, activation=ts, enforceChangeLimit=True, profitLimitRatio=ratio)" in result.source
 
 
 def test_pr_3697_enum_to_flag_is_review_by_default_and_aggressive_fix() -> None:

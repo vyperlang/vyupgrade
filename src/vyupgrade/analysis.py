@@ -146,6 +146,7 @@ class SourceFacts:
     function_ends: dict[int, int] = field(default_factory=dict)
     function_returns: dict[int, str] = field(default_factory=dict)
     function_return_names: dict[str, str] = field(default_factory=dict)
+    function_params: dict[str, dict[str, str]] = field(default_factory=dict)
     imported_interfaces: dict[str, str] = field(default_factory=dict)
 
     def vars_at_line(self, line_number: int) -> dict[str, str]:
@@ -203,7 +204,9 @@ def parse_source_facts(source: str) -> SourceFacts:
                         facts.function_ends[current_function_line] = pending_function_line - 1
                     current_function_line = pending_function_line
                     current_function_indent = pending_function_indent
-                    facts.function_vars[current_function_line] = _parse_params(def_match.group(2))
+                    params = _parse_params(def_match.group(2))
+                    facts.function_vars[current_function_line] = params
+                    facts.function_params[def_match.group(1)] = params
                     facts.function_loop_vars[current_function_line] = set()
                     if def_match.group(3):
                         facts.function_returns[current_function_line] = def_match.group(3).strip()
@@ -276,7 +279,9 @@ def parse_source_facts(source: str) -> SourceFacts:
                 facts.function_ends[current_function_line] = line_no - 1
             current_function_line = line_no
             current_function_indent = indent
-            facts.function_vars[current_function_line] = _parse_params(def_match.group(2))
+            params = _parse_params(def_match.group(2))
+            facts.function_vars[current_function_line] = params
+            facts.function_params[def_match.group(1)] = params
             facts.function_loop_vars[current_function_line] = set()
             if def_match.group(3):
                 facts.function_returns[current_function_line] = def_match.group(3).strip()
@@ -359,6 +364,16 @@ def indexed_value_type(type_name: str | None) -> str | None:
         if parts and len(parts) == 2:
             return parts[1].strip()
     return iterable_element_type(type_name)
+
+
+def indexed_key_type(type_name: str | None) -> str | None:
+    if type_name is None:
+        return None
+    type_name = unwrap_type(type_name)
+    if not (type_name.startswith("HashMap[") and type_name.endswith("]")):
+        return None
+    parts = split_top_level_args(type_name.removeprefix("HashMap[").removesuffix("]"))
+    return parts[0].strip() if parts and len(parts) == 2 else None
 
 
 def infer_expr_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None) -> str | None:
