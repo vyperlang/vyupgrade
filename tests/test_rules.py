@@ -259,6 +259,43 @@ def f(token: address, owner: address) -> uint256:
     assert "min(staticcall Token(token).balanceOf(owner), staticcall Token(token).allowance(owner, self))" in result.source
 
 
+def test_multiline_interface_method_mutability() -> None:
+    source = """# @version 0.3.1
+interface Calculator:
+    def get_dy(n_coins: uint256, balances: uint256[8],
+               i: int128, j: int128) -> uint256: view
+
+@external
+def f(calculator: address, balances: uint256[8], i: int128, j: int128) -> uint256:
+    return Calculator(calculator).get_dy(2, balances, i, j)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall Calculator(calculator).get_dy(2, balances, i, j)" in result.source
+
+
+def test_legacy_interface_body_mutability_updates_keyword() -> None:
+    source = """# @version 0.2.15
+interface Vault:
+    def withdraw(amount: uint256):
+        nonpayable
+
+    def token() -> address:
+        view
+
+@external
+def f(vault: address, amount: uint256) -> address:
+    extcall Vault(vault).withdraw(amount)
+    return extcall Vault(vault).token()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "extcall Vault(vault).withdraw(amount)" in result.source
+    assert "return staticcall Vault(vault).token()" in result.source
+
+
 def test_immutable_interface_storage_var_calls() -> None:
     source = """# @version 0.3.10
 interface Pool:

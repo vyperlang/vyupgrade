@@ -179,6 +179,7 @@ def parse_source_facts(source: str) -> SourceFacts:
     lines = source.splitlines()
     current_interface: str | None = None
     pending_interface_method: str | None = None
+    pending_interface_header: list[str] = []
     current_struct: str | None = None
     current_struct_indent = 0
     pending_function_line: int | None = None
@@ -233,6 +234,7 @@ def parse_source_facts(source: str) -> SourceFacts:
         if current_interface and indent == 0:
             current_interface = None
             pending_interface_method = None
+            pending_interface_header = []
 
         struct_match = STRUCT_RE.match(stripped)
         if struct_match:
@@ -254,26 +256,35 @@ def parse_source_facts(source: str) -> SourceFacts:
             facts.flags_or_enums.add(flag_match.group(1))
 
         if current_interface:
+            if pending_interface_method is not None and stripped in {"view", "pure", "nonpayable", "payable"}:
+                facts.interfaces[current_interface][pending_interface_method] = stripped
+                pending_interface_method = None
+                continue
+            if pending_interface_header:
+                pending_interface_header.append(stripped)
+                if _balanced_parens(" ".join(pending_interface_header)):
+                    def_match = DEF_RE.match(" ".join(pending_interface_header))
+                    if def_match:
+                        method_name = def_match.group(1)
+                        facts.interfaces[current_interface][method_name] = def_match.group(4) or "nonpayable"
+                        facts.interface_params[current_interface][method_name] = _parse_params(def_match.group(2))
+                        if def_match.group(3):
+                            facts.interface_returns[current_interface][method_name] = def_match.group(3).strip()
+                        pending_interface_method = method_name if def_match.group(4) is None else None
+                    pending_interface_header = []
+                continue
             def_match = DEF_RE.match(stripped)
             if def_match:
-                mutability = def_match.group(4) or "nonpayable"
-                facts.interfaces[current_interface][def_match.group(1)] = mutability
-                facts.interface_params[current_interface][def_match.group(1)] = _parse_params(def_match.group(2))
+                method_name = def_match.group(1)
+                facts.interfaces[current_interface][method_name] = def_match.group(4) or "nonpayable"
+                facts.interface_params[current_interface][method_name] = _parse_params(def_match.group(2))
                 if def_match.group(3):
-                    facts.interface_returns[current_interface][def_match.group(1)] = def_match.group(3).strip()
-                pending_interface_method = None
+                    facts.interface_returns[current_interface][method_name] = def_match.group(3).strip()
+                pending_interface_method = method_name if def_match.group(4) is None else None
                 continue
             multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
             if multiline_def:
-                pending_interface_method = multiline_def.group(1)
-                continue
-            if pending_interface_method is not None:
-                end_match = re.match(r"\)\s*(?:->\s*([^:]+?))?\s*:\s*(\w+)\s*$", stripped)
-                if end_match:
-                    facts.interfaces[current_interface][pending_interface_method] = end_match.group(2)
-                    if end_match.group(1):
-                        facts.interface_returns[current_interface][pending_interface_method] = end_match.group(1).strip()
-                    pending_interface_method = None
+                pending_interface_header = [stripped]
             continue
 
         def_match = DEF_RE.match(stripped)
@@ -416,7 +427,7 @@ def _balanced_parens(value: str) -> bool:
             depth += 1
         elif char == ")":
             depth -= 1
-    return depth == 0 and value.rstrip().endswith(":")
+    return depth == 0 and re.search(r":\s*(?:\w+\s*)?$", value.rstrip()) is not None
 
 
 def _strip_outer_parens(expr: str) -> str:

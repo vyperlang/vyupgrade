@@ -627,8 +627,6 @@ def _external_call_keywords_once(source: str, config: Config, context: Migration
         if not span_is_code(mask, start, end):
             continue
         prefix = source[max(0, start - 16) : start]
-        if re.search(r"\b(?:extcall|staticcall)\s+$", prefix):
-            continue
         if target == "self" or method in {"append", "pop"}:
             continue
         vars_for_line = facts.vars_at_line(line_number(source, start))
@@ -645,8 +643,32 @@ def _external_call_keywords_once(source: str, config: Config, context: Migration
         rule = "VY041" if keyword == "staticcall" else "VY040"
         if not _enabled(rule, config, context):
             continue
+        existing_keyword = re.search(r"\b(?P<keyword>extcall|staticcall)\s+$", prefix)
+        if existing_keyword is not None:
+            if existing_keyword.group("keyword") == keyword:
+                continue
+            keyword_start = start - (len(prefix) - existing_keyword.start("keyword"))
+            edits.append(TextEdit(keyword_start, keyword_start + len(existing_keyword.group("keyword")), keyword))
+            fixes.append(
+                Fix(
+                    rule,
+                    line_number(source, start),
+                    f"changed external call keyword to {keyword}",
+                    existing_keyword.group("keyword"),
+                    keyword,
+                )
+            )
+            continue
         edits.append(TextEdit(start, start, keyword + " "))
-        fixes.append(Fix(rule, line_number(source, start), f"added {keyword} to {mutability} external call", source[start:end].rstrip(), keyword + " " + source[start:end].rstrip()))
+        fixes.append(
+            Fix(
+                rule,
+                line_number(source, start),
+                f"added {keyword} to {mutability} external call",
+                source[start:end].rstrip(),
+                keyword + " " + source[start:end].rstrip(),
+            )
+        )
 
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, diagnostics
