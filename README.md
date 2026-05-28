@@ -18,6 +18,10 @@ external call keywords, integer `//`, struct keyword arguments, typed loops,
 single-name `@nonreentrant`, `sqrt`, bitwise builtins, and common 0.3.x legacy
 constants such as `MAX_UINT256` and `ZERO_ADDRESS`.
 
+See [docs/vyper-syntax-history.md](docs/vyper-syntax-history.md) for the
+versioned Vyper syntax history from `0.4.3` through `0.2.1`, with PR links and
+before/after examples.
+
 For the local Yearn smoke contracts:
 
 ```bash
