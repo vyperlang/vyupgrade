@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
 
-from .models import FileReport, RunReport
+from .models import Diagnostic, FileReport, Fix, RunReport
 
 
 THEME = Theme(
@@ -254,15 +254,15 @@ def _render_detail_lines(console: Console, lines: list[str]) -> None:
 
 
 def _group_items(
-    items: Iterable[object],
-    style_for: Callable[[object], str],
+    items: Iterable[Fix | Diagnostic],
+    style_for: Callable[[Fix | Diagnostic], str],
 ) -> list[ReportGroup]:
     groups: dict[tuple[str, str, str], list[int]] = {}
     for item in items:
-        rule = getattr(item, "rule")
-        message = getattr(item, "message")
+        rule = item.rule
+        message = item.message
         style = style_for(item)
-        groups.setdefault((rule, message, style), []).append(getattr(item, "line"))
+        groups.setdefault((rule, message, style), []).append(item.line)
     return [
         ReportGroup(rule, message, tuple(lines), style)
         for (rule, message, style), lines in groups.items()

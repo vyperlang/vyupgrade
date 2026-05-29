@@ -82,24 +82,27 @@ def test_dedupe_manifests_keeps_one_item_per_source_hash(tmp_path: Path) -> None
         "sha256": digest,
     }
     first.write_text(
-        '{"items": [%s]}' % json_dumps(base_item),
+        json.dumps({"items": [base_item]}),
         encoding="utf-8",
     )
     second.write_text(
-        '{"items": [%s]}'
-        % json_dumps(
+        json.dumps(
             {
-                **base_item,
-                "source_path": str(second_source),
-                "repo": "second",
-                "relpath": "b.vy",
-                "corpus_path": str(second_source),
+                "items": [
+                    {
+                        **base_item,
+                        "source_path": str(second_source),
+                        "repo": "second",
+                        "relpath": "b.vy",
+                        "corpus_path": str(second_source),
+                    }
+                ]
             }
         ),
         encoding="utf-8",
     )
     stale.write_text(
-        '{"items": [%s]}' % json_dumps({**base_item, "corpus_path": str(tmp_path / "missing.vy")}),
+        json.dumps({"items": [{**base_item, "corpus_path": str(tmp_path / "missing.vy")}]}),
         encoding="utf-8",
     )
 
@@ -126,13 +129,17 @@ def test_build_corpus_uses_hash_suffixed_path_for_path_collisions(tmp_path: Path
     (first / "contracts" / "Token.vy").write_text(first_source, encoding="utf-8")
     (second / "contracts" / "Token.vy").write_text(second_source, encoding="utf-8")
 
-    manifest = corpus.build_corpus((tmp_path / "dev", tmp_path / "yearn"), tmp_path / "corpus" / "vyper")
+    manifest = corpus.build_corpus(
+        (tmp_path / "dev", tmp_path / "yearn"), tmp_path / "corpus" / "vyper"
+    )
 
     paths = [Path(item["corpus_path"]) for item in manifest["items"]]
     assert len(paths) == 2
     assert len(set(paths)) == 2
     assert manifest["counts"]["corpus_path_collisions"] == 1
-    assert sorted(path.read_text(encoding="utf-8") for path in paths) == sorted([first_source, second_source])
+    assert sorted(path.read_text(encoding="utf-8") for path in paths) == sorted(
+        [first_source, second_source]
+    )
 
 
 def test_dedupe_repairs_manifest_path_collisions_from_source_path(tmp_path: Path) -> None:

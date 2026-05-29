@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,9 @@ def calls(output: dict[str, Any], name: str | None = None) -> Iterator[AstCall]:
         args = node.get("args", [])
         if not isinstance(args, list):
             args = []
-        yield AstCall(call_name, node_span(node), tuple(arg for arg in args if isinstance(arg, dict)), node)
+        yield AstCall(
+            call_name, node_span(node), tuple(arg for arg in args if isinstance(arg, dict)), node
+        )
 
 
 def _call_name(func: Any) -> str | None:
@@ -119,7 +122,9 @@ def _legacy_constant_annotation(node: Any) -> bool:
     if not isinstance(node, dict) or node.get("ast_type") != "Call":
         return False
     func = node.get("func")
-    return isinstance(func, dict) and func.get("ast_type") == "Name" and func.get("id") == "constant"
+    return (
+        isinstance(func, dict) and func.get("ast_type") == "Name" and func.get("id") == "constant"
+    )
 
 
 def _integer_literal(node: Any) -> int | None:

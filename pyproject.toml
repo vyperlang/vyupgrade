@@ -51,3 +51,22 @@ source-exclude = [".DS_Store"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "B",
+    "PIE",
+    "PLR1704",
+    "PLW2901",
+    "RUF",
+    "SIM",
+    "UP",
+]
+ignore = [
+    # Tempfile creation uses try/fallback paths, then closes via `with tmp:`.
+    "SIM115",
+]

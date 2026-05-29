@@ -461,7 +461,8 @@ def _event_kwargs(
 
 def _strip_arg_comments(raw_args: str) -> str:
     lines: list[str] = []
-    for line in raw_args.splitlines():
+    for raw_line in raw_args.splitlines():
+        line = raw_line
         mask = code_mask(line)
         comment_start = next(
             (
@@ -4908,7 +4909,7 @@ def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]
         if arg_spans is None:
             continue
         output_value_span: tuple[int, int] | None = None
-        for arg_start, arg_end, arg in arg_spans:
+        for arg_start, _arg_end, arg in arg_spans:
             name, sep, raw_value = arg.partition("=")
             if not sep or name.strip() != "output_type" or raw_value.strip() != "bytes32":
                 continue
@@ -4957,7 +4958,7 @@ def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
         if arg_spans is None:
             continue
         output_value_span: tuple[int, int] | None = None
-        for arg_start, arg_end, arg in arg_spans:
+        for arg_start, _arg_end, arg in arg_spans:
             name, sep, raw_value = arg.partition("=")
             if not sep or name.strip() != "output_type" or raw_value.strip() != "bytes32":
                 continue

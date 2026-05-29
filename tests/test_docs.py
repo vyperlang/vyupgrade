@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -34,3 +35,20 @@ def test_migration_coverage_has_no_unresolved_gaps() -> None:
 
     assert "no automated rule yet" not in coverage
     assert "TODO" not in coverage
+
+
+def test_python_modules_do_not_shadow_top_level_definitions() -> None:
+    duplicate_definitions: list[str] = []
+    paths = [*Path("src/vyupgrade").glob("*.py"), *Path("scripts").glob("*.py")]
+    for path in paths:
+        seen: dict[str, int] = {}
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in module.body:
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            previous = seen.get(node.name)
+            if previous is not None:
+                duplicate_definitions.append(f"{path}:{node.name}:{previous}:{node.lineno}")
+            seen[node.name] = node.lineno
+
+    assert not duplicate_definitions

@@ -36,7 +36,7 @@ class MigrationContext:
     target_version: VyperVersion
 
     @classmethod
-    def from_specs(cls, source_spec: str | None, target_spec: str) -> "MigrationContext":
+    def from_specs(cls, source_spec: str | None, target_spec: str) -> MigrationContext:
         target = parse_version(compiler_version_for_spec(target_spec)) or parse_version(target_spec)
         if target is None:
             target = VyperVersion(0, 4, 3)
@@ -134,7 +134,11 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
     if not clauses:
         version = parse_version(spec)
         return (version,) if version else ()
-    return tuple(version for version in KNOWN_VERSIONS if all(_satisfies(version, op, bound) for op, bound in clauses))
+    return tuple(
+        version
+        for version in KNOWN_VERSIONS
+        if all(_satisfies(version, op, bound) for op, bound in clauses)
+    )
 
 
 def is_supported_source_version(version: str | None) -> bool:
@@ -153,7 +157,9 @@ def legacy_prerelease_version(spec: str | None) -> str | None:
 
 def _parse_clauses(spec: str) -> list[tuple[str, VyperVersion]]:
     clauses: list[tuple[str, VyperVersion]] = []
-    for match in re.finditer(r"(?P<op>\^|==|!=|<=|>=|<|>|=)?\s*(?P<version>0\.(?:2|3|4)\.\d+)", spec):
+    for match in re.finditer(
+        r"(?P<op>\^|==|!=|<=|>=|<|>|=)?\s*(?P<version>0\.(?:2|3|4)\.\d+)", spec
+    ):
         op = match.group("op") or "=="
         version = ensure_version(match.group("version"))
         if op == "^":
