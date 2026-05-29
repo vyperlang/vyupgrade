@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import subprocess
 import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
+from typing import TextIO
 
 from .compiler import (
     compare_artifact_details,
@@ -123,9 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if config.diff and diff_chunks:
-        sys.stdout.write("".join(diff_chunks))
-        if not diff_chunks[-1].endswith("\n"):
-            sys.stdout.write("\n")
+        _write_diff(diff_chunks, sys.stdout)
 
     if config.write and not any_target_failed:
         for path, content in write_back:
@@ -177,6 +177,40 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=["none", "mamushi"])
     parser.add_argument("--config", help="path to a pyproject.toml file")
     return parser
+
+
+def _write_diff(diff_chunks: list[str], stream: TextIO) -> None:
+    if _should_color(stream):
+        text = "".join(_colorize_diff_line(line) for line in diff_chunks)
+    else:
+        text = "".join(diff_chunks)
+    stream.write(text)
+    if not diff_chunks[-1].endswith("\n"):
+        stream.write("\n")
+
+
+def _should_color(stream: TextIO) -> bool:
+    if os.environ.get("NO_COLOR") is not None or os.environ.get("CLICOLOR") == "0":
+        return False
+    return stream.isatty()
+
+
+def _colorize_diff_line(line: str) -> str:
+    if line.startswith(("--- ", "+++ ")):
+        return _ansi(line, "1")
+    if line.startswith("@@"):
+        return _ansi(line, "36")
+    if line.startswith("+"):
+        return _ansi(line, "32")
+    if line.startswith("-"):
+        return _ansi(line, "31")
+    if line.startswith("\\"):
+        return _ansi(line, "2")
+    return line
+
+
+def _ansi(text: str, code: str) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m"
 
 
 def _split_rules(raw: str) -> frozenset[str]:

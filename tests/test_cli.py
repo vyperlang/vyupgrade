@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import json
 import shutil
+from io import StringIO
 from pathlib import Path
 
-from vyupgrade.cli import _evm_default_diagnostic, main
+from vyupgrade.cli import _evm_default_diagnostic, _write_diff, main
+
+
+class TtyStringIO(StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def test_check_mode_reports_changes(tmp_path: Path) -> None:
@@ -104,6 +110,48 @@ def __init__():
     assert code in {1, 2, 3}
     fixes = json.loads(report.read_text())["files"][0]["fixes"]
     assert {fix["rule"] for fix in fixes} == {"VY001"}
+
+
+def test_diff_output_is_colored_for_tty(monkeypatch) -> None:
+    stream = TtyStringIO()
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("CLICOLOR", raising=False)
+
+    _write_diff(
+        [
+            "--- old.vy\n",
+            "+++ new.vy\n",
+            "@@ -1 +1 @@\n",
+            "-# @version 0.3.10\n",
+            "+#pragma version 0.4.3\n",
+            " unchanged\n",
+        ],
+        stream,
+    )
+
+    text = stream.getvalue()
+    assert "\x1b[1m--- old.vy\n\x1b[0m" in text
+    assert "\x1b[36m@@ -1 +1 @@\n\x1b[0m" in text
+    assert "\x1b[31m-# @version 0.3.10\n\x1b[0m" in text
+    assert "\x1b[32m+#pragma version 0.4.3\n\x1b[0m" in text
+    assert " unchanged\n" in text
+
+
+def test_diff_output_stays_plain_for_pipes() -> None:
+    stream = StringIO()
+
+    _write_diff(["-old\n", "+new\n"], stream)
+
+    assert stream.getvalue() == "-old\n+new\n"
+
+
+def test_diff_output_respects_no_color(monkeypatch) -> None:
+    stream = TtyStringIO()
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    _write_diff(["-old\n", "+new\n"], stream)
+
+    assert stream.getvalue() == "-old\n+new\n"
 
 
 def test_evm_default_diagnostic_reports_exact_change() -> None:
