@@ -1205,7 +1205,8 @@ def _pure_immutable_reads(source: str, config: Config, context: MigrationContext
             continue
         read_name = _function_read_name(source, mask, line_offsets, facts, function_line, immutable_names)
         has_static_raw_call = _function_contains(source, mask, line_offsets, facts, function_line, "raw_call")
-        if read_name is None and not has_static_raw_call:
+        has_external_view_call = _function_contains_external_view_call(source, facts, function_line)
+        if read_name is None and not has_static_raw_call and not has_external_view_call:
             continue
         decorator_line = facts.function_decorator_lines.get(function_line, {}).get("pure")
         if decorator_line is None or decorator_line > len(lines):
@@ -1218,7 +1219,11 @@ def _pure_immutable_reads(source: str, config: Config, context: MigrationContext
         message = (
             f"relaxed pure function that reads immutable {read_name}"
             if read_name is not None
-            else "relaxed pure function that performs static raw_call"
+            else (
+                "relaxed pure function that performs static raw_call"
+                if has_static_raw_call
+                else "relaxed pure function that calls a view external function"
+            )
         )
         fixes.append(
             Fix(
@@ -1230,6 +1235,25 @@ def _pure_immutable_reads(source: str, config: Config, context: MigrationContext
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+def _function_contains_external_view_call(source: str, facts: SourceFacts, function_line: int) -> bool:
+    function_start = _line_offsets(source)[function_line - 1]
+    function_end_line = facts.function_ends.get(function_line, len(source.splitlines()))
+    line_offsets = _line_offsets(source)
+    function_end = line_offsets[function_end_line] if function_end_line < len(line_offsets) else len(source)
+    for start, _end, target, method, cast_type in _all_external_call_matches(source, facts):
+        if not (function_start <= start < function_end):
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, start))
+        if target.startswith("self."):
+            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(target, vars_for_line, facts)
+        else:
+            target_type = cast_type or infer_expr_type(target, vars_for_line, facts)
+        mutability = facts.interfaces.get(normalize_type(target_type or ""), {}).get(method)
+        if mutability in {"view", "pure"}:
+            return True
+    return False
 
 
 def _immutable_names(facts: SourceFacts) -> set[str]:
