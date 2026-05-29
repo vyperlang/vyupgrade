@@ -876,6 +876,58 @@ def f(x: uint256, y: uint256) -> DynArray[uint256, 4]:
     assert "values.append((10**18 * unsafe_div(x, y)) // (x + y))" in result.source
 
 
+def test_unsigned_constant_exponent_uses_folded_integer_constants() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 3
+PRICE_SIZE: constant(int128) = 256 // (N_COINS - 1)
+PRICE_MASK: constant(uint256) = 2**PRICE_SIZE - 1
+MAX_A: constant(uint256) = N_COINS**N_COINS * 1000
+"""
+
+    result = apply_rules(source, config())
+
+    assert "PRICE_MASK: constant(uint256) = 2**128 - 1" in result.source
+    assert "MAX_A: constant(uint256) = 3**3 * 1000" in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
+
+
+def test_dynamic_uint_exponent_rewrites_to_pow_mod256() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 3
+A_MULTIPLIER: constant(uint256) = 100
+
+@external
+def f(ann: uint256) -> bool:
+    return ann > N_COINS**N_COINS * A_MULTIPLIER
+"""
+
+    result = apply_rules(source, config())
+
+    assert "pow_mod256(convert(N_COINS, uint256), convert(N_COINS, uint256)) * A_MULTIPLIER" in result.source
+    assert any(fix.rule == "VY055" for fix in result.fixes)
+
+
+def test_unsigned_range_bound_converts_signed_constant() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 3
+
+@external
+def f() -> uint256:
+    total: uint256 = 0
+    for j: uint256 in range(2, N_COINS + 1):
+        total += j
+    for k: uint256 in range(N_COINS - 1):
+        total += k
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(2, convert(N_COINS, uint256) + 1, bound=2)" in result.source
+    assert "range(convert(N_COINS, uint256) - 1, bound=2)" in result.source
+    assert any(fix.rule == "VY056" for fix in result.fixes)
+
+
 def test_signed_constant_converted_in_uint_arithmetic() -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 3

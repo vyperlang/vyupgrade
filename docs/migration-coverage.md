@@ -65,6 +65,13 @@ the supported range.
   arithmetic expressions.
 - Dynamic `Bytes[N]` declarations initialized from hex byte literals: `VY053`
   rewrites the literal to a byte string form accepted by modern Vyper.
+- Exponentiation typing became stricter: `VY054` folds known integer constants
+  used as operands in unsigned constant exponent expressions, and `VY055`
+  rewrites dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`.
+- Range bounds are type-checked against annotated loop variables: `VY056`
+  converts signed integer constants inside `range(...)` when the loop variable
+  has an unsigned integer annotation, and adds a literal `bound=` when the
+  original constant expression makes the iteration count provable.
 - Struct literals require keyword arguments: `VY060`.
 - Loop variables require type annotations: `VY070`.
 - `enum` replaced by `flag`: `VY030` diagnoses by default and rewrites only
