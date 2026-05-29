@@ -59,7 +59,9 @@ the supported range.
   `VYD003` flags calls whose mutability cannot be inferred.
 - Integer division uses `//`: `VY050` rewrites proven integer division.
   `VYD004` flags ambiguous `/` expressions.
-- Redundant integer `convert(..., uint256)` after division: `VY051`.
+- Redundant integer `convert(...)` calls rejected by modern Vyper: `VY051`
+  removes converts when source facts prove the value already has the target
+  integer type, and also handles legacy `uint256` converts after division.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
   arithmetic expressions.

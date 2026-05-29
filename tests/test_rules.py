@@ -1217,6 +1217,33 @@ def f() -> uint256:
     assert "(COEFF * 46 // 10 ** 6)" in result.source
 
 
+def test_redundant_convert_to_same_integer_type() -> None:
+    source = """# @version 0.3.10
+PRECISION: constant(uint256) = 10**18
+
+@external
+def f() -> uint256:
+    return convert(PRECISION, uint256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return PRECISION" in result.source
+    assert any(fix.rule == "VY051" for fix in result.fixes)
+
+
+def test_literal_convert_kept_for_abi_encoding_context() -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> Bytes[96]:
+    return abi_encode(convert(0, uint256), method_id=method_id("deposit(uint256)"))
+"""
+
+    result = apply_rules(source, config())
+
+    assert "abi_encode(convert(0, uint256), method_id=" in result.source
+
+
 def test_self_storage_interface_not_shadowed_by_later_parameter() -> None:
     source = """# @version 0.3.10
 interface Token:

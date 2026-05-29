@@ -774,15 +774,40 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
         if args is None or len(args) != 2:
             continue
         expr, target = args[0].strip(), args[1].strip()
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        expr_type = infer_expr_type(expr, vars_for_line, facts)
+        if (
+            is_integer_type(target)
+            and normalize_type(expr_type or "") == normalize_type(target)
+            and _simple_nonliteral_expr(expr)
+        ):
+            replacement = _redundant_convert_replacement(expr)
+            edits.append(TextEdit(match.start(), close + 1, replacement))
+            fixes.append(
+                Fix(
+                    "VY051",
+                    line_number(source, match.start()),
+                    "removed redundant integer convert to the same type",
+                    source[match.start() : close + 1],
+                    replacement,
+                )
+            )
+            continue
         if target != "uint256" or not re.search(r"[-+*/%]", expr):
             continue
-        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
-        if not _integerish_expression(expr, vars_for_line):
-            continue
-        replacement = f"({expr})"
-        edits.append(TextEdit(match.start(), close + 1, replacement))
-        fixes.append(Fix("VY051", line_number(source, match.start()), "removed redundant uint256 convert around integer expression", source[match.start() : close + 1], replacement))
+        if _integerish_expression(expr, vars_for_line):
+            replacement = f"({expr})"
+            edits.append(TextEdit(match.start(), close + 1, replacement))
+            fixes.append(Fix("VY051", line_number(source, match.start()), "removed redundant uint256 convert around integer expression", source[match.start() : close + 1], replacement))
     return apply_edits(source, edits), fixes, []
+
+
+def _redundant_convert_replacement(expr: str) -> str:
+    return f"({expr})" if re.search(r"[-+*/%<>=|&]", expr) else expr
+
+
+def _simple_nonliteral_expr(expr: str) -> bool:
+    return bool(re.fullmatch(r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", expr))
 
 
 def _dynamic_bytes_hex_literals(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
