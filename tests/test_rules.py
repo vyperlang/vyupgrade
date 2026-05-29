@@ -2603,8 +2603,23 @@ def test_legacy_map_rewrite_handles_nested_map_type() -> None:
     assert "allowances: HashMap[address, HashMap[address, uint256]]" in result.source
 
 
+def test_legacy_map_rewrite_handles_subscript_map_type() -> None:
+    source = """balances: uint256[address]
+allowances: (uint256[address])[address]
+id_to_token: address[uint256]
+fixed_coins: address[2]
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "balances: HashMap[address, uint256]" in result.source
+    assert "allowances: HashMap[address, HashMap[address, uint256]]" in result.source
+    assert "id_to_token: HashMap[uint256, address]" in result.source
+    assert "fixed_coins: address[2]" in result.source
+
+
 def test_legacy_interface_signature_mutability_rewrites() -> None:
-    source = """contract Controller:
+    source = """contract Controller():
     def gauges(gauge_id: int128) -> address: constant
 
 contract Token:
@@ -2616,6 +2631,84 @@ contract Token:
     assert "interface Controller:" in result.source
     assert "def gauges(gauge_id: int128) -> address: view" in result.source
     assert "def mint(_to: address, _value: uint256): nonpayable" in result.source
+
+
+def test_legacy_address_interface_type_rewrites_to_imported_interface() -> None:
+    source = """# @version 0.1.0b4
+interface Factory:
+    def getExchange(token: address) -> address: view
+
+token: address(ERC20)
+
+@public
+@constant
+def balance() -> uint256:
+    return self.token.balanceOf(self)
+
+@public
+@constant
+def factoryAddress() -> address(Factory):
+    return empty(address)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "from ethereum.ercs import IERC20" in result.source
+    assert "token: address" in result.source
+    assert "def factoryAddress() -> address:" in result.source
+    assert "staticcall IERC20(self.token).balanceOf(self)" in result.source
+
+
+def test_legacy_interface_value_calls_rewrite_interface_payable() -> None:
+    source = """# @version 0.1.0b4
+contract Exchange():
+    def ethToTokenTransferInput(min_tokens: uint256, deadline: timestamp, recipient: address) -> uint256: modifying
+
+@public
+def f(exchange_addr: address, value: uint256):
+    Exchange(exchange_addr).ethToTokenTransferInput(1, block.timestamp, msg.sender, value=value)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "def ethToTokenTransferInput(min_tokens: uint256, deadline: uint256, recipient: address) -> uint256: payable" in result.source
+    assert "extcall Exchange(exchange_addr).ethToTokenTransferInput" in result.source
+
+
+def test_legacy_interface_storage_type_rewrites_to_address_with_casts() -> None:
+    source = """# @version 0.1.0b4
+contract Factory():
+    def getExchange(token: address) -> address: constant
+
+factory: Factory
+
+@public
+@constant
+def f(token: address) -> address:
+    assert self.factory != ZERO_ADDRESS
+    return self.factory.getExchange(token)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "factory: address" in result.source
+    assert "assert self.factory != empty(address)" in result.source
+    assert "staticcall Factory(self.factory).getExchange(token)" in result.source
+
+
+def test_legacy_create_with_code_of_renames_to_create_copy_of() -> None:
+    source = """# @version 0.1.0b4
+template: address
+
+@public
+def create() -> address:
+    return create_with_code_of(self.template)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "create_copy_of(self.template)" in result.source
+    assert any(fix.rule == "VY208" for fix in result.fixes)
 
 
 def test_legacy_timestamp_type_rewrites_in_type_positions() -> None:

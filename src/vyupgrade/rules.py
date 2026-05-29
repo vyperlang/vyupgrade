@@ -203,6 +203,10 @@ def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> 
     return any(_enabled(rule, config, context) for rule in rules)
 
 
+def _pre_021_context(context: MigrationContext) -> bool:
+    return context.source_floor is None or context.source_floor < VyperVersion(0, 2, 1)
+
+
 def _innermost_non_overlapping(
     edits: list[TextEdit], fixes: list[Fix]
 ) -> tuple[list[TextEdit], list[Fix]]:
@@ -431,11 +435,15 @@ def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationC
         current, map_fixes = _rewrite_map_types(current)
         fixes.extend(map_fixes)
     if _enabled("VY206", config, context):
-        pattern = re.compile(r"^(\s*)contract\s+([A-Za-z_][A-Za-z0-9_]*\s*:)", re.MULTILINE)
+        legacy_source = _pre_021_context(context)
+        if legacy_source:
+            current, address_interface_fixes = _rewrite_legacy_address_interface_types(current, config, context)
+            fixes.extend(address_interface_fixes)
+        pattern = re.compile(r"^(\s*)contract\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?\s*:", re.MULTILINE)
 
         def repl(match: re.Match[str]) -> str:
             before = match.group(0)
-            after = f"{match.group(1)}interface {match.group(2)}"
+            after = f"{match.group(1)}interface {match.group(2)}:"
             fixes.append(Fix("VY206", line_number(current, match.start()), "changed contract interface declaration", before, after))
             return after
 
@@ -453,7 +461,157 @@ def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationC
             return after
 
         current = pattern.sub(mutability_repl, current)
+        if legacy_source:
+            current, payable_fixes = _rewrite_value_call_interface_methods_payable(current)
+            fixes.extend(payable_fixes)
+            current, storage_fixes = _rewrite_legacy_interface_storage_vars(current)
+            fixes.extend(storage_fixes)
     return current, fixes, []
+
+
+def _rewrite_legacy_address_interface_types(
+    source: str,
+    config: Config,
+    context: MigrationContext,
+) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    imports: dict[str, str | None] = {}
+    storage_interfaces: dict[str, str] = {}
+    taken = _code_identifiers(source)
+    mask = code_mask(source)
+    for match in re.finditer(r"\baddress\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        prefix = source[line_start : match.start()]
+        declaration = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:public\s*\(\s*)?$", prefix)
+        old = match.group(1)
+        if declaration is None and not old[:1].isupper():
+            continue
+        new = IMPORT_RENAMES.get(old, old)
+        interface_name = new
+        alias: str | None = None
+        if new != old and new in taken:
+            interface_name = old
+            alias = old
+        if declaration is not None:
+            storage_interfaces[declaration.group(1)] = interface_name
+        edits.append(TextEdit(match.start(), match.end(), "address"))
+        fixes.append(
+            Fix(
+                "VY206",
+                line_number(source, match.start()),
+                "changed legacy address interface type",
+                match.group(0),
+                "address",
+            )
+        )
+        if new != old and _enabled("VY020", config, context):
+            imports[new] = alias
+    current = apply_edits(source, edits)
+    for name, alias in sorted(imports.items()):
+        import_line = f"from ethereum.ercs import {name}{f' as {alias}' if alias else ''}\n"
+        if import_line.strip() not in current:
+            current = _insert_import(current, import_line)
+            fixes.append(Fix("VY020", 1, "added built-in interface import", "", import_line.rstrip("\n")))
+    current, cast_fixes = _cast_legacy_address_interface_calls(current, storage_interfaces)
+    fixes.extend(cast_fixes)
+    return current, fixes
+
+
+def _cast_legacy_address_interface_calls(source: str, storage_interfaces: dict[str, str]) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for name, interface_name in storage_interfaces.items():
+        pattern = re.compile(rf"\bself\.{re.escape(name)}\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+        for match in pattern.finditer(source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            replacement = f"{interface_name}(self.{name}).{match.group(1)}("
+            edits.append(TextEdit(match.start(), match.end(), replacement))
+            fixes.append(
+                Fix(
+                    "VY206",
+                    line_number(source, match.start()),
+                    "cast legacy address interface call",
+                    match.group(0),
+                    replacement,
+                )
+            )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_value_call_interface_methods_payable(source: str) -> tuple[str, list[Fix]]:
+    methods = {
+        match.group(1)
+        for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\([^()\n]*\)\.([A-Za-z_][A-Za-z0-9_]*)\s*\([^()\n]*\bvalue\s*=", source)
+    }
+    if not methods:
+        return source, []
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for match in re.finditer(
+        r"^([ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^#\n]*\)[ \t]*(?:->[ \t]*[^:#\n]+)?[ \t]*:[ \t]*)nonpayable([ \t]*(?:#.*)?$)",
+        source,
+        re.MULTILINE,
+    ):
+        if match.group(2) not in methods:
+            continue
+        replacement = f"{match.group(1)}payable{match.group(3)}"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY206",
+                line_number(source, match.start()),
+                "changed value-receiving interface mutability",
+                match.group(0),
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_legacy_interface_storage_vars(source: str) -> tuple[str, list[Fix]]:
+    interfaces = {
+        match.group(1)
+        for match in re.finditer(r"^interface\s+([A-Za-z_][A-Za-z0-9_]*)\s*:", source, re.MULTILINE)
+    }
+    if not interfaces:
+        return source, []
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    storage_interfaces: dict[str, str] = {}
+    mask = code_mask(source)
+    pattern = re.compile(
+        r"^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(public\s*\(\s*)?([A-Za-z_][A-Za-z0-9_]*)(\s*\))?([ \t]*(?:#.*)?$)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(2), match.end(4)):
+            continue
+        interface_name = match.group(4)
+        if interface_name not in interfaces:
+            continue
+        storage_interfaces[match.group(2)] = interface_name
+        public_open = match.group(3) or ""
+        public_close = match.group(5) or ""
+        replacement = f"{match.group(1)}{match.group(2)}: {public_open}address{public_close}{match.group(6)}"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY206",
+                line_number(source, match.start()),
+                "changed legacy interface storage type",
+                match.group(0),
+                replacement,
+            )
+        )
+    current = apply_edits(source, edits)
+    current, cast_fixes = _cast_legacy_address_interface_calls(current, storage_interfaces)
+    fixes.extend(cast_fixes)
+    return current, fixes
 
 
 def _legacy_dynamic_types(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -612,6 +770,8 @@ def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext
     fixes: list[Fix] = []
     current = source
     if _enabled("VY208", config, context):
+        current, new_fixes = _replace_identifier_call(current, "create_with_code_of", "create_copy_of", "VY208")
+        fixes.extend(new_fixes)
         current, new_fixes = _replace_call_keyword(current, "raw_call", "outsize", "max_outsize", "VY208")
         fixes.extend(new_fixes)
         current, new_fixes = _replace_call_keyword(current, "extract32", "type", "output_type", "VY208")
@@ -626,6 +786,18 @@ def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext
         current, new_fixes = _remove_call_keyword_arg(current, "method_id", "output_type", "bytes4", "VY209")
         fixes.extend(new_fixes)
     return current, fixes, []
+
+
+def _replace_identifier_call(source: str, old: str, new: str, rule: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(rf"\b{re.escape(old)}\s*(?=\()", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        edits.append(TextEdit(match.start(), match.start() + len(old), new))
+        fixes.append(Fix(rule, line_number(source, match.start()), f"renamed legacy {old} builtin", old, new))
+    return apply_edits(source, edits), fixes
 
 
 def _not_in_comparator(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -3388,6 +3560,8 @@ def _insert_import(source: str, line: str) -> str:
         insert_at += 1
     while insert_at < len(lines) and lines[insert_at].startswith("import "):
         insert_at += 1
+    while insert_at < len(lines) and lines[insert_at].startswith("from "):
+        insert_at += 1
     lines.insert(insert_at, line)
     return "".join(lines)
 
@@ -3664,6 +3838,16 @@ def _collect_event_fields(source: str) -> dict[str, list[str]]:
 
 def _rewrite_map_types(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
+    current = source
+    current, call_fixes = _rewrite_map_call_types(current)
+    fixes.extend(call_fixes)
+    current, subscript_fixes = _rewrite_legacy_subscript_map_types(current)
+    fixes.extend(subscript_fixes)
+    return current, fixes
+
+
+def _rewrite_map_call_types(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
     last_end = -1
@@ -3681,6 +3865,87 @@ def _rewrite_map_types(source: str) -> tuple[str, list[Fix]]:
         fixes.append(Fix("VY205", line_number(source, match.start()), "changed legacy map type to HashMap", source[match.start() : close + 1], replacement))
         last_end = close + 1
     return apply_edits(source, edits), fixes
+
+
+def _rewrite_legacy_subscript_map_types(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    current = source
+    while True:
+        edit = _next_legacy_subscript_map_edit(current)
+        if edit is None:
+            return current, fixes
+        text_edit, before, after = edit
+        fixes.append(Fix("VY205", line_number(current, text_edit.start), "changed legacy map type to HashMap", before, after))
+        current = apply_edits(current, [text_edit])
+
+
+def _next_legacy_subscript_map_edit(source: str) -> tuple[TextEdit, str, str] | None:
+    mask = code_mask(source)
+    for open_index, char in enumerate(source):
+        if char != "[" or not span_is_code(mask, open_index, open_index + 1):
+            continue
+        close = find_matching(source, open_index, "[", "]")
+        if close is None:
+            continue
+        key = source[open_index + 1 : close].strip()
+        if not _legacy_map_key_type(key):
+            continue
+        value_start = _legacy_map_value_start(source, open_index)
+        if value_start is None:
+            continue
+        value = source[value_start:open_index].strip()
+        value = _strip_wrapping_parens(value)
+        before = source[value_start : close + 1]
+        after = f"HashMap[{key}, {value}]"
+        return TextEdit(value_start, close + 1, after), before, after
+    return None
+
+
+def _legacy_map_key_type(text: str) -> bool:
+    return bool(re.fullmatch(r"address|bool|bytes[0-9]+|u?int(?:8|16|32|64|128|256)?", text))
+
+
+def _legacy_map_value_start(source: str, open_index: int) -> int | None:
+    index = open_index - 1
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    if index < 0:
+        return None
+    if source[index] == ")":
+        return _find_matching_open(source, index)
+    if source[index] == "]":
+        start = _find_matching_open(source, index, open_char="[", close_char="]")
+        if start is None:
+            return None
+        return _legacy_map_value_start(source, start) or start
+    if not (source[index].isalnum() or source[index] == "_"):
+        return None
+    while index >= 0 and (source[index].isalnum() or source[index] == "_"):
+        index -= 1
+    return index + 1
+
+
+def _find_matching_open(source: str, close_index: int, open_char: str = "(", close_char: str = ")") -> int | None:
+    depth = 0
+    for index in range(close_index, -1, -1):
+        char = source[index]
+        if char == close_char:
+            depth += 1
+        elif char == open_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _strip_wrapping_parens(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("(") or not stripped.endswith(")"):
+        return stripped
+    close = find_matching(stripped, 0)
+    if close == len(stripped) - 1:
+        return stripped[1:-1].strip()
+    return stripped
 
 
 def _rewrite_legacy_map_type(text: str) -> str:

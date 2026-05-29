@@ -479,14 +479,15 @@ def _run_compile_with_formats(
     suppress_warnings: bool,
 ) -> CompileResult:
     full = [*_with_project_import_dependencies(command, path), "-f", ",".join(formats)]
-    for search_path in config.compiler_search_paths:
-        full.extend(["-p", str(search_path)])
-    project_root = _nearest_project_root(path.parent)
-    if project_root is not None:
-        full.extend(["-p", str(project_root)])
-    for search_path in extra_paths:
-        full.extend(["-p", str(search_path)])
-    full.extend(["-p", str(path.parent)])
+    if _supports_search_paths(command):
+        for search_path in config.compiler_search_paths:
+            full.extend(["-p", str(search_path)])
+        project_root = _nearest_project_root(path.parent)
+        if project_root is not None:
+            full.extend(["-p", str(project_root)])
+        for search_path in extra_paths:
+            full.extend(["-p", str(search_path)])
+        full.extend(["-p", str(path.parent)])
     if config.enable_decimals:
         full.append("--enable-decimals")
     if suppress_warnings:
@@ -510,6 +511,19 @@ def _run_compile_with_formats(
     except json.JSONDecodeError as exc:
         return CompileResult("failed", stderr=f"could not parse compiler output: {exc}", command=full)
     return CompileResult("passed", artifacts=artifacts, stderr=proc.stderr.strip() or None, command=full)
+
+
+def _supports_search_paths(command: list[str]) -> bool:
+    return legacy_prerelease_version(_command_vyper_version(command)) is None
+
+
+def _command_vyper_version(command: list[str]) -> str | None:
+    for index, arg in enumerate(command):
+        if arg == "--with" and index + 1 < len(command):
+            package = command[index + 1]
+            if package.startswith("vyper=="):
+                return package.removeprefix("vyper==")
+    return None
 
 
 def _with_project_import_dependencies(command: list[str], path: Path) -> list[str]:

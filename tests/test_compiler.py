@@ -159,6 +159,28 @@ snekmate = "0.1.2"
     assert ["-p", str(project)] == calls[0][calls[0].index("-p") : calls[0].index("-p") + 2]
 
 
+def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["/tmp/uv", "run", "--no-project", "--python", "3.8", "--with", "vyper==0.1.0b4", "vyper"],
+        contract,
+        Config(paths=(contract,), compiler_search_paths=(tmp_path,)),
+        extra_paths=(tmp_path,),
+    )
+
+    assert result.status == "passed"
+    assert "-p" not in calls[0]
+
+
 def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
     calls: list[list[str]] = []
 
