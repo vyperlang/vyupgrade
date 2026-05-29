@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -25,6 +27,14 @@ THEME = Theme(
 )
 
 
+@dataclass(frozen=True)
+class ReportGroup:
+    rule: str
+    message: str
+    lines: tuple[int, ...]
+    style: str
+
+
 def render_text(report: RunReport) -> str:
     lines = [
         "vyupgrade 0.1.0",
@@ -41,10 +51,10 @@ def render_text(report: RunReport) -> str:
             continue
         lines.append("")
         lines.append(str(file.path))
-        for fix in file.fixes:
-            lines.append(f"  {fix.rule}:{fix.line} {fix.message}")
-        for diag in file.diagnostics:
-            lines.append(f"  {diag.rule}:{diag.line} {diag.message}")
+        for group in _group_items(file.fixes, lambda _fix: ""):
+            lines.append(f"  {_group_text(group)}")
+        for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
+            lines.append(f"  {_group_text(group)}")
         lines.append(f"  source compile: {file.source_compile}")
         if file.source_compile == "failed" and file.source_error:
             lines.append("  source error:")
@@ -99,10 +109,10 @@ def render_rich(report: RunReport, console: Console) -> None:
 def _render_file(console: Console, file: FileReport) -> None:
     console.print()
     console.print(Text(str(file.path), style="vy.path"))
-    for fix in file.fixes:
-        console.print(_indented(f"{fix.rule}:{fix.line} {fix.message}", "vy.fix"))
-    for diag in file.diagnostics:
-        console.print(_indented(f"{diag.rule}:{diag.line} {diag.message}", _severity_style(diag.severity)))
+    for group in _group_items(file.fixes, lambda _fix: "vy.fix"):
+        console.print(_indented(_group_text(group), group.style))
+    for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
+        console.print(_indented(_group_text(group), group.style))
     console.print(_compile_line("source compile", file.source_compile))
     if file.source_compile == "failed" and file.source_error:
         console.print(_indented("source error:", "vy.error"))
@@ -148,6 +158,31 @@ def _bool_line(label: str, value: bool) -> Text:
 
 def _indented(value: str, style: str) -> Text:
     return Text(f"  {value}", style=style)
+
+
+def _group_items(
+    items: Iterable[object],
+    style_for: Callable[[object], str],
+) -> list[ReportGroup]:
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    for item in items:
+        rule = getattr(item, "rule")
+        message = getattr(item, "message")
+        style = style_for(item)
+        groups.setdefault((rule, message, style), []).append(getattr(item, "line"))
+    return [
+        ReportGroup(rule, message, tuple(lines), style)
+        for (rule, message, style), lines in groups.items()
+    ]
+
+
+def _group_text(group: ReportGroup) -> str:
+    return f"{group.rule} {group.message} ({_line_list(group.lines)})"
+
+
+def _line_list(lines: tuple[int, ...]) -> str:
+    prefix = "line" if len(lines) == 1 else "lines"
+    return f"{prefix} {', '.join(map(str, lines))}"
 
 
 def _count_style(count: int) -> str:

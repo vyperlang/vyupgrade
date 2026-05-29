@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 from io import StringIO
+from pathlib import Path
 
 from rich.console import Console
 
-from vyupgrade.models import Diagnostic
-from vyupgrade.models import FileReport, RunReport
+from vyupgrade.models import Diagnostic, FileReport, Fix, RunReport
 from vyupgrade.reporting import THEME, render_rich, render_text, write_human_report
 
 
@@ -46,6 +45,32 @@ def test_render_text_hides_stderr_for_successful_compiles() -> None:
     assert "target error:" not in text
     assert "uv cache warning" not in text
     assert "warning output" not in text
+
+
+def test_render_text_groups_repeated_fixes_and_diagnostics_by_rule_message() -> None:
+    file_report = FileReport(
+        path=Path("grouped.vy"),
+        changed=True,
+        fixes=[
+            Fix("VY112", 10, "changed positional event log to keyword arguments", "", ""),
+            Fix("VY112", 20, "changed positional event log to keyword arguments", "", ""),
+            Fix("VY001", 1, "modernized version pragma", "", ""),
+        ],
+        diagnostics=[
+            Diagnostic("VYD014", 30, "range(stop) has a runtime bound; add bound=... manually"),
+            Diagnostic("VYD014", 40, "range(stop) has a runtime bound; add bound=... manually"),
+        ],
+        source_compile="passed",
+        target_compile="passed",
+    )
+    report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
+
+    text = render_text(report)
+
+    assert "VY112 changed positional event log to keyword arguments (lines 10, 20)" in text
+    assert "VY001 modernized version pragma (line 1)" in text
+    assert "VYD014 range(stop) has a runtime bound; add bound=... manually (lines 30, 40)" in text
+    assert "VY112:10" not in text
 
 
 def test_write_human_report_uses_plain_text_for_non_tty_streams() -> None:
@@ -92,6 +117,6 @@ def test_render_rich_marks_success_warning_and_error_output() -> None:
     assert "\x1b[" in text
     assert "source compile: \x1b[32mpassed" in text
     assert "target compile: \x1b[1;31mfailed" in text
-    assert "VYD001:1 warning message" in text
-    assert "VYD002:2 error message" in text
+    assert "VYD001 warning message (line 1)" in text
+    assert "VYD002 error message (line 2)" in text
     assert "storage layout unchanged: \x1b[33mFalse" in text
