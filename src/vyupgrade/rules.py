@@ -888,7 +888,7 @@ def _natspec_strictness(
 
 def _function_start_at_line(facts: SourceFacts, line_no: int) -> int | None:
     for start, end in sorted(facts.function_ends.items()):
-        if start < line_no <= end:
+        if start <= line_no <= end:
             return start
     return None
 
@@ -3679,14 +3679,6 @@ def _integer_assignment_casts(
     return apply_edits(source, edits), fixes, []
 
 
-def _function_start_at_line(facts: SourceFacts, line: int) -> int | None:
-    for start in sorted(facts.function_vars):
-        end = facts.function_ends.get(start, 10**9)
-        if start <= line <= end:
-            return start
-    return None
-
-
 def _loop_var_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
     if iterable.startswith("range("):
         return _range_loop_var_type(iterable, vars_for_line)
@@ -4036,7 +4028,7 @@ def _read_left_operand(source: str, index: int) -> str:
         if open_index is not None:
             return source[open_index : i + 1]
     if i >= 0 and source[i] == "]":
-        open_index = _find_matching_open_bracket(source, i)
+        open_index = _find_matching_open(source, i, open_char="[", close_char="]")
         if open_index is not None:
             start = _read_indexed_expression_start(source, open_index)
             return source[start : i + 1].replace("self.", "")
@@ -4044,30 +4036,6 @@ def _read_left_operand(source: str, index: int) -> str:
     while i >= 0 and re.match(r"[A-Za-z0-9_.$]", source[i]):
         i -= 1
     return source[i + 1 : end].replace("self.", "")
-
-
-def _find_matching_open(source: str, close_index: int) -> int | None:
-    depth = 0
-    for i in range(close_index, -1, -1):
-        if source[i] == ")":
-            depth += 1
-        elif source[i] == "(":
-            depth -= 1
-            if depth == 0:
-                return i
-    return None
-
-
-def _find_matching_open_bracket(source: str, close_index: int) -> int | None:
-    depth = 0
-    for i in range(close_index, -1, -1):
-        if source[i] == "]":
-            depth += 1
-        elif source[i] == "[":
-            depth -= 1
-            if depth == 0:
-                return i
-    return None
 
 
 def _read_indexed_expression_start(source: str, open_index: int) -> int:
