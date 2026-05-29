@@ -446,6 +446,24 @@ def f(amount: uint256):
     assert "extcall VAULT.transferFrom(msg.sender, self, amount)" in result.source
 
 
+def test_multiline_assert_interface_cast_call() -> None:
+    source = """# @version 0.1.0b17
+contract Token:
+    def transferFrom(_from: address, _to: address, _value: uint256) -> bool: modifying
+
+coins: address[2]
+
+@public
+def f(amount: uint256):
+    assert Token(self.coins[0])\\
+        .transferFrom(msg.sender, self, amount)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "assert extcall Token(self.coins[0])\\\n        .transferFrom(msg.sender, self, amount)" in result.source
+
+
 def test_multiline_interface_def_calls() -> None:
     source = """# @version 0.3.7
 interface Vault:

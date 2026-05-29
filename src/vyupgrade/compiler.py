@@ -13,7 +13,13 @@ from pathlib import Path
 from uv import find_uv_bin
 
 from .models import Config
-from .versions import VyperVersion, compiler_version_for_spec, infer_pragma, parse_version
+from .versions import (
+    VyperVersion,
+    compiler_version_for_spec,
+    infer_pragma,
+    legacy_prerelease_version,
+    parse_version,
+)
 
 
 FORMATS = ("abi", "method_identifiers", "layout")
@@ -428,6 +434,8 @@ def _normalize_version(version: str | None) -> str | None:
 
 
 def _default_python(version: str) -> str:
+    if legacy_prerelease_version(version) is not None:
+        return "3.8"
     parsed = parse_version(version)
     if parsed is not None and parsed < VyperVersion(0, 3, 1):
         return "3.8"

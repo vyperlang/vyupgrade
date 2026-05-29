@@ -1374,7 +1374,7 @@ def _interface_cast_call_matches(
             close = find_matching(source, open_index)
             if close is None or not span_is_code(mask, match.start(), min(close + 1, len(source))):
                 continue
-            tail = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
+            tail = re.match(r"(?:\s|\\)*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
             if tail is None:
                 continue
             end = close + 1 + tail.end()

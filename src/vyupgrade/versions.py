@@ -6,6 +6,9 @@ from dataclasses import dataclass
 
 PRAGMA_RE = re.compile(r"^\s*#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
 VERSION_RE = re.compile(r"0\.(?:2|3|4)\.\d+")
+# PyPI has no final 0.1.0 release; these are the installable Vyper releases before 0.2.1.
+LEGACY_PRERELEASE_VERSIONS = tuple(f"0.1.0b{number}" for number in range(1, 18))
+LEGACY_PRERELEASE_RE = re.compile(r"0\.1\.0b(?:[1-9]|1[0-7])\b")
 
 
 @dataclass(frozen=True, order=True)
@@ -90,6 +93,9 @@ def minimum_satisfying_version(spec: str | None) -> VyperVersion | None:
 
 
 def compiler_version_for_spec(spec: str | None) -> str | None:
+    legacy = legacy_prerelease_version(spec)
+    if legacy is not None:
+        return legacy
     versions = known_versions_satisfying(spec)
     if versions:
         return str(versions[0] if _has_lower_bound(spec or "") else versions[-1])
@@ -98,7 +104,10 @@ def compiler_version_for_spec(spec: str | None) -> str | None:
 
 
 def default_evm_version_for_spec(spec: str | None) -> str | None:
-    version = parse_version(compiler_version_for_spec(spec))
+    compiler_version = compiler_version_for_spec(spec)
+    if legacy_prerelease_version(compiler_version) is not None:
+        return "istanbul"
+    version = parse_version(compiler_version)
     return default_evm_version(version)
 
 
@@ -129,8 +138,17 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
 
 
 def is_supported_source_version(version: str | None) -> bool:
+    if legacy_prerelease_version(version) is not None:
+        return True
     parsed = parse_version(version)
     return bool(known_versions_satisfying(version) or (parsed and parsed in KNOWN_VERSIONS))
+
+
+def legacy_prerelease_version(spec: str | None) -> str | None:
+    if spec is None:
+        return None
+    match = LEGACY_PRERELEASE_RE.search(spec)
+    return match.group(0) if match else None
 
 
 def _parse_clauses(spec: str) -> list[tuple[str, VyperVersion]]:

@@ -25,8 +25,10 @@ class AstCall:
 
 def root_ast(output: dict[str, Any]) -> dict[str, Any]:
     ast = output.get("ast", output)
+    if isinstance(ast, list):
+        return {"ast_type": "Module", "body": ast}
     if not isinstance(ast, dict):
-        raise TypeError("Vyper AST output must contain an object")
+        raise TypeError("Vyper AST output must contain an object or legacy body list")
     return ast
 
 
@@ -73,6 +75,14 @@ def integer_constants(output: dict[str, Any]) -> dict[str, int]:
         raw_value = value.get("value")
         if isinstance(raw_value, int):
             constants[name] = raw_value
+    for node in iter_nodes(root_ast(output), "AnnAssign"):
+        if not _legacy_constant_annotation(node.get("annotation")):
+            continue
+        name = _name_id(node.get("target"))
+        value = node.get("value")
+        raw_value = _integer_literal(value)
+        if name is not None and raw_value is not None:
+            constants[name] = raw_value
     return constants
 
 
@@ -103,3 +113,31 @@ def _name_id(node: Any) -> str | None:
         return None
     name = node.get("id")
     return name if isinstance(name, str) else None
+
+
+def _legacy_constant_annotation(node: Any) -> bool:
+    if not isinstance(node, dict) or node.get("ast_type") != "Call":
+        return False
+    func = node.get("func")
+    return isinstance(func, dict) and func.get("ast_type") == "Name" and func.get("id") == "constant"
+
+
+def _integer_literal(node: Any) -> int | None:
+    if not isinstance(node, dict):
+        return None
+    if node.get("ast_type") == "Int":
+        value = node.get("value")
+        return value if isinstance(value, int) else None
+    if node.get("ast_type") == "Num":
+        value = node.get("n")
+        return value if isinstance(value, int) else None
+    if node.get("ast_type") == "UnaryOp":
+        value = _integer_literal(node.get("operand"))
+        if value is None:
+            return None
+        op = node.get("op")
+        if isinstance(op, dict) and op.get("ast_type") == "USub":
+            return -value
+        if isinstance(op, dict) and op.get("ast_type") == "UAdd":
+            return value
+    return None

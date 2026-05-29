@@ -60,6 +60,48 @@ def test_ast_facts_extract_call_spans() -> None:
     assert node_span(shift.args[1]) is not None
 
 
+def test_ast_facts_extract_legacy_list_body_integer_constants() -> None:
+    ast = {
+        "ast": [
+            {
+                "ast_type": "AnnAssign",
+                "target": {"ast_type": "Name", "id": "N_COINS"},
+                "annotation": {"ast_type": "Call", "func": {"ast_type": "Name", "id": "constant"}},
+                "value": {"ast_type": "Num", "n": 3},
+            },
+            {
+                "ast_type": "AnnAssign",
+                "target": {"ast_type": "Name", "id": "NEGATIVE"},
+                "annotation": {"ast_type": "Call", "func": {"ast_type": "Name", "id": "constant"}},
+                "value": {
+                    "ast_type": "UnaryOp",
+                    "op": {"ast_type": "USub"},
+                    "operand": {"ast_type": "Num", "n": 1},
+                },
+            },
+            {
+                "ast_type": "AnnAssign",
+                "target": {"ast_type": "Name", "id": "stored"},
+                "annotation": {"ast_type": "Name", "id": "uint256"},
+                "value": {"ast_type": "Num", "n": 5},
+            },
+            {
+                "ast_type": "Expr",
+                "value": {
+                    "ast_type": "Call",
+                    "func": {"ast_type": "Name", "id": "shift"},
+                    "args": [{"ast_type": "Name", "id": "x"}],
+                    "src": "0:8:0",
+                },
+            },
+        ]
+    }
+
+    assert root_ast(ast)["ast_type"] == "Module"
+    assert integer_constants(ast) == {"N_COINS": 3, "NEGATIVE": -1}
+    assert next(calls(ast, "shift")).name == "shift"
+
+
 def test_source_facts_skip_event_fields() -> None:
     source = """event DelegateBoost:
     _expire_time: uint256
