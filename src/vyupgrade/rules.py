@@ -205,6 +205,16 @@ def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> 
     return any(_enabled(rule, config, context) for rule in rules)
 
 
+def _line_match_starts_outside_string(source: str, mask: list[bool], start: int) -> bool:
+    line_start = source.rfind("\n", 0, start) + 1
+    if line_start > 0 and not mask[line_start - 1]:
+        return False
+    first = line_start
+    while first < len(source) and source[first] in " \t":
+        first += 1
+    return span_is_code(mask, line_start, first)
+
+
 def _pre_021_context(context: MigrationContext) -> bool:
     return context.source_floor is None or context.source_floor < VyperVersion(0, 2, 1)
 
@@ -225,15 +235,21 @@ def _pragma(source: str, config: Config, context: MigrationContext) -> tuple[str
     if not _enabled("VY001", config, context):
         return source, [], []
     fixes: list[Fix] = []
+    mask = code_mask(source)
     pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
     matched = False
 
     def repl(match: re.Match[str]) -> str:
         nonlocal matched
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            return match.group(0)
         matched = True
         before = match.group(0)
         after = f"{match.group(1)}#pragma version {config.target_version}"
-        fixes.append(Fix("VY001", line_number(source, match.start()), "modernized version pragma", before, after))
+        if before != after:
+            fixes.append(
+                Fix("VY001", line_number(source, match.start()), "modernized version pragma", before, after)
+            )
         return after
 
     rewritten = pattern.sub(repl, source)
@@ -253,9 +269,12 @@ def _legacy_decorators(source: str, config: Config, context: MigrationContext) -
         "private": "internal",
         "constant": "view",
     }
-    pattern = re.compile(r"^(\s*)@(public|private|constant)(\s*(?:#.*)?$)", re.MULTILINE)
+    mask = code_mask(source)
+    pattern = re.compile(r"^([ \t]*)@(public|private|constant)([ \t]*(?:#.*)?$)", re.MULTILINE)
 
     def repl(match: re.Match[str]) -> str:
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            return match.group(0)
         before = match.group(0)
         after = f"{match.group(1)}@{replacements[match.group(2)]}{match.group(3)}"
         fixes.append(Fix("VY201", line_number(source, match.start()), "renamed legacy decorator", before, after))
@@ -448,9 +467,15 @@ def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationC
         if legacy_source:
             current, address_interface_fixes = _rewrite_legacy_address_interface_types(current, config, context)
             fixes.extend(address_interface_fixes)
-        pattern = re.compile(r"^(\s*)contract\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*\))?\s*:", re.MULTILINE)
+        pattern = re.compile(
+            r"^([ \t]*)contract[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*\([ \t]*\))?[ \t]*:",
+            re.MULTILINE,
+        )
+        mask = code_mask(current)
 
         def repl(match: re.Match[str]) -> str:
+            if not _line_match_starts_outside_string(current, mask, match.start()):
+                return match.group(0)
             before = match.group(0)
             after = f"{match.group(1)}interface {match.group(2)}:"
             fixes.append(Fix("VY206", line_number(current, match.start()), "changed contract interface declaration", before, after))
@@ -461,8 +486,11 @@ def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationC
             r"^([ \t]*def[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*\([^#\n]*\)[ \t]*(?:->[ \t]*[^:#\n]+)?[ \t]*:[ \t]*)(constant|modifying)([ \t]*(?:#.*)?$)",
             re.MULTILINE,
         )
+        mutability_mask = code_mask(current)
 
         def mutability_repl(match: re.Match[str]) -> str:
+            if not _line_match_starts_outside_string(current, mutability_mask, match.start()):
+                return match.group(0)
             before = match.group(0)
             after_keyword = "view" if match.group(2) == "constant" else "nonpayable"
             after = f"{match.group(1)}{after_keyword}{match.group(3)}"
@@ -1381,10 +1409,13 @@ def _interface_imports(source: str, config: Config, context: MigrationContext) -
     changed = False
     requested_rewrites: dict[str, str] = {}
     taken = _code_identifiers(source)
+    mask = code_mask(source)
+    offset = 0
 
     for i, line in enumerate(lines):
         match = re.match(r"(\s*)from\s+vyper\.interfaces\s+import\s+(.+?)(\s*(?:#.*)?)(\n?)$", line)
-        if not match:
+        if not match or not _line_match_starts_outside_string(source, mask, offset):
+            offset += len(line)
             continue
         imports = [part.strip() for part in match.group(2).split(",")]
         mapped = [IMPORT_RENAMES.get(name, name) for name in imports]
@@ -1404,6 +1435,7 @@ def _interface_imports(source: str, config: Config, context: MigrationContext) -
         elif "vyper.interfaces" in line:
             if _enabled("VYD003", config, context):
                 diagnostics.append(Diagnostic("VYD003", i + 1, "unknown built-in interface import; review manually"))
+        offset += len(line)
 
     current = "".join(lines) if changed else source
     for old, new in requested_rewrites.items():
@@ -1443,13 +1475,18 @@ def _enum_to_flag(source: str, config: Config, context: MigrationContext) -> tup
     if re.search(r"\benum\s+\w+:", source) is None:
         return source, fixes, diagnostics
 
-    pattern = re.compile(r"^(\s*)enum\s+([A-Za-z_][A-Za-z0-9_]*):", re.MULTILINE)
+    mask = code_mask(source)
+    pattern = re.compile(r"^([ \t]*)enum[ \t]+([A-Za-z_][A-Za-z0-9_]*):", re.MULTILINE)
     for match in pattern.finditer(source):
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            continue
         diagnostics.append(Diagnostic("VY030", line_number(source, match.start()), f"enum {match.group(2)} should be reviewed for flag compatibility"))
     if not config.aggressive:
         return source, fixes, diagnostics
 
     def repl(match: re.Match[str]) -> str:
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            return match.group(0)
         before = match.group(0)
         after = f"{match.group(1)}flag {match.group(2)}:"
         fixes.append(Fix("VY030", line_number(source, match.start()), "changed enum to flag", before, after))
@@ -3101,10 +3138,13 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     facts = parse_source_facts(source)
-    pattern = re.compile(r"^(\s*)for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?):", re.MULTILINE)
+    mask = code_mask(source)
+    pattern = re.compile(r"^([ \t]*)for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+(.+?):", re.MULTILINE)
     inferred_loop_vars: dict[int, dict[str, str]] = {}
 
     for match in pattern.finditer(source):
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            continue
         iterable = match.group(3).strip()
         if ":" in source[match.start() : match.end()].split(" in ", 1)[0]:
             continue

@@ -32,6 +32,30 @@ def __init__():
     assert "# _abi_encode should stay" in result.source
 
 
+def test_line_rewrites_skip_docstring_content() -> None:
+    source = '''# @version 0.3.10
+
+@external
+def f():
+    """
+    @public
+    # @version 0.2.1
+    contract Foo:
+    """
+    pass
+'''
+
+    result = apply_rules(source, config())
+
+    assert "#pragma version 0.4.3" in result.source
+    assert "    @public" in result.source
+    assert "    # @version 0.2.1" in result.source
+    assert "    contract Foo:" in result.source
+    assert "    @external" not in result.source
+    assert "    #pragma version 0.2.1" not in result.source
+    assert "    interface Foo:" not in result.source
+
+
 def test_type_aware_rewrites() -> None:
     source = '''# @version 0.3.10
 
@@ -2528,6 +2552,17 @@ def f():
     result = apply_rules(source, config(target_version="0.4.3"))
 
     assert "#pragma version 0.4.3" in result.source
+
+
+def test_pragma_does_not_report_unchanged_fix() -> None:
+    source = """#pragma version 0.3.10
+x: uint256
+"""
+
+    result = apply_rules(source, config(target_version="0.3.10"))
+
+    assert result.source == source
+    assert not [fix for fix in result.fixes if fix.rule == "VY001"]
 
 
 def test_pragma_is_added_when_missing() -> None:
