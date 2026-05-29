@@ -92,8 +92,12 @@ def apply_edits(source: str, edits: list[TextEdit]) -> str:
     return "".join(pieces)
 
 
-def split_top_level_args(text: str) -> list[str] | None:
-    args: list[str] = []
+def split_top_level_arg_spans(
+    text: str,
+    *,
+    include_empty_separators: bool = False,
+) -> list[tuple[int, int, str]] | None:
+    spans: list[tuple[int, int, str]] = []
     start = 0
     depth = 0
     quote: str | None = None
@@ -113,17 +117,33 @@ def split_top_level_args(text: str) -> list[str] | None:
             if depth < 0:
                 return None
         elif char == "," and depth == 0:
-            args.append(text[start:index].strip())
+            _append_arg_span(spans, text, start, index, include_empty=include_empty_separators)
             start = index + 1
     if depth != 0 or quote is not None:
         return None
-    tail = text[start:].strip()
-    if tail:
-        args.append(tail)
-    return args
+    _append_arg_span(spans, text, start, len(text), include_empty=False)
+    return spans
 
 
-def find_matching(source: str, open_index: int, open_char: str = "(", close_char: str = ")") -> int | None:
+def split_top_level_args(text: str) -> list[str] | None:
+    spans = split_top_level_arg_spans(text, include_empty_separators=True)
+    return None if spans is None else [arg for _start, _end, arg in spans]
+
+
+def _append_arg_span(
+    spans: list[tuple[int, int, str]], text: str, start: int, end: int, *, include_empty: bool
+) -> None:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    if start < end or include_empty:
+        spans.append((start, end, text[start:end]))
+
+
+def find_matching(
+    source: str, open_index: int, open_char: str = "(", close_char: str = ")"
+) -> int | None:
     depth = 0
     quote: str | None = None
     i = open_index
@@ -147,4 +167,3 @@ def find_matching(source: str, open_index: int, open_char: str = "(", close_char
                 return i
         i += 1
     return None
-
