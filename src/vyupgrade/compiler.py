@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
@@ -427,9 +428,12 @@ def _run_compile_with_formats(
     extra_paths: tuple[Path, ...],
     suppress_warnings: bool,
 ) -> CompileResult:
-    full = [*command, "-f", ",".join(formats)]
+    full = [*_with_project_import_dependencies(command, path), "-f", ",".join(formats)]
     for search_path in config.compiler_search_paths:
         full.extend(["-p", str(search_path)])
+    project_root = _nearest_project_root(path.parent)
+    if project_root is not None:
+        full.extend(["-p", str(project_root)])
     for search_path in extra_paths:
         full.extend(["-p", str(search_path)])
     full.extend(["-p", str(path.parent)])
@@ -453,6 +457,127 @@ def _run_compile_with_formats(
     except json.JSONDecodeError as exc:
         return CompileResult("failed", stderr=f"could not parse compiler output: {exc}", command=full)
     return CompileResult("passed", artifacts=artifacts, stderr=proc.stderr.strip() or None, command=full)
+
+
+def _with_project_import_dependencies(command: list[str], path: Path) -> list[str]:
+    if not _is_uv_run_command(command):
+        return command
+    packages = _project_import_packages(path)
+    if not packages:
+        return command
+    full = command[:-1]
+    for package in packages:
+        full.extend(["--with", package])
+    full.append(command[-1])
+    return full
+
+
+def _is_uv_run_command(command: list[str]) -> bool:
+    return len(command) >= 3 and Path(command[0]).name == "uv" and command[1] == "run"
+
+
+def _project_import_packages(path: Path) -> tuple[str, ...]:
+    try:
+        source = path.read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    imports = _vyper_import_roots(source)
+    if not imports:
+        return ()
+    pyproject = _nearest_pyproject(path.parent)
+    if pyproject is None:
+        return ()
+    dependencies = _pyproject_dependencies(pyproject)
+    return tuple(dependencies[name] for name in imports if name in dependencies)
+
+
+def _vyper_import_roots(source: str) -> tuple[str, ...]:
+    roots: set[str] = set()
+    for line in source.splitlines():
+        match = re.match(r"\s*from\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s+import\b", line)
+        if match is None:
+            match = re.match(r"\s*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b", line)
+        if match is None:
+            continue
+        root = match.group(1).split(".", 1)[0]
+        if root != "vyper":
+            roots.add(root)
+    return tuple(sorted(roots))
+
+
+def _nearest_project_root(start: Path) -> Path | None:
+    pyproject = _nearest_pyproject(start)
+    return pyproject.parent if pyproject is not None else None
+
+
+def _nearest_pyproject(start: Path) -> Path | None:
+    for directory in (start, *start.parents):
+        pyproject = directory / "pyproject.toml"
+        if pyproject.exists():
+            return pyproject
+    return None
+
+
+def _pyproject_dependencies(path: Path) -> dict[str, str]:
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    dependencies: dict[str, str] = {}
+    project = data.get("project")
+    if isinstance(project, dict) and isinstance(project.get("dependencies"), list):
+        for dependency in project["dependencies"]:
+            if isinstance(dependency, str):
+                name = _dependency_name(dependency)
+                if name is not None:
+                    dependencies[name] = dependency
+    tool = data.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    poetry_dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    if isinstance(poetry_dependencies, dict):
+        for name, value in poetry_dependencies.items():
+            if name == "python":
+                continue
+            package = _poetry_dependency_package(name, value)
+            if package is not None:
+                dependencies[name.replace("-", "_")] = package
+    return dependencies
+
+
+def _dependency_name(dependency: str) -> str | None:
+    match = re.match(r"\s*([A-Za-z0-9_.-]+)", dependency)
+    return match.group(1).replace("-", "_") if match else None
+
+
+def _poetry_dependency_package(name: str, value: object) -> str | None:
+    normalized_name = name.replace("-", "_")
+    if isinstance(value, str):
+        return _package_with_version(name, value)
+    if not isinstance(value, dict):
+        return None
+    package_name = str(value.get("package", name))
+    if "git" in value:
+        git = str(value["git"])
+        rev = value.get("rev") or value.get("tag") or value.get("branch")
+        suffix = f"@{rev}" if isinstance(rev, str) and rev else ""
+        return f"{package_name} @ git+{git}{suffix}"
+    version = value.get("version")
+    if isinstance(version, str):
+        return _package_with_version(package_name, version)
+    return package_name or normalized_name
+
+
+def _package_with_version(name: str, version: str) -> str | None:
+    version = version.strip()
+    if version in {"", "*"}:
+        return name
+    if version.startswith("^"):
+        return None
+    if version[0].isdigit():
+        return f"{name}=={version}"
+    if version.startswith(("==", "!=", "<=", ">=", "<", ">", "~=")):
+        return f"{name}{version}"
+    return None
 
 
 def _parse_outputs(stdout: str, formats: tuple[str, ...] = FORMATS) -> dict[str, object]:

@@ -87,5 +87,8 @@ Compiler subprocesses run through the packaged `uv` executable discovered with
 `uv.find_uv_bin()`, using `uv run --no-project --python ... --with
 vyper==...` by default so older source compilers do not inherit an incompatible
 project interpreter.
+When compiling a file from another project, `vyupgrade` also reads the nearest
+`pyproject.toml` and adds declared packages that match Vyper imports, such as
+`from snekmate.utils import math`, to the compiler subprocess.
 Override with `--source-python`, `--target-python`, `--source-vyper`, or
 `--target-vyper` when needed.

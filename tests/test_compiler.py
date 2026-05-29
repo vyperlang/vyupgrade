@@ -111,6 +111,54 @@ def test_compile_retries_without_unsupported_layout(monkeypatch) -> None:
     assert calls[1][calls[1].index("-f") + 1] == "abi,method_identifiers"
 
 
+def test_compile_installs_declared_vyper_import_dependencies(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "project"
+    contracts = project / "contracts"
+    contracts.mkdir(parents=True)
+    contract = contracts / "AMM.vy"
+    contract.write_text(
+        """#pragma version 0.4.3
+from snekmate.utils import math
+""",
+        encoding="utf-8",
+    )
+    (project / "pyproject.toml").write_text(
+        """[tool.poetry.dependencies]
+python = ">=3.11,<4"
+snekmate = "0.1.2"
+""",
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["/tmp/uv", "run", "--no-project", "--python", "3.11", "--with", "vyper==0.4.3", "vyper"],
+        contract,
+        Config(paths=(contract,)),
+    )
+
+    assert result.status == "passed"
+    assert calls[0][:9] == [
+        "/tmp/uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        "vyper==0.4.3",
+        "--with",
+        "snekmate==0.1.2",
+    ]
+    assert calls[0][9] == "vyper"
+    assert ["-p", str(project)] == calls[0][calls[0].index("-p") : calls[0].index("-p") + 2]
+
+
 def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
     calls: list[list[str]] = []
 
