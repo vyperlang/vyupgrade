@@ -11,7 +11,7 @@ from pathlib import Path
 from .compiler import compare_artifacts, compile_source_file, compile_target_source
 from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
-from .reporting import write_human_report, write_json_report
+from .reporting import HumanReporter, write_json_report
 from .rules import apply_rules
 from .versions import MigrationContext, infer_pragma
 
@@ -55,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     write_back: list[tuple[Path, str]] = []
     any_target_failed = False
     any_source_failed = False
+    human_reporter = None if config.diff else HumanReporter(sys.stdout)
+    if human_reporter:
+        human_reporter.start(config.source_version, config.target_version)
 
     for path in files:
         original = path.read_text(encoding="utf-8")
@@ -91,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         reports.append(file_report)
+        if human_reporter:
+            human_reporter.file(file_report)
 
     run_report = RunReport(
         source_version=config.source_version,
@@ -118,8 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     if config.report_json:
         write_json_report(config.report_json, run_report)
 
-    if not config.diff:
-        write_human_report(run_report, sys.stdout)
+    if human_reporter:
+        human_reporter.summary(run_report)
 
     if any_target_failed:
         return 2

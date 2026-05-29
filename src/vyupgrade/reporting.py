@@ -35,72 +35,120 @@ class ReportGroup:
     style: str
 
 
+class HumanReporter:
+    def __init__(self, stream: TextIO) -> None:
+        self.stream = stream
+        self.console = Console(file=stream, theme=THEME) if stream.isatty() else None
+
+    def start(self, source_version: str | None, target_version: str) -> None:
+        if self.console:
+            self.console.print(Text("vyupgrade 0.1.0", style="vy.header"))
+            self.console.print(_label_value("source", source_version or "inferred per file"))
+            self.console.print(_label_value("target", target_version))
+        else:
+            self.stream.write(_text_header(source_version, target_version))
+        self._flush()
+
+    def file(self, file_report: FileReport) -> None:
+        if not _should_render_file(file_report):
+            return
+        if self.console:
+            _render_file(self.console, file_report)
+        else:
+            self.stream.write(_render_text_file(file_report))
+        self._flush()
+
+    def summary(self, report: RunReport) -> None:
+        if self.console:
+            _render_summary(self.console, report)
+        else:
+            self.stream.write(_render_text_summary(report))
+        self._flush()
+
+    def _flush(self) -> None:
+        self.stream.flush()
+
+
 def render_text(report: RunReport) -> str:
-    lines = [
-        "vyupgrade 0.1.0",
-        f"source: {report.source_version or 'inferred per file'}",
-        f"target: {report.target_version}",
-        "",
-        f"changed {report.changed_count} files",
-        f"applied {report.fix_count} fixes",
-        f"left {report.diagnostic_count} review diagnostics",
-    ]
-
-    for file in report.files:
-        if not file.changed and not file.diagnostics and file.target_compile == "skipped":
-            continue
-        lines.append("")
-        lines.append(str(file.path))
-        for group in _group_items(file.fixes, lambda _fix: ""):
-            lines.append(f"  {_group_text(group)}")
-        for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
-            lines.append(f"  {_group_text(group)}")
-        lines.append(f"  source compile: {file.source_compile}")
-        if file.source_compile == "failed" and file.source_error:
-            lines.append("  source error:")
-            lines.extend(f"    {line}" for line in file.source_error.splitlines())
-        lines.append(f"  target compile: {file.target_compile}")
-        if file.target_compile == "failed" and file.target_error:
-            lines.append("  target error:")
-            lines.extend(f"    {line}" for line in file.target_error.splitlines())
-        if file.abi_equal is not None:
-            lines.append(f"  ABI unchanged: {file.abi_equal}")
-        if file.method_ids_equal is not None:
-            lines.append(f"  method IDs unchanged: {file.method_ids_equal}")
-        if file.storage_layout_equal is not None:
-            lines.append(f"  storage layout unchanged: {file.storage_layout_equal}")
-
-    if report.test_command:
-        lines.extend(["", f"test command: {report.test_status}"])
-        if report.test_output:
-            lines.append(report.test_output.rstrip())
-
-    return "\n".join(lines) + "\n"
+    return (
+        _text_header(report.source_version, report.target_version)
+        + "".join(_render_text_file(file) for file in report.files if _should_render_file(file))
+        + _render_text_summary(report)
+    )
 
 
 def write_human_report(report: RunReport, stream: TextIO) -> None:
-    if stream.isatty():
-        render_rich(report, Console(file=stream, theme=THEME))
-        return
-    stream.write(render_text(report))
+    reporter = HumanReporter(stream)
+    reporter.start(report.source_version, report.target_version)
+    for file in report.files:
+        reporter.file(file)
+    reporter.summary(report)
 
 
 def render_rich(report: RunReport, console: Console) -> None:
     console.print(Text("vyupgrade 0.1.0", style="vy.header"))
     console.print(_label_value("source", report.source_version or "inferred per file"))
     console.print(_label_value("target", report.target_version))
+    for file in report.files:
+        if _should_render_file(file):
+            _render_file(console, file)
+    _render_summary(console, report)
+
+
+def _text_header(source_version: str | None, target_version: str) -> str:
+    return "\n".join(
+        [
+            "vyupgrade 0.1.0",
+            f"source: {source_version or 'inferred per file'}",
+            f"target: {target_version}",
+            "",
+        ]
+    )
+
+
+def _render_text_file(file: FileReport) -> str:
+    lines = ["", str(file.path)]
+    for group in _group_items(file.fixes, lambda _fix: ""):
+        lines.append(f"  {_group_text(group)}")
+    for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
+        lines.append(f"  {_group_text(group)}")
+    lines.append(f"  source compile: {file.source_compile}")
+    if file.source_compile == "failed" and file.source_error:
+        lines.append("  source error:")
+        lines.extend(f"    {line}" for line in file.source_error.splitlines())
+    lines.append(f"  target compile: {file.target_compile}")
+    if file.target_compile == "failed" and file.target_error:
+        lines.append("  target error:")
+        lines.extend(f"    {line}" for line in file.target_error.splitlines())
+    if file.abi_equal is not None:
+        lines.append(f"  ABI unchanged: {file.abi_equal}")
+    if file.method_ids_equal is not None:
+        lines.append(f"  method IDs unchanged: {file.method_ids_equal}")
+    if file.storage_layout_equal is not None:
+        lines.append(f"  storage layout unchanged: {file.storage_layout_equal}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_text_summary(report: RunReport) -> str:
+    lines = [
+        "",
+        f"changed {report.changed_count} files",
+        f"applied {report.fix_count} fixes",
+        f"left {report.diagnostic_count} review diagnostics",
+    ]
+    if report.test_command:
+        lines.append(f"test command: {report.test_status}")
+        if report.test_output:
+            lines.append(report.test_output.rstrip())
+    return "\n".join(lines) + "\n"
+
+
+def _render_summary(console: Console, report: RunReport) -> None:
     console.print()
     console.print(_summary_line("changed", report.changed_count, "files", _count_style(report.changed_count)))
     console.print(_summary_line("applied", report.fix_count, "fixes", _count_style(report.fix_count)))
     console.print(_summary_line("left", report.diagnostic_count, "review diagnostics", _count_style(report.diagnostic_count)))
-
-    for file in report.files:
-        if not file.changed and not file.diagnostics and file.target_compile == "skipped":
-            continue
-        _render_file(console, file)
-
     if report.test_command:
-        console.print()
         console.print(_label_value("test command", report.test_status, _status_style(report.test_status)))
         if report.test_output:
             console.print(report.test_output.rstrip())
@@ -129,6 +177,10 @@ def _render_file(console: Console, file: FileReport) -> None:
         console.print(_bool_line("method IDs unchanged", file.method_ids_equal))
     if file.storage_layout_equal is not None:
         console.print(_bool_line("storage layout unchanged", file.storage_layout_equal))
+
+
+def _should_render_file(file: FileReport) -> bool:
+    return file.changed or bool(file.diagnostics) or file.target_compile != "skipped"
 
 
 def _label_value(label: str, value: object, value_style: str = "") -> Text:

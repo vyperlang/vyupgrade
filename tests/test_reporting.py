@@ -6,7 +6,22 @@ from pathlib import Path
 from rich.console import Console
 
 from vyupgrade.models import Diagnostic, FileReport, Fix, RunReport
-from vyupgrade.reporting import THEME, render_rich, render_text, write_human_report
+from vyupgrade.reporting import (
+    THEME,
+    HumanReporter,
+    render_rich,
+    render_text,
+    write_human_report,
+)
+
+
+class FlushCountingStream(StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:
+        self.flush_count += 1
 
 
 def test_render_text_includes_compile_errors() -> None:
@@ -84,6 +99,40 @@ def test_write_human_report_uses_plain_text_for_non_tty_streams() -> None:
     write_human_report(report, stream)
 
     assert stream.getvalue() == render_text(report)
+
+
+def test_human_reporter_flushes_incremental_plain_text_output() -> None:
+    file_report = FileReport(
+        path=Path("streamed.vy"),
+        changed=True,
+        fixes=[
+            Fix("VY112", 12, "changed positional event log to keyword arguments", "", ""),
+        ],
+        source_compile="passed",
+        target_compile="passed",
+    )
+    report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
+    stream = FlushCountingStream()
+    reporter = HumanReporter(stream)
+
+    reporter.start(report.source_version, report.target_version)
+
+    assert stream.getvalue() == (
+        "vyupgrade 0.1.0\nsource: inferred per file\ntarget: 0.4.3\n"
+    )
+    assert stream.flush_count == 1
+
+    reporter.file(file_report)
+
+    text_after_file = stream.getvalue()
+    assert "streamed.vy" in text_after_file
+    assert "changed 1 files" not in text_after_file
+    assert stream.flush_count == 2
+
+    reporter.summary(report)
+
+    assert "changed 1 files" in stream.getvalue()
+    assert stream.flush_count == 3
 
 
 def test_render_rich_marks_success_warning_and_error_output() -> None:
