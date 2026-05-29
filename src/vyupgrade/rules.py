@@ -3321,18 +3321,10 @@ def _signed_subscript_key_target_type(
         return None
     if source[open_index + 1 : close_index].strip() != name:
         return None
-    root_match = re.search(
-        r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
-        source[line_start:open_index],
-    )
-    if root_match is None:
+    root = _subscript_root(source, line_start, open_index)
+    if root is None:
         return None
-    root = root_match.group(1)
-    root_name = root[5:] if root.startswith("self.") else root
-    root_type = facts.storage_vars.get(root_name) if root.startswith("self.") else None
-    root_type = (
-        root_type or vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line, facts)
-    )
+    root_type = _root_type(root, vars_for_line, facts)
     key_type = indexed_key_type(root_type)
     return normalize_type(key_type) if _is_signed_integer_type(key_type) else None
 
@@ -3391,38 +3383,48 @@ def _inside_array_subscript(source: str, index: int, vars_for_line: dict[str, st
     close_index = find_matching(source, open_index, "[", "]")
     if close_index is None or not (open_index < index < close_index):
         return False
-    root_match = re.search(
-        r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
-        source[line_start:open_index],
-    )
-    if root_match is None:
+    root = _subscript_root(source, line_start, open_index)
+    if root is None:
         return False
-    root = root_match.group(1)
-    root_name = root[5:] if root.startswith("self.") else root
-    root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
-    key_type = indexed_key_type(root_type)
-    if key_type is not None:
-        return _is_unsigned_integer_type(key_type)
-    return indexed_value_type(root_type) is not None
+    return _subscript_expects_unsigned(root, vars_for_line)
 
 
 def _subscript_index_expects_unsigned(
     source: str, open_index: int, vars_for_line: dict[str, str]
 ) -> bool:
     line_start = source.rfind("\n", 0, open_index) + 1
+    root = _subscript_root(source, line_start, open_index)
+    if root is None:
+        return False
+    return _subscript_expects_unsigned(root, vars_for_line)
+
+
+def _subscript_root(source: str, line_start: int, open_index: int) -> str | None:
     root_match = re.search(
         r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
         source[line_start:open_index],
     )
-    if root_match is None:
-        return False
-    root = root_match.group(1)
-    root_name = root[5:] if root.startswith("self.") else root
-    root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
+    return root_match.group(1) if root_match is not None else None
+
+
+def _subscript_expects_unsigned(root: str, vars_for_line: dict[str, str]) -> bool:
+    root_type = _root_type(root, vars_for_line)
     key_type = indexed_key_type(root_type)
     if key_type is not None:
         return _is_unsigned_integer_type(key_type)
     return indexed_value_type(root_type) is not None
+
+
+def _root_type(
+    root: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None
+) -> str | None:
+    root_name = _strip_self(root)
+    root_type = facts.storage_vars.get(root_name) if facts and root.startswith("self.") else None
+    return root_type or vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line, facts)
+
+
+def _strip_self(name: str) -> str:
+    return name[5:] if name.startswith("self.") else name
 
 
 def _inside_type_subscript(source: str, index: int) -> bool:
