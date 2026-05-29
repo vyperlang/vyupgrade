@@ -78,6 +78,26 @@ def test_compiler_command_uses_older_python_for_legacy_vyper(monkeypatch) -> Non
     ]
 
 
+def test_compiler_command_uses_typed_ast_runner_for_legacy_prerelease(monkeypatch) -> None:
+    monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
+
+    command = _compiler_command(None, "0.1.0b4", None)
+
+    assert command[:9] == [
+        "/tmp/uv",
+        "run",
+        "--no-project",
+        "--python",
+        "3.8",
+        "--with",
+        "vyper==0.1.0b4",
+        "--with",
+        "typed-ast",
+    ]
+    assert command[9] == "python"
+    assert command[10].endswith("legacy_vyper.py")
+
+
 def test_compiler_command_falls_back_when_uv_lookup_is_broken(monkeypatch) -> None:
     def broken_find_uv_bin() -> str:
         raise TypeError('can only concatenate str (not "NoneType") to str')
@@ -109,6 +129,32 @@ def test_compile_retries_without_unsupported_layout(monkeypatch) -> None:
     assert result.artifacts == {"abi": [], "method_identifiers": {}}
     assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout"
     assert calls[1][calls[1].index("-f") + 1] == "abi,method_identifiers"
+
+
+def test_compile_retries_without_legacy_keyerror_format(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        requested = command[command.index("-f") + 1]
+        if "method_identifiers" in requested:
+            return subprocess.CompletedProcess(command, 1, "", "KeyError: 'method_identifiers'")
+        if "ast" in requested:
+            return subprocess.CompletedProcess(command, 1, "", "KeyError: 'ast'")
+        return subprocess.CompletedProcess(command, 0, "[]\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile_with_formats_for_test(["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "ast"))
+
+    assert result.status == "passed"
+    assert calls[-1][calls[-1].index("-f") + 1] == "abi"
+
+
+def _run_compile_with_formats_for_test(command: list[str], path: Path, formats: tuple[str, ...]) -> CompileResult:
+    from vyupgrade.compiler import _run_compile_with_formats
+
+    return _run_compile_with_formats(command, path, Config(paths=(path,)), formats, (), False)
 
 
 def test_compile_installs_declared_vyper_import_dependencies(monkeypatch, tmp_path) -> None:
@@ -179,6 +225,48 @@ def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_p
 
     assert result.status == "passed"
     assert "-p" not in calls[0]
+
+
+def test_compile_inserts_import_dependencies_before_legacy_runner(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contracts" / "contract.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("from snekmate.utils import math\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        """[tool.poetry.dependencies]
+python = ">=3.11,<4"
+snekmate = "0.1.2"
+""",
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        [
+            "/tmp/uv",
+            "run",
+            "--no-project",
+            "--python",
+            "3.8",
+            "--with",
+            "vyper==0.1.0b4",
+            "--with",
+            "typed-ast",
+            "python",
+            "/tmp/legacy_vyper.py",
+        ],
+        contract,
+        Config(paths=(contract,)),
+    )
+
+    assert result.status == "passed"
+    assert calls[0][9:11] == ["--with", "snekmate==0.1.2"]
+    assert calls[0][11:13] == ["python", "/tmp/legacy_vyper.py"]
 
 
 def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:

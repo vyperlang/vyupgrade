@@ -413,7 +413,10 @@ def _compiler_command(explicit: str | None, version: str | None, python: str | N
         return [explicit]
     normalized = _normalize_version(version) or "0.4.3"
     python = python or _default_python(normalized)
-    return [_uv_bin(), "run", "--no-project", "--python", python, "--with", f"vyper=={normalized}", "vyper"]
+    command = [_uv_bin(), "run", "--no-project", "--python", python, "--with", f"vyper=={normalized}"]
+    if legacy_prerelease_version(normalized) is not None:
+        return [*command, "--with", "typed-ast", "python", str(Path(__file__).with_name("legacy_vyper.py"))]
+    return [*command, "vyper"]
 
 
 @cache
@@ -499,8 +502,9 @@ def _run_compile_with_formats(
         return CompileResult("failed", stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds", command=full)
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or proc.stdout.strip()
-        if "Unsupported format type 'layout'" in stderr and "layout" in formats:
-            fallback_formats = tuple(name for name in formats if name != "layout")
+        unsupported = _unsupported_output_format(stderr, formats)
+        if unsupported is not None:
+            fallback_formats = tuple(name for name in formats if name != unsupported)
             return _run_compile_with_formats(command, path, config, fallback_formats, extra_paths, suppress_warnings)
         retry_command = _command_with_missing_module_dependency(command, path, stderr)
         if retry_command is not None:
@@ -511,6 +515,13 @@ def _run_compile_with_formats(
     except json.JSONDecodeError as exc:
         return CompileResult("failed", stderr=f"could not parse compiler output: {exc}", command=full)
     return CompileResult("passed", artifacts=artifacts, stderr=proc.stderr.strip() or None, command=full)
+
+
+def _unsupported_output_format(stderr: str, formats: tuple[str, ...]) -> str | None:
+    for name in formats:
+        if f"Unsupported format type '{name}'" in stderr or f"KeyError: '{name}'" in stderr:
+            return name
+    return None
 
 
 def _supports_search_paths(command: list[str]) -> bool:
@@ -556,13 +567,29 @@ def _missing_module_name(stderr: str) -> str | None:
 
 
 def _uv_command_with_packages(command: list[str], packages: tuple[str, ...]) -> list[str]:
-    full = command[:-1]
+    insert_at = _uv_run_command_index(command)
+    full = command[:insert_at]
     for package in packages:
         if _uv_command_has_package(command, package):
             continue
         full.extend(["--with", package])
-    full.append(command[-1])
+    full.extend(command[insert_at:])
     return full
+
+
+def _uv_run_command_index(command: list[str]) -> int:
+    index = 2
+    options_with_value = {"--python", "--with", "--with-editable", "--with-requirements", "--env-file"}
+    while index < len(command):
+        arg = command[index]
+        if arg == "--":
+            return index + 1
+        if not arg.startswith("-"):
+            return index
+        index += 1
+        if arg in options_with_value and index < len(command):
+            index += 1
+    return len(command)
 
 
 def _uv_command_has_package(command: list[str], package: str) -> bool:
