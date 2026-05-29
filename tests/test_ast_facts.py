@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from vyupgrade.ast_facts import calls, integer_constants, node_span, root_ast, source_segment
-from vyupgrade.analysis import infer_expr_type, parse_source_facts
+from vyupgrade.analysis import BUILTIN_INTERFACES, infer_expr_type, parse_source_facts
 
 
 def test_ast_facts_extract_integer_constants() -> None:
@@ -118,6 +118,16 @@ def f(_expire_time: int256):
 
     assert facts.global_vars == {"MIN_DELEGATION_TIME": "constant(uint256)"}
     assert facts.vars_at_line(8)["_expire_time"] == "int256"
+
+
+def test_source_facts_do_not_mutate_builtin_interface_registry() -> None:
+    source = """interface IERC20:
+    def foo(): view
+"""
+
+    parse_source_facts(source)
+
+    assert "foo" not in BUILTIN_INTERFACES["IERC20"]
 
 
 def test_expr_type_extracts_min_max_value_type() -> None:

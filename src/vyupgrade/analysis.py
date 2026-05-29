@@ -135,8 +135,16 @@ BUILTIN_INTERFACE_RETURNS = {
 
 @dataclass
 class SourceFacts:
-    interfaces: dict[str, dict[str, str]] = field(default_factory=lambda: dict(BUILTIN_INTERFACES))
-    interface_returns: dict[str, dict[str, str]] = field(default_factory=lambda: dict(BUILTIN_INTERFACE_RETURNS))
+    interfaces: dict[str, dict[str, str]] = field(
+        default_factory=lambda: {
+            name: methods.copy() for name, methods in BUILTIN_INTERFACES.items()
+        }
+    )
+    interface_returns: dict[str, dict[str, str]] = field(
+        default_factory=lambda: {
+            name: methods.copy() for name, methods in BUILTIN_INTERFACE_RETURNS.items()
+        }
+    )
     interface_params: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
     structs: set[str] = field(default_factory=set)
     struct_fields: dict[str, dict[str, str]] = field(default_factory=dict)
