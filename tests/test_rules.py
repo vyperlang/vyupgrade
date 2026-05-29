@@ -2286,6 +2286,21 @@ def f(x: uint256, i: uint256) -> uint256:
     assert "return (x >> (8 * i))" in result.source
 
 
+def test_shift_builtin_casts_signed_dynamic_amount_before_rewrite() -> None:
+    source = """# @version 0.3.10
+@external
+def f(x: uint256) -> uint256:
+    total: uint256 = 0
+    for i: int128 in range(4):
+        total += shift(x, -8 * i)
+    return total
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "total += (x >> (8 * convert(i, uint256)))" in result.source
+
+
 def test_shift_builtin_rewrites_negative_signed_convert_amount_to_unsigned() -> None:
     source = """# @version 0.4.1
 @external
@@ -2297,6 +2312,25 @@ def f(x: uint256, i: uint256) -> uint256:
 
     assert "return (x >> (128 * i - 1))" not in result.source
     assert "return (x >> (128 * (i - 1)))" in result.source
+
+
+def test_shift_builtin_folds_constants_inside_dynamic_amount() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 3
+PRICE_SIZE: constant(int128) = 256 // (N_COINS - 1)
+
+@external
+def f(x: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(1, N_COINS):
+        total += shift(x, -PRICE_SIZE * convert(i - 1, int256))
+    return total
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "total += (x >> (128 * convert(i - 1, uint256)))" in result.source
+    assert "PRICE_SIZE * (i - 1)" not in result.source
 
 
 def test_shift_builtin_rewrites_signed_constant_amounts() -> None:
@@ -2320,6 +2354,31 @@ def unpack_converted(x: uint256) -> uint256:
 
     assert "return (x << 16)" in result.source
     assert result.source.count("return (x >> 16)") == 2
+
+
+def test_shift_amount_constants_are_not_cast_before_shift_rewrite() -> None:
+    source = """# @version 0.3.10
+PREVIOUS_SHIFT: constant(int128) = -120
+EPOCH_SHIFT: constant(int128) = -240
+
+@external
+def pack(previous: uint256, epoch: uint256) -> uint256:
+    return shift(previous, -PREVIOUS_SHIFT) | shift(epoch, -EPOCH_SHIFT)
+
+@external
+def unpack(packed: uint256, epoch: uint256) -> uint256:
+    if epoch < shift(packed, EPOCH_SHIFT):
+        return shift(packed, PREVIOUS_SHIFT)
+    return 0
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "convert(PREVIOUS_SHIFT, uint256)" not in result.source
+    assert "convert(EPOCH_SHIFT, uint256)" not in result.source
+    assert "return (previous << 120) | (epoch << 240)" in result.source
+    assert "if epoch < (packed >> 240):" in result.source
+    assert "return (packed >> 120)" in result.source
 
 
 def test_legacy_method_id_output_type_is_removed() -> None:

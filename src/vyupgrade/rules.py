@@ -17,6 +17,7 @@ from .analysis import (
     parse_source_facts,
     unwrap_type,
 )
+from .ast_facts import integer_constants as ast_integer_constants
 from .models import Config, Diagnostic, Fix
 from .source import (
     apply_edits,
@@ -1431,7 +1432,7 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
 def _constant_exponent_literals(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY054", config, context):
         return source, [], []
-    constant_values = _integer_constant_values(source)
+    constant_values = _integer_constant_values(source, config.source_ast)
     if not constant_values:
         return source, [], []
 
@@ -1564,6 +1565,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
     if not _enabled("VY052", config, context):
         return source, [], []
     facts = parse_source_facts(source)
+    constant_values = _integer_constant_values(source, config.source_ast)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     offset = 0
@@ -1621,6 +1623,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     _inside_attribute_access(source, start, end)
                     or _inside_convert_call(source, start)
                     or _inside_range_header(source, start)
+                    or (name in constant_values and _inside_shift_amount(source, start))
                     or _inside_type_subscript(source, start)
                     or _signed_comparison_target_type_at(source, start, name, vars_for_line) is not None
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
@@ -1808,7 +1811,7 @@ def _unsigned_range_bound_signed_constants(source: str, config: Config, context:
     mask = code_mask(source)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    constant_values = _integer_constant_values(source)
+    constant_values = _integer_constant_values(source, config.source_ast)
     for match in re.finditer(
         r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*uint(?:\d+)?\s+in\s+range\s*\(",
         source,
@@ -2537,7 +2540,7 @@ def _range_bound(source: str, config: Config, context: MigrationContext) -> tupl
             continue
         if _literal_integer(args[0]) and _literal_integer(args[1]):
             continue
-        bound = _infer_range_bound(args[0], args[1], _integer_constant_values(source))
+        bound = _infer_range_bound(args[0], args[1], _integer_constant_values(source, config.source_ast))
         if bound is None:
             diagnostics.append(
                 Diagnostic(
@@ -2793,6 +2796,22 @@ def _inside_range_header(source: str, index: int) -> bool:
     line_start = source.rfind("\n", 0, index) + 1
     prefix = source[line_start:index]
     return bool(re.search(r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*(?::[^:]+)?\s+in\s+range\s*\([^)]*$", prefix))
+
+
+def _inside_shift_amount(source: str, index: int) -> bool:
+    for match in re.finditer(r"\bshift\s*\(", source):
+        open_index = match.end() - 1
+        if open_index >= index:
+            break
+        close = find_matching(source, open_index)
+        if close is None or not (open_index < index < close):
+            continue
+        arg_spans = _split_top_level_arg_spans(source[open_index + 1 : close])
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        start, end, _arg = arg_spans[1]
+        return open_index + 1 + start <= index < open_index + 1 + end
+    return False
 
 
 def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None) -> bool:
@@ -3418,7 +3437,7 @@ def _replace_shift_builtin(
     all_diagnostics: list[Diagnostic] = []
     while True:
         mask = code_mask(current)
-        constant_values = _integer_constant_values(current)
+        constant_values = _integer_constant_values(current, config.source_ast)
         facts = parse_source_facts(current)
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []
@@ -3452,7 +3471,10 @@ def _replace_shift_builtin(
                 replacement = f"({value} {operator} {abs(amount)})"
             elif negative_expr is not None:
                 vars_for_line = facts.vars_at_line(line_number(current, match.start()))
-                replacement = f"({value} >> ({_unsigned_shift_amount_expr(negative_expr.group(1).strip(), vars_for_line)}))"
+                replacement = (
+                    f"({value} >> "
+                    f"({_unsigned_shift_amount_expr(negative_expr.group(1).strip(), vars_for_line, constant_values)}))"
+                )
             elif positive is not None:
                 replacement = f"({value} << {positive.group(1)})"
             elif positive_constant is not None and positive_constant.group(1) in constant_values:
@@ -3495,7 +3517,17 @@ def _replace_shift_builtin(
         current = apply_edits(current, selected_edits)
 
 
-def _unsigned_shift_amount_expr(expr: str, vars_for_line: dict[str, str]) -> str:
+def _unsigned_shift_amount_expr(
+    expr: str, vars_for_line: dict[str, str], constant_values: dict[str, int]
+) -> str:
+    nonnegative_constants = [
+        name
+        for name, value in sorted(constant_values.items(), key=lambda item: len(item[0]), reverse=True)
+        if value >= 0
+    ]
+    if nonnegative_constants:
+        constant_re = re.compile(rf"\b({'|'.join(re.escape(name) for name in nonnegative_constants)})\b")
+        expr = constant_re.sub(lambda match: str(constant_values[match.group(1)]), expr)
     return re.sub(
         r"\bconvert\s*\(([^,\n]+),\s*int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)",
         lambda match: _unsigned_shift_convert_replacement(match.group(1).strip(), vars_for_line),
@@ -3516,8 +3548,8 @@ def _unsigned_integer_expression(expr: str, vars_for_line: dict[str, str]) -> bo
     return all(_is_unsigned_integer_type(infer_expr_type(identifier, vars_for_line)) for identifier in identifiers)
 
 
-def _integer_constant_values(source: str) -> dict[str, int]:
-    values: dict[str, int] = {}
+def _integer_constant_values(source: str, source_ast: dict[str, object] | None = None) -> dict[str, int]:
+    values: dict[str, int] = ast_integer_constants(source_ast) if source_ast is not None else {}
     constant_re = re.compile(
         r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\([^#\n=]+\)\s*=\s*(?P<expr>[^\n#]+)",
         re.MULTILINE,

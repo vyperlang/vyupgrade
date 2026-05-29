@@ -12,6 +12,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -771,8 +772,10 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             compiler_search_paths=(Path(item["corpus_repo_root"]),),
             bump_pragma=True,
         )
-        rewrite = apply_rules(original, config, path)
         source_compile = compile_source_file(path, config, item["pragma"])
+        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
+        file_config = replace(config, source_ast=source_ast if isinstance(source_ast, dict) else None)
+        rewrite = apply_rules(original, file_config, path)
         target_compile = compile_target_source(path, rewrite.source, config)
         abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(source_compile, target_compile)
         return {

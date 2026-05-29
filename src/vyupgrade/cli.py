@@ -5,6 +5,7 @@ import difflib
 import subprocess
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 from .compiler import compare_artifacts, compile_source_file, compile_target_source
@@ -58,11 +59,12 @@ def main(argv: list[str] | None = None) -> int:
     for path in files:
         original = path.read_text(encoding="utf-8")
         source_version = config.source_version or infer_pragma(original)
-        rewrite = apply_rules(original, config, path)
+        source_compile = compile_source_file(path, config, source_version)
+        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
+        file_config = replace(config, source_ast=source_ast if isinstance(source_ast, dict) else None)
+        rewrite = apply_rules(original, file_config, path)
         changed = original != rewrite.source
         file_report = FileReport(path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics)
-
-        source_compile = compile_source_file(path, config, source_version)
         file_report.source_compile = source_compile.status
         file_report.source_error = source_compile.stderr
         any_source_failed = any_source_failed or source_compile.status == "failed"

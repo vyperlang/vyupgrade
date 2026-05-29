@@ -61,6 +61,7 @@ class Config:
     enable_decimals: bool = False
     bump_pragma: bool = False
     format: str = "none"
+    source_ast: dict[str, Any] | None = None
 
 
 @dataclass

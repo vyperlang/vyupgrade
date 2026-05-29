@@ -15,6 +15,7 @@ from .versions import VyperVersion, compiler_version_for_spec, infer_pragma, par
 
 
 FORMATS = ("abi", "method_identifiers", "layout")
+SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 
 
 @dataclass
@@ -34,7 +35,14 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         normalized,
         config.source_python,
     )
-    return _run_compile(command, path, config, suppress_warnings=_supports_warning_policy(normalized))
+    return _run_compile_with_formats(
+        command,
+        path,
+        config,
+        SOURCE_FORMATS,
+        (),
+        _supports_warning_policy(normalized),
+    )
 
 
 def compile_target_source(path: Path, source: str, config: Config) -> CompileResult:

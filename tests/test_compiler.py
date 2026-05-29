@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from vyupgrade.compiler import CompileResult, _compiler_command, _run_compile, _supports_warning_policy, _uv_bin, compile_source_ast
+from vyupgrade.compiler import (
+    CompileResult,
+    _compiler_command,
+    _run_compile,
+    _supports_warning_policy,
+    _uv_bin,
+    compile_source_ast,
+    compile_source_file,
+)
 from vyupgrade.models import Config
 
 
@@ -148,6 +156,36 @@ def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
     assert result.status == "passed"
     assert calls["compiler"] == (None, "0.4.3", None)
     assert calls["run"] == (["vyper"], contract, ("ast",), (), True)
+
+
+def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# @version 0.4.3\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    def fake_compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
+        calls["compiler"] = (explicit, version, python)
+        return ["vyper"]
+
+    def fake_run_compile_with_formats(
+        command: list[str],
+        path: Path,
+        config: Config,
+        formats: tuple[str, ...],
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["run"] = (command, path, formats, extra_paths, suppress_warnings)
+        return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", fake_compiler_command)
+    monkeypatch.setattr("vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats)
+
+    result = compile_source_file(contract, Config(paths=(contract,)), None)
+
+    assert result.status == "passed"
+    assert calls["compiler"] == (None, "0.4.3", None)
+    assert calls["run"] == (["vyper"], contract, ("abi", "method_identifiers", "layout", "ast"), (), True)
 
 
 def test_warning_policy_is_only_used_for_modern_vyper() -> None:
