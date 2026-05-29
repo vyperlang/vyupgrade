@@ -2151,7 +2151,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     or _signed_comparison_target_type_at(source, start, name, vars_for_line) is not None
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
                     or _signed_external_call_arg_target_type(source, start, name, facts, vars_for_line) is not None
-                    or _signed_subscript_key_target_type(source, start, name, vars_for_line) is not None
+                    or _signed_subscript_key_target_type(source, start, name, vars_for_line, facts) is not None
                     or (
                         comparison_target is None
                         and not _signed_name_has_unsigned_context(source, start, name, lhs_type, vars_for_line, facts)
@@ -2194,7 +2194,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     source, start, name, facts
                 ) or _signed_external_call_arg_target_type(
                     source, start, name, facts, vars_for_line
-                ) or _signed_subscript_key_target_type(source, start, name, vars_for_line)
+                ) or _signed_subscript_key_target_type(source, start, name, vars_for_line, facts)
                 if target_type is None:
                     continue
                 replacement = f"convert({name}, {target_type})"
@@ -2894,7 +2894,7 @@ def _external_call_arg_expected_type(
 
 
 def _signed_subscript_key_target_type(
-    source: str, index: int, name: str, vars_for_line: dict[str, str]
+    source: str, index: int, name: str, vars_for_line: dict[str, str], facts: SourceFacts
 ) -> str | None:
     line_start = source.rfind("\n", 0, index) + 1
     open_index = source.rfind("[", line_start, index)
@@ -2905,12 +2905,16 @@ def _signed_subscript_key_target_type(
         return None
     if source[open_index + 1 : close_index].strip() != name:
         return None
-    root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    root_match = re.search(
+        r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
+        source[line_start:open_index],
+    )
     if root_match is None:
         return None
     root = root_match.group(1)
     root_name = root[5:] if root.startswith("self.") else root
-    root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
+    root_type = facts.storage_vars.get(root_name) if root.startswith("self.") else None
+    root_type = root_type or vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line, facts)
     key_type = indexed_key_type(root_type)
     return normalize_type(key_type) if _is_signed_integer_type(key_type) else None
 
@@ -2982,18 +2986,27 @@ def _inside_array_subscript(source: str, index: int, vars_for_line: dict[str, st
     close_index = find_matching(source, open_index, "[", "]")
     if close_index is None or not (open_index < index < close_index):
         return False
-    root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    root_match = re.search(
+        r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
+        source[line_start:open_index],
+    )
     if root_match is None:
         return False
     root = root_match.group(1)
     root_name = root[5:] if root.startswith("self.") else root
     root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
+    key_type = indexed_key_type(root_type)
+    if key_type is not None:
+        return _is_unsigned_integer_type(key_type)
     return indexed_value_type(root_type) is not None
 
 
 def _subscript_index_expects_unsigned(source: str, open_index: int, vars_for_line: dict[str, str]) -> bool:
     line_start = source.rfind("\n", 0, open_index) + 1
-    root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    root_match = re.search(
+        r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
+        source[line_start:open_index],
+    )
     if root_match is None:
         return False
     root = root_match.group(1)
