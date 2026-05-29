@@ -7,7 +7,9 @@ from .source import code_mask, span_is_code
 from .source import split_top_level_args
 
 
-INT_TYPE_RE = re.compile(r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$")
+INT_TYPE_RE = re.compile(
+    r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$"
+)
 TYPE_NAME_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 DEF_RE = re.compile(
     r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\((.*?)\)(?:\s*->\s*([^:]+?))?\s*:\s*(\w+)?\s*$"
@@ -18,261 +20,174 @@ FLAG_RE = re.compile(r"^(?:enum|flag)\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
 EVENT_RE = re.compile(r"^event\s+[A-Za-z_][A-Za-z0-9_]*:\s*$")
 
 
-BUILTIN_INTERFACES = {
-    "ERC20": {
-        "totalSupply": "view",
-        "balanceOf": "view",
-        "allowance": "view",
-        "transfer": "nonpayable",
-        "transferFrom": "nonpayable",
-        "approve": "nonpayable",
-    },
-    "IERC20": {
-        "totalSupply": "view",
-        "balanceOf": "view",
-        "allowance": "view",
-        "transfer": "nonpayable",
-        "transferFrom": "nonpayable",
-        "approve": "nonpayable",
-    },
-    "ERC20Detailed": {"name": "view", "symbol": "view", "decimals": "view"},
-    "IERC20Detailed": {"name": "view", "symbol": "view", "decimals": "view"},
-    "ERC165": {"supportsInterface": "view"},
-    "IERC165": {"supportsInterface": "view"},
-    "ERC721": {
-        "balanceOf": "view",
-        "ownerOf": "view",
-        "safeTransferFrom": "nonpayable",
-        "transferFrom": "nonpayable",
-        "approve": "nonpayable",
-        "setApprovalForAll": "nonpayable",
-        "getApproved": "view",
-        "isApprovedForAll": "view",
-    },
-    "IERC721": {
-        "balanceOf": "view",
-        "ownerOf": "view",
-        "safeTransferFrom": "nonpayable",
-        "transferFrom": "nonpayable",
-        "approve": "nonpayable",
-        "setApprovalForAll": "nonpayable",
-        "getApproved": "view",
-        "isApprovedForAll": "view",
-    },
-    "ERC721Metadata": {"name": "view", "symbol": "view", "tokenURI": "view"},
-    "IERC721Metadata": {"name": "view", "symbol": "view", "tokenURI": "view"},
-    "ERC721Enumerable": {"totalSupply": "view", "tokenOfOwnerByIndex": "view", "tokenByIndex": "view"},
-    "IERC721Enumerable": {"totalSupply": "view", "tokenOfOwnerByIndex": "view", "tokenByIndex": "view"},
-    "ERC1155": {
-        "balanceOf": "view",
-        "balanceOfBatch": "view",
-        "setApprovalForAll": "nonpayable",
-        "isApprovedForAll": "view",
-        "safeTransferFrom": "nonpayable",
-        "safeBatchTransferFrom": "nonpayable",
-    },
-    "IERC1155": {
-        "balanceOf": "view",
-        "balanceOfBatch": "view",
-        "setApprovalForAll": "nonpayable",
-        "isApprovedForAll": "view",
-        "safeTransferFrom": "nonpayable",
-        "safeBatchTransferFrom": "nonpayable",
-    },
-    "ERC4626": {
-        "asset": "view",
-        "totalAssets": "view",
-        "convertToShares": "view",
-        "convertToAssets": "view",
-        "maxDeposit": "view",
-        "previewDeposit": "view",
-        "deposit": "nonpayable",
-        "maxMint": "view",
-        "previewMint": "view",
-        "mint": "nonpayable",
-        "maxWithdraw": "view",
-        "previewWithdraw": "view",
-        "withdraw": "nonpayable",
-        "maxRedeem": "view",
-        "previewRedeem": "view",
-        "redeem": "nonpayable",
-    },
-    "IERC4626": {
-        "asset": "view",
-        "totalAssets": "view",
-        "convertToShares": "view",
-        "convertToAssets": "view",
-        "maxDeposit": "view",
-        "previewDeposit": "view",
-        "deposit": "nonpayable",
-        "maxMint": "view",
-        "previewMint": "view",
-        "mint": "nonpayable",
-        "maxWithdraw": "view",
-        "previewWithdraw": "view",
-        "withdraw": "nonpayable",
-        "maxRedeem": "view",
-        "previewRedeem": "view",
-        "redeem": "nonpayable",
-    },
-}
-
-BUILTIN_INTERFACE_RETURNS = {
-    "ERC20": {
-        "totalSupply": "uint256",
-        "balanceOf": "uint256",
-        "allowance": "uint256",
-        "transfer": "bool",
-        "transferFrom": "bool",
-        "approve": "bool",
-    },
-    "IERC20": {
-        "totalSupply": "uint256",
-        "balanceOf": "uint256",
-        "allowance": "uint256",
-        "transfer": "bool",
-        "transferFrom": "bool",
-        "approve": "bool",
-    },
-    "ERC20Detailed": {"name": "String[64]", "symbol": "String[32]", "decimals": "uint8"},
-    "IERC20Detailed": {"name": "String[64]", "symbol": "String[32]", "decimals": "uint8"},
-    "ERC165": {"supportsInterface": "bool"},
-    "IERC165": {"supportsInterface": "bool"},
-    "ERC721": {
-        "balanceOf": "uint256",
-        "ownerOf": "address",
-        "getApproved": "address",
-        "isApprovedForAll": "bool",
-    },
-    "IERC721": {
-        "balanceOf": "uint256",
-        "ownerOf": "address",
-        "getApproved": "address",
-        "isApprovedForAll": "bool",
-    },
-    "ERC721Metadata": {"name": "String[64]", "symbol": "String[32]", "tokenURI": "String[256]"},
-    "IERC721Metadata": {"name": "String[64]", "symbol": "String[32]", "tokenURI": "String[256]"},
-    "ERC721Enumerable": {
-        "totalSupply": "uint256",
-        "tokenOfOwnerByIndex": "uint256",
-        "tokenByIndex": "uint256",
-    },
-    "IERC721Enumerable": {
-        "totalSupply": "uint256",
-        "tokenOfOwnerByIndex": "uint256",
-        "tokenByIndex": "uint256",
-    },
-    "ERC1155": {"balanceOf": "uint256", "balanceOfBatch": "DynArray[uint256, 1024]", "isApprovedForAll": "bool"},
-    "IERC1155": {"balanceOf": "uint256", "balanceOfBatch": "DynArray[uint256, 1024]", "isApprovedForAll": "bool"},
-    "ERC4626": {
-        "asset": "address",
-        "totalAssets": "uint256",
-        "convertToShares": "uint256",
-        "convertToAssets": "uint256",
-        "maxDeposit": "uint256",
-        "previewDeposit": "uint256",
-        "deposit": "uint256",
-        "maxMint": "uint256",
-        "previewMint": "uint256",
-        "mint": "uint256",
-        "maxWithdraw": "uint256",
-        "previewWithdraw": "uint256",
-        "withdraw": "uint256",
-        "maxRedeem": "uint256",
-        "previewRedeem": "uint256",
-        "redeem": "uint256",
-    },
-    "IERC4626": {
-        "asset": "address",
-        "totalAssets": "uint256",
-        "convertToShares": "uint256",
-        "convertToAssets": "uint256",
-        "maxDeposit": "uint256",
-        "previewDeposit": "uint256",
-        "deposit": "uint256",
-        "maxMint": "uint256",
-        "previewMint": "uint256",
-        "mint": "uint256",
-        "maxWithdraw": "uint256",
-        "previewWithdraw": "uint256",
-        "withdraw": "uint256",
-        "maxRedeem": "uint256",
-        "previewRedeem": "uint256",
-        "redeem": "uint256",
-    },
-}
+INTERFACE_ALIASES = (
+    ("IERC20", "ERC20"),
+    ("IERC20Detailed", "ERC20Detailed"),
+    ("IERC165", "ERC165"),
+    ("IERC721", "ERC721"),
+    ("IERC721Metadata", "ERC721Metadata"),
+    ("IERC721Enumerable", "ERC721Enumerable"),
+    ("IERC1155", "ERC1155"),
+    ("IERC4626", "ERC4626"),
+)
 
 
-BUILTIN_INTERFACE_PARAMS = {
-    "ERC20": {
-        "balanceOf": {"owner": "address"},
-        "allowance": {"owner": "address", "spender": "address"},
-        "transfer": {"to": "address", "amount": "uint256"},
-        "transferFrom": {"owner": "address", "to": "address", "amount": "uint256"},
-        "approve": {"spender": "address", "amount": "uint256"},
-    },
-    "IERC20": {
-        "balanceOf": {"owner": "address"},
-        "allowance": {"owner": "address", "spender": "address"},
-        "transfer": {"to": "address", "amount": "uint256"},
-        "transferFrom": {"owner": "address", "to": "address", "amount": "uint256"},
-        "approve": {"spender": "address", "amount": "uint256"},
-    },
-    "ERC165": {"supportsInterface": {"interface_id": "bytes4"}},
-    "IERC165": {"supportsInterface": {"interface_id": "bytes4"}},
-    "ERC721": {
-        "balanceOf": {"owner": "address"},
-        "ownerOf": {"tokenId": "uint256"},
-        "safeTransferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
-        "transferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
-        "approve": {"to": "address", "tokenId": "uint256"},
-        "setApprovalForAll": {"operator": "address", "approved": "bool"},
-        "getApproved": {"tokenId": "uint256"},
-        "isApprovedForAll": {"owner": "address", "operator": "address"},
-    },
-    "IERC721": {
-        "balanceOf": {"owner": "address"},
-        "ownerOf": {"tokenId": "uint256"},
-        "safeTransferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
-        "transferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
-        "approve": {"to": "address", "tokenId": "uint256"},
-        "setApprovalForAll": {"operator": "address", "approved": "bool"},
-        "getApproved": {"tokenId": "uint256"},
-        "isApprovedForAll": {"owner": "address", "operator": "address"},
-    },
-    "ERC721Metadata": {"tokenURI": {"tokenId": "uint256"}},
-    "IERC721Metadata": {"tokenURI": {"tokenId": "uint256"}},
-    "ERC721Enumerable": {
-        "tokenOfOwnerByIndex": {"owner": "address", "index": "uint256"},
-        "tokenByIndex": {"index": "uint256"},
-    },
-    "IERC721Enumerable": {
-        "tokenOfOwnerByIndex": {"owner": "address", "index": "uint256"},
-        "tokenByIndex": {"index": "uint256"},
-    },
-    "ERC1155": {
-        "balanceOf": {"account": "address", "id": "uint256"},
-        "setApprovalForAll": {"operator": "address", "approved": "bool"},
-        "isApprovedForAll": {"account": "address", "operator": "address"},
-        "safeTransferFrom": {
-            "owner": "address",
-            "to": "address",
-            "id": "uint256",
-            "amount": "uint256",
+def _with_interface_aliases(
+    entries: dict[str, dict], aliases: tuple[tuple[str, str], ...] = INTERFACE_ALIASES
+) -> dict[str, dict]:
+    expanded = dict(entries)
+    for alias, canonical in aliases:
+        if canonical in expanded:
+            expanded[alias] = expanded[canonical]
+    return expanded
+
+
+BUILTIN_INTERFACES = _with_interface_aliases(
+    {
+        "ERC20": {
+            "totalSupply": "view",
+            "balanceOf": "view",
+            "allowance": "view",
+            "transfer": "nonpayable",
+            "transferFrom": "nonpayable",
+            "approve": "nonpayable",
         },
-    },
-    "IERC1155": {
-        "balanceOf": {"account": "address", "id": "uint256"},
-        "setApprovalForAll": {"operator": "address", "approved": "bool"},
-        "isApprovedForAll": {"account": "address", "operator": "address"},
-        "safeTransferFrom": {
-            "owner": "address",
-            "to": "address",
-            "id": "uint256",
-            "amount": "uint256",
+        "ERC20Detailed": {"name": "view", "symbol": "view", "decimals": "view"},
+        "ERC165": {"supportsInterface": "view"},
+        "ERC721": {
+            "balanceOf": "view",
+            "ownerOf": "view",
+            "safeTransferFrom": "nonpayable",
+            "transferFrom": "nonpayable",
+            "approve": "nonpayable",
+            "setApprovalForAll": "nonpayable",
+            "getApproved": "view",
+            "isApprovedForAll": "view",
         },
-    },
-}
+        "ERC721Metadata": {"name": "view", "symbol": "view", "tokenURI": "view"},
+        "ERC721Enumerable": {
+            "totalSupply": "view",
+            "tokenOfOwnerByIndex": "view",
+            "tokenByIndex": "view",
+        },
+        "ERC1155": {
+            "balanceOf": "view",
+            "balanceOfBatch": "view",
+            "setApprovalForAll": "nonpayable",
+            "isApprovedForAll": "view",
+            "safeTransferFrom": "nonpayable",
+            "safeBatchTransferFrom": "nonpayable",
+        },
+        "ERC4626": {
+            "asset": "view",
+            "totalAssets": "view",
+            "convertToShares": "view",
+            "convertToAssets": "view",
+            "maxDeposit": "view",
+            "previewDeposit": "view",
+            "deposit": "nonpayable",
+            "maxMint": "view",
+            "previewMint": "view",
+            "mint": "nonpayable",
+            "maxWithdraw": "view",
+            "previewWithdraw": "view",
+            "withdraw": "nonpayable",
+            "maxRedeem": "view",
+            "previewRedeem": "view",
+            "redeem": "nonpayable",
+        },
+    }
+)
+
+BUILTIN_INTERFACE_RETURNS = _with_interface_aliases(
+    {
+        "ERC20": {
+            "totalSupply": "uint256",
+            "balanceOf": "uint256",
+            "allowance": "uint256",
+            "transfer": "bool",
+            "transferFrom": "bool",
+            "approve": "bool",
+        },
+        "ERC20Detailed": {"name": "String[64]", "symbol": "String[32]", "decimals": "uint8"},
+        "ERC165": {"supportsInterface": "bool"},
+        "ERC721": {
+            "balanceOf": "uint256",
+            "ownerOf": "address",
+            "getApproved": "address",
+            "isApprovedForAll": "bool",
+        },
+        "ERC721Metadata": {"name": "String[64]", "symbol": "String[32]", "tokenURI": "String[256]"},
+        "ERC721Enumerable": {
+            "totalSupply": "uint256",
+            "tokenOfOwnerByIndex": "uint256",
+            "tokenByIndex": "uint256",
+        },
+        "ERC1155": {
+            "balanceOf": "uint256",
+            "balanceOfBatch": "DynArray[uint256, 1024]",
+            "isApprovedForAll": "bool",
+        },
+        "ERC4626": {
+            "asset": "address",
+            "totalAssets": "uint256",
+            "convertToShares": "uint256",
+            "convertToAssets": "uint256",
+            "maxDeposit": "uint256",
+            "previewDeposit": "uint256",
+            "deposit": "uint256",
+            "maxMint": "uint256",
+            "previewMint": "uint256",
+            "mint": "uint256",
+            "maxWithdraw": "uint256",
+            "previewWithdraw": "uint256",
+            "withdraw": "uint256",
+            "maxRedeem": "uint256",
+            "previewRedeem": "uint256",
+            "redeem": "uint256",
+        },
+    }
+)
+
+
+BUILTIN_INTERFACE_PARAMS = _with_interface_aliases(
+    {
+        "ERC20": {
+            "balanceOf": {"owner": "address"},
+            "allowance": {"owner": "address", "spender": "address"},
+            "transfer": {"to": "address", "amount": "uint256"},
+            "transferFrom": {"owner": "address", "to": "address", "amount": "uint256"},
+            "approve": {"spender": "address", "amount": "uint256"},
+        },
+        "ERC165": {"supportsInterface": {"interface_id": "bytes4"}},
+        "ERC721": {
+            "balanceOf": {"owner": "address"},
+            "ownerOf": {"tokenId": "uint256"},
+            "safeTransferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
+            "transferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
+            "approve": {"to": "address", "tokenId": "uint256"},
+            "setApprovalForAll": {"operator": "address", "approved": "bool"},
+            "getApproved": {"tokenId": "uint256"},
+            "isApprovedForAll": {"owner": "address", "operator": "address"},
+        },
+        "ERC721Metadata": {"tokenURI": {"tokenId": "uint256"}},
+        "ERC721Enumerable": {
+            "tokenOfOwnerByIndex": {"owner": "address", "index": "uint256"},
+            "tokenByIndex": {"index": "uint256"},
+        },
+        "ERC1155": {
+            "balanceOf": {"account": "address", "id": "uint256"},
+            "setApprovalForAll": {"operator": "address", "approved": "bool"},
+            "isApprovedForAll": {"account": "address", "operator": "address"},
+            "safeTransferFrom": {
+                "owner": "address",
+                "to": "address",
+                "id": "uint256",
+                "amount": "uint256",
+            },
+        },
+    }
+)
 
 
 @dataclass
@@ -289,10 +204,7 @@ class SourceFacts:
     )
     interface_params: dict[str, dict[str, dict[str, str]]] = field(
         default_factory=lambda: {
-            interface_name: {
-                method_name: params.copy()
-                for method_name, params in methods.items()
-            }
+            interface_name: {method_name: params.copy() for method_name, params in methods.items()}
             for interface_name, methods in BUILTIN_INTERFACE_PARAMS.items()
         }
     )
@@ -394,7 +306,9 @@ def parse_source_facts(source: str) -> SourceFacts:
                     current_function_line = pending_function_line
                     current_function_indent = pending_function_indent
                     facts.function_names[current_function_line] = def_match.group(1)
-                    facts.function_decorators[current_function_line] = tuple(name for name, _line in pending_decorators)
+                    facts.function_decorators[current_function_line] = tuple(
+                        name for name, _line in pending_decorators
+                    )
                     facts.function_decorator_lines[current_function_line] = {
                         name: decorator_line for name, decorator_line in pending_decorators
                     }
@@ -454,7 +368,12 @@ def parse_source_facts(source: str) -> SourceFacts:
             facts.flags_or_enums.add(flag_match.group(1))
 
         if current_interface:
-            if pending_interface_method is not None and stripped in {"view", "pure", "nonpayable", "payable"}:
+            if pending_interface_method is not None and stripped in {
+                "view",
+                "pure",
+                "nonpayable",
+                "payable",
+            }:
                 facts.interfaces[current_interface][pending_interface_method] = stripped
                 pending_interface_method = None
                 offset += len(raw_line)
@@ -467,21 +386,35 @@ def parse_source_facts(source: str) -> SourceFacts:
                     def_match = DEF_RE.match(" ".join(pending_interface_header))
                     if def_match:
                         method_name = def_match.group(1)
-                        facts.interfaces[current_interface][method_name] = def_match.group(4) or "nonpayable"
-                        facts.interface_params[current_interface][method_name] = _parse_params(def_match.group(2))
+                        facts.interfaces[current_interface][method_name] = (
+                            def_match.group(4) or "nonpayable"
+                        )
+                        facts.interface_params[current_interface][method_name] = _parse_params(
+                            def_match.group(2)
+                        )
                         if def_match.group(3):
-                            facts.interface_returns[current_interface][method_name] = def_match.group(3).strip()
-                        pending_interface_method = method_name if def_match.group(4) is None else None
+                            facts.interface_returns[current_interface][method_name] = (
+                                def_match.group(3).strip()
+                            )
+                        pending_interface_method = (
+                            method_name if def_match.group(4) is None else None
+                        )
                     pending_interface_header = []
                 offset += len(raw_line)
                 continue
             def_match = DEF_RE.match(stripped)
             if def_match:
                 method_name = def_match.group(1)
-                facts.interfaces[current_interface][method_name] = def_match.group(4) or "nonpayable"
-                facts.interface_params[current_interface][method_name] = _parse_params(def_match.group(2))
+                facts.interfaces[current_interface][method_name] = (
+                    def_match.group(4) or "nonpayable"
+                )
+                facts.interface_params[current_interface][method_name] = _parse_params(
+                    def_match.group(2)
+                )
                 if def_match.group(3):
-                    facts.interface_returns[current_interface][method_name] = def_match.group(3).strip()
+                    facts.interface_returns[current_interface][method_name] = def_match.group(
+                        3
+                    ).strip()
                 pending_interface_method = method_name if def_match.group(4) is None else None
                 offset += len(raw_line)
                 continue
@@ -505,7 +438,9 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_function_line = line_no
             current_function_indent = indent
             facts.function_names[current_function_line] = def_match.group(1)
-            facts.function_decorators[current_function_line] = tuple(name for name, _line in pending_decorators)
+            facts.function_decorators[current_function_line] = tuple(
+                name for name, _line in pending_decorators
+            )
             facts.function_decorator_lines[current_function_line] = {
                 name: decorator_line for name, decorator_line in pending_decorators
             }
@@ -536,8 +471,12 @@ def parse_source_facts(source: str) -> SourceFacts:
         if current_function_line is not None:
             loop_var = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^:]+?)\s+in\b", stripped)
             if loop_var:
-                facts.function_vars[current_function_line][loop_var.group(1)] = loop_var.group(2).strip()
-                facts.function_loop_vars.setdefault(current_function_line, set()).add(loop_var.group(1))
+                facts.function_vars[current_function_line][loop_var.group(1)] = loop_var.group(
+                    2
+                ).strip()
+                facts.function_loop_vars.setdefault(current_function_line, set()).add(
+                    loop_var.group(1)
+                )
                 offset += len(raw_line)
                 continue
 
@@ -624,14 +563,26 @@ def indexed_key_type(type_name: str | None) -> str | None:
     return parts[0].strip() if parts and len(parts) == 2 else None
 
 
-def infer_expr_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None) -> str | None:
+def infer_expr_type(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None
+) -> str | None:
     expr = expr.strip()
     expr = _strip_outer_parens(expr)
     if re.fullmatch(r"\d(?:_?\d)*", expr):
         return "uint256"
-    if expr in {"block.timestamp", "block.number", "block.difficulty", "block.basefee", "block.prevhash", "chain.id", "msg.value"}:
+    if expr in {
+        "block.timestamp",
+        "block.number",
+        "block.difficulty",
+        "block.basefee",
+        "block.prevhash",
+        "chain.id",
+        "msg.value",
+    }:
         return "uint256"
-    convert_match = re.fullmatch(r"convert\s*\(.+,\s*([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\s*\)", expr)
+    convert_match = re.fullmatch(
+        r"convert\s*\(.+,\s*([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\s*\)", expr
+    )
     if convert_match:
         return convert_match.group(1)
     bounds_match = re.fullmatch(r"(?:max_value|min_value)\s*\(\s*(u?int(?:\d+)?)\s*\)", expr)
@@ -688,7 +639,9 @@ def _strip_outer_parens(expr: str) -> str:
     return expr
 
 
-def _infer_external_call_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
+def _infer_external_call_type(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
     expr = re.sub(r"^(?:staticcall|extcall)\s+", "", expr.strip())
     match = re.fullmatch(
         r"(?:(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\(.+\)|(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*))\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)",
@@ -701,7 +654,9 @@ def _infer_external_call_type(expr: str, vars_for_line: dict[str, str], facts: S
         target_type = match.group("cast")
     else:
         target_type = infer_expr_type(match.group("target"), vars_for_line, facts)
-    return facts.interface_returns.get(normalize_type(target_type or ""), {}).get(match.group("method"))
+    return facts.interface_returns.get(normalize_type(target_type or ""), {}).get(
+        match.group("method")
+    )
 
 
 def _infer_internal_call_type(expr: str, facts: SourceFacts) -> str | None:
@@ -711,7 +666,9 @@ def _infer_internal_call_type(expr: str, facts: SourceFacts) -> str | None:
     return facts.function_return_names.get(match.group(1))
 
 
-def _infer_attribute_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
+def _infer_attribute_type(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
     if "." not in expr:
         return None
     base, field_name = expr.rsplit(".", 1)
@@ -723,11 +680,15 @@ def _infer_attribute_type(expr: str, vars_for_line: dict[str, str], facts: Sourc
     return facts.struct_fields.get(normalize_type(base_type), {}).get(field_name)
 
 
-def _infer_indexed_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None) -> str | None:
+def _infer_indexed_type(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None
+) -> str | None:
     open_index = _first_top_level_index(expr)
     if open_index is not None:
         base = expr[:open_index].strip()
-        base_type = _raw_index_base_type(base, vars_for_line, facts) or infer_expr_type(base, vars_for_line, facts)
+        base_type = _raw_index_base_type(base, vars_for_line, facts) or infer_expr_type(
+            base, vars_for_line, facts
+        )
         if base_type is None:
             return None
         rest = expr[open_index:]
@@ -760,7 +721,9 @@ def _infer_indexed_type(expr: str, vars_for_line: dict[str, str], facts: SourceF
     return normalize_type(type_name) if rest == "" else None
 
 
-def _raw_index_base_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None) -> str | None:
+def _raw_index_base_type(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None
+) -> str | None:
     if expr.startswith("self.") and facts is not None:
         return facts.storage_vars.get(expr[5:]) or vars_for_line.get(expr[5:])
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
