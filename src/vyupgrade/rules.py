@@ -418,6 +418,14 @@ def _strip_arg_comments(raw_args: str) -> str:
     return "\n".join(lines)
 
 
+def _has_line_comment(text: str) -> bool:
+    for line in text.splitlines():
+        mask = code_mask(line)
+        if any(char == "#" and (index == 0 or mask[index - 1]) for index, char in enumerate(line)):
+            return True
+    return False
+
+
 def _split_top_level_arg_spans(text: str) -> list[tuple[int, int, str]] | None:
     spans: list[tuple[int, int, str]] = []
     start = 0
@@ -3044,6 +3052,8 @@ def _ordered_struct_args(
     facts: SourceFacts,
 ) -> str | None:
     field_order = list(struct_fields)
+    if "\n" in raw_inner and _has_line_comment(raw_inner):
+        return None
     stripped = raw_inner.strip()
     if stripped.startswith("{") and stripped.endswith("}"):
         fields = split_top_level_args(_strip_arg_comments(stripped[1:-1]))

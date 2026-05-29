@@ -2135,7 +2135,7 @@ def f(pool: address, coin: address):
     assert "SwapData(pool=pool, coin=coin, i=convert(i, int128))" in result.source
 
 
-def test_struct_literal_with_comments_reorders_to_declaration_order() -> None:
+def test_struct_literal_with_comments_is_left_source_preserving() -> None:
     source = """# @version 0.3.10
 struct StrategyParams:
     performanceFee: uint256
@@ -2156,7 +2156,9 @@ def f(fee: uint256, ts: uint256, ratio: uint256):
 
     result = apply_rules(source, config())
 
-    assert "StrategyParams(performanceFee=fee, activation=ts, enforceChangeLimit=True, profitLimitRatio=ratio)" in result.source
+    assert "# use current timestamp" in result.source
+    assert "StrategyParams({" in result.source
+    assert "StrategyParams(performanceFee=fee" not in result.source
 
 
 def test_pr_3697_enum_to_flag_is_review_by_default_and_aggressive_fix() -> None:
