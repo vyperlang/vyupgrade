@@ -95,56 +95,24 @@ def main(argv: list[str] | None = None) -> int:
     rewrites = _prepare_rewrites(files, config)
     any_source_failed = any(work.source_compile.status == "failed" for work in rewrites)
 
-    target_sources = {work.path: work.rewrite.source for work in rewrites}
+    any_target_failed = _verify_rewrites(rewrites, config)
+
     for work in rewrites:
-        target_sources.update(
-            {interface.path: interface.source for interface in work.generated_interfaces}
-        )
-    with target_overlay(target_sources, config.target_version) as overlay:
-        for work in rewrites:
-            target_compile = compile_target_source(work.path, work.rewrite.source, config, overlay)
-            work.report.target_compile = target_compile.status
-            work.report.target_error = (
-                target_compile.stderr if target_compile.status == "failed" else None
+        if work.report.changed:
+            _record_change(work.path, work.original, work.rewrite.source, write_back, diff_chunks)
+        reports.append(work.report)
+        if human_reporter:
+            human_reporter.file(work.report)
+        for interface in work.generated_interfaces:
+            previous = (
+                interface.path.read_text(encoding="utf-8") if interface.path.exists() else ""
             )
-            any_target_failed = any_target_failed or target_compile.status == "failed"
-
-            abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
-                work.source_compile, target_compile
-            )
-            work.report.abi_equal = abi_equal
-            work.report.method_ids_equal = method_ids_equal
-            work.report.storage_layout_equal = storage_layout_equal
-            abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
-                work.source_compile,
-                target_compile,
-            )
-            work.report.abi_diff = abi_diff
-            work.report.method_id_diff = method_id_diff
-            work.report.storage_layout_diff = storage_layout_diff
-            _add_validation_diagnostics(work.report, work.source_version, config)
-
-            if work.report.changed:
-                _record_change(
-                    work.path, work.original, work.rewrite.source, write_back, diff_chunks
-                )
-            reports.append(work.report)
+            if not _record_change(interface.path, previous, interface.source, write_back, diff_chunks):
+                continue
+            generated_report = FileReport(path=interface.path, changed=True, fixes=[interface.fix])
+            reports.append(generated_report)
             if human_reporter:
-                human_reporter.file(work.report)
-            for interface in work.generated_interfaces:
-                previous = (
-                    interface.path.read_text(encoding="utf-8") if interface.path.exists() else ""
-                )
-                if not _record_change(
-                    interface.path, previous, interface.source, write_back, diff_chunks
-                ):
-                    continue
-                generated_report = FileReport(
-                    path=interface.path, changed=True, fixes=[interface.fix]
-                )
-                reports.append(generated_report)
-                if human_reporter:
-                    human_reporter.file(generated_report)
+                human_reporter.file(generated_report)
 
     run_report = RunReport(
         source_version=config.source_version,
@@ -225,6 +193,39 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
             )
         )
     return rewrites
+
+
+def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
+    any_target_failed = False
+    target_sources = {work.path: work.rewrite.source for work in rewrites}
+    for work in rewrites:
+        target_sources.update(
+            {interface.path: interface.source for interface in work.generated_interfaces}
+        )
+    with target_overlay(target_sources, config.target_version) as overlay:
+        for work in rewrites:
+            target_compile = compile_target_source(work.path, work.rewrite.source, config, overlay)
+            work.report.target_compile = target_compile.status
+            work.report.target_error = (
+                target_compile.stderr if target_compile.status == "failed" else None
+            )
+            any_target_failed = any_target_failed or target_compile.status == "failed"
+
+            abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
+                work.source_compile, target_compile
+            )
+            work.report.abi_equal = abi_equal
+            work.report.method_ids_equal = method_ids_equal
+            work.report.storage_layout_equal = storage_layout_equal
+            abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
+                work.source_compile,
+                target_compile,
+            )
+            work.report.abi_diff = abi_diff
+            work.report.method_id_diff = method_id_diff
+            work.report.storage_layout_diff = storage_layout_diff
+            _add_validation_diagnostics(work.report, work.source_version, config)
+    return any_target_failed
 
 
 def _parser() -> argparse.ArgumentParser:
