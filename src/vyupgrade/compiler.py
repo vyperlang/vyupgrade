@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import tomllib
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
@@ -35,6 +38,12 @@ class CompileResult:
     command: list[str] | None = None
 
 
+@dataclass(frozen=True)
+class TargetOverlay:
+    root: Path
+    paths: Mapping[Path, Path]
+
+
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
@@ -54,10 +63,23 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
     )
 
 
-def compile_target_source(path: Path, source: str, config: Config) -> CompileResult:
+def compile_target_source(path: Path, source: str, config: Config, overlay: TargetOverlay | None = None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
     compile_source = _target_validation_source(source, config.target_version)
+    if overlay is not None:
+        tmp_path = overlay.paths.get(path.resolve())
+        if tmp_path is not None:
+            normalized = _normalize_version(config.target_version)
+            command = _compiler_command(config.target_vyper, normalized, config.target_python)
+            compile_config = _target_compile_config(compile_source, config)
+            return _run_compile(
+                command,
+                tmp_path,
+                compile_config,
+                extra_paths=(),
+                suppress_warnings=_supports_warning_policy(normalized),
+            )
     try:
         tmp = tempfile.NamedTemporaryFile(
             "w",
@@ -91,6 +113,43 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def target_overlay(sources: Mapping[Path, str], target_version: str) -> Iterator[TargetOverlay | None]:
+    resolved_sources = {path.resolve(): source for path, source in sources.items()}
+    if not resolved_sources:
+        yield None
+        return
+    roots = [_nearest_project_root(path.parent) or path.parent for path in resolved_sources]
+    common = Path(os.path.commonpath([str(root) for root in roots]))
+    with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
+        root = Path(tmp)
+        paths: dict[Path, Path] = {}
+        for path, source in resolved_sources.items():
+            try:
+                relative = path.relative_to(common)
+            except ValueError:
+                continue
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(_target_validation_source(source, target_version), encoding="utf-8")
+            paths[path] = target
+        _copy_project_configs(common, root)
+        yield TargetOverlay(root=root, paths=paths)
+
+
+def _copy_project_configs(source_root: Path, target_root: Path) -> None:
+    for pyproject in source_root.rglob("pyproject.toml"):
+        if any(part in {".git", ".venv", "venv", "node_modules"} for part in pyproject.parts):
+            continue
+        try:
+            relative = pyproject.relative_to(source_root)
+        except ValueError:
+            continue
+        target = target_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(pyproject, target)
 
 
 def compile_source_ast(path: Path, config: Config, source_version: str | None) -> CompileResult:

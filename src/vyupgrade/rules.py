@@ -155,6 +155,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _enum_to_flag,
         _range_bound,
         _typed_range_loops,
+        _integer_assignment_casts,
         _external_call_keywords,
         _external_call_subscripts,
         _ignored_external_call_results,
@@ -167,6 +168,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _typed_external_call_arguments,
         _dynamic_pow_mod256,
         _redundant_integer_convert,
+        _constant_integer_decl_casts,
         _dynamic_bytes_hex_literals,
         _struct_kwargs,
         _create_from_blueprint,
@@ -532,6 +534,23 @@ def _cast_legacy_address_interface_calls(source: str, storage_interfaces: dict[s
     edits: list[TextEdit] = []
     mask = code_mask(source)
     for name, interface_name in storage_interfaces.items():
+        assignment_pattern = re.compile(
+            rf"\bself\.{re.escape(name)}\s*=\s*{re.escape(interface_name)}\s*\(([^()\n]+)\)"
+        )
+        for match in assignment_pattern.finditer(source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            replacement = f"self.{name} = {match.group(1).strip()}"
+            edits.append(TextEdit(match.start(), match.end(), replacement))
+            fixes.append(
+                Fix(
+                    "VY206",
+                    line_number(source, match.start()),
+                    "removed legacy interface cast in address assignment",
+                    match.group(0),
+                    replacement,
+                )
+            )
         pattern = re.compile(rf"\bself\.{re.escape(name)}\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
         for match in pattern.finditer(source):
             if not span_is_code(mask, match.start(), match.end()):
@@ -1786,6 +1805,59 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
             if _enabled("VYD004", config, context):
                 diagnostics.append(Diagnostic("VYD004", line_number(source, match.start()), "cannot prove / operands are integer typed"))
     return apply_edits(source, edits), fixes, diagnostics
+
+
+def _constant_integer_decl_casts(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY052", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    integer_type = r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)"
+    pattern = re.compile(
+        rf"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\(\s*(?P<type>{integer_type})\s*\)\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start("name"), match.end("value")):
+            continue
+        expected_type = normalize_type(match.group("type"))
+        if expected_type == "uint256":
+            continue
+        value = match.group("value").strip()
+        if value.startswith("convert(") or _literal_integer(value):
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        actual_type = infer_expr_type(value, vars_for_line, facts)
+        if actual_type is not None and normalize_type(actual_type) == expected_type:
+            continue
+        folded = _eval_integer_constant_expr(value, _integer_constant_values(source, config.source_ast))
+        if folded is None or not _integer_value_fits_type(folded, expected_type):
+            continue
+        before = match.group(0)
+        after = f"{match.group('indent')}{match.group('name')}: constant({expected_type}) = {folded}{match.group('comment')}"
+        edits.append(TextEdit(match.start(), match.end(), after))
+        fixes.append(
+            Fix(
+                "VY052",
+                line_number(source, match.start()),
+                "folded integer constant initializer to declared type",
+                before,
+                after,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _integer_value_fits_type(value: int, type_name: str) -> bool:
+    match = re.fullmatch(r"(u?)int(\d+)", type_name)
+    if match is None:
+        return False
+    bits = int(match.group(2))
+    if match.group(1):
+        return 0 <= value < 2**bits
+    return -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
 
 
 def _constant_exponent_literals(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -3051,6 +3123,45 @@ def _typed_range_loops(source: str, config: Config, context: MigrationContext) -
         if function_start is not None:
             inferred_loop_vars.setdefault(function_start, {})[match.group(2)] = var_type
 
+    return apply_edits(source, edits), fixes, []
+
+
+def _integer_assignment_casts(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY052", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    pattern = re.compile(
+        r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start("name"), match.end("value")):
+            continue
+        value = match.group("value").strip()
+        if value.startswith("convert(") or _literal_integer(value):
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        expected_type = normalize_type(vars_for_line.get(match.group("name"), ""))
+        if not _is_signed_integer_type(expected_type):
+            continue
+        actual_type = infer_expr_type(value, vars_for_line, facts)
+        if not _is_unsigned_integer_type(actual_type):
+            continue
+        before = match.group(0)
+        after = f"{match.group('indent')}{match.group('name')} = convert({value}, {expected_type}){match.group('comment')}"
+        edits.append(TextEdit(match.start(), match.end(), after))
+        fixes.append(
+            Fix(
+                "VY052",
+                line_number(source, match.start()),
+                "converted unsigned integer assignment to signed type",
+                before,
+                after,
+            )
+        )
     return apply_edits(source, edits), fixes, []
 
 

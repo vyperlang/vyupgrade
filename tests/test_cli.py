@@ -73,6 +73,35 @@ def f(target: address):
     assert contract.read_text(encoding="utf-8") == original
 
 
+def test_target_validation_uses_rewritten_import_overlay(tmp_path: Path) -> None:
+    (tmp_path / "lib.vy").write_text(
+        """# pragma version 0.4.0
+X: constant(uint256) = 1
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "main.vy").write_text(
+        """# pragma version 0.4.0
+import lib
+
+@external
+def x() -> uint256:
+    return lib.X
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main([str(tmp_path), "--check", "--report-json", str(report)])
+
+    assert code == 1
+    data = json.loads(report.read_text())
+    assert {
+        file["path"].rsplit("/", 1)[-1]: file["validation"]["target_compile"]
+        for file in data["files"]
+    } == {"lib.vy": "passed", "main.vy": "passed"}
+
+
 def test_pyproject_config_paths(tmp_path: Path, monkeypatch) -> None:
     contract = tmp_path / "migration_03.vy"
     shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)

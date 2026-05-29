@@ -2634,6 +2634,56 @@ Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256
     assert "event Transfer:\n\n" not in result.source
 
 
+def test_legacy_interface_storage_assignment_lowers_to_address() -> None:
+    source = """# @version 0.1.0b16
+contract ERC20m:
+    def transfer(_to: address, _value: uint256) -> bool: modifying
+
+token: ERC20m
+
+@public
+def __init__(_pool_token: address):
+    self.token = ERC20m(_pool_token)
+
+@public
+def transfer(_to: address, _value: uint256):
+    self.token.transfer(_to, _value)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "token: address" in result.source
+    assert "self.token = _pool_token" in result.source
+    assert "ERC20m(self.token).transfer(_to, _value)" in result.source
+
+
+def test_integer_constant_initializer_casts_to_declared_type() -> None:
+    source = """# pragma version 0.3.10
+N_COINS: constant(uint256) = 3
+PRICE_SIZE: constant(uint128) = 256 / (N_COINS - 1)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "PRICE_SIZE: constant(uint128) = 128" in result.source
+
+
+def test_unsigned_loop_assignment_to_signed_local_is_converted() -> None:
+    source = """# pragma version 0.3.10
+@internal
+def f() -> int256:
+    ret: int256 = -1
+    for i in range(8):
+        ret = i
+    return ret
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "for i: uint256 in range(8):" in result.source
+    assert "ret = convert(i, int256)" in result.source
+
+
 def test_legacy_map_rewrite_handles_nested_map_type() -> None:
     source = """allowances: map(address, map(address, uint256))
 """

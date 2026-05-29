@@ -15,6 +15,7 @@ from .compiler import (
     compare_artifacts,
     compile_source_file,
     compile_target_source,
+    target_overlay,
 )
 from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     if human_reporter:
         human_reporter.start(config.source_version, config.target_version)
 
+    rewrites = []
     for path in files:
         original = path.read_text(encoding="utf-8")
         source_version = config.source_version or infer_pragma(original)
@@ -82,38 +84,42 @@ def main(argv: list[str] | None = None) -> int:
         file_report.source_compile = source_compile.status
         file_report.source_error = source_compile.stderr if source_compile.status == "failed" else None
         any_source_failed = any_source_failed or source_compile.status == "failed"
+        rewrites.append((path, original, rewrite, file_report, source_compile, source_version))
 
-        target_compile = compile_target_source(path, rewrite.source, config)
-        file_report.target_compile = target_compile.status
-        file_report.target_error = target_compile.stderr if target_compile.status == "failed" else None
-        any_target_failed = any_target_failed or target_compile.status == "failed"
+    target_sources = {path: rewrite.source for path, _original, rewrite, _file_report, _source_compile, _source_version in rewrites}
+    with target_overlay(target_sources, config.target_version) as overlay:
+        for path, original, rewrite, file_report, source_compile, source_version in rewrites:
+            target_compile = compile_target_source(path, rewrite.source, config, overlay)
+            file_report.target_compile = target_compile.status
+            file_report.target_error = target_compile.stderr if target_compile.status == "failed" else None
+            any_target_failed = any_target_failed or target_compile.status == "failed"
 
-        abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(source_compile, target_compile)
-        file_report.abi_equal = abi_equal
-        file_report.method_ids_equal = method_ids_equal
-        file_report.storage_layout_equal = storage_layout_equal
-        abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
-            source_compile,
-            target_compile,
-        )
-        file_report.abi_diff = abi_diff
-        file_report.method_id_diff = method_id_diff
-        file_report.storage_layout_diff = storage_layout_diff
-        _add_validation_diagnostics(file_report, source_version, config)
-
-        if changed:
-            write_back.append((path, rewrite.source))
-            diff_chunks.extend(
-                difflib.unified_diff(
-                    original.splitlines(keepends=True),
-                    rewrite.source.splitlines(keepends=True),
-                    fromfile=str(path),
-                    tofile=str(path),
-                )
+            abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(source_compile, target_compile)
+            file_report.abi_equal = abi_equal
+            file_report.method_ids_equal = method_ids_equal
+            file_report.storage_layout_equal = storage_layout_equal
+            abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
+                source_compile,
+                target_compile,
             )
-        reports.append(file_report)
-        if human_reporter:
-            human_reporter.file(file_report)
+            file_report.abi_diff = abi_diff
+            file_report.method_id_diff = method_id_diff
+            file_report.storage_layout_diff = storage_layout_diff
+            _add_validation_diagnostics(file_report, source_version, config)
+
+            if file_report.changed:
+                write_back.append((path, rewrite.source))
+                diff_chunks.extend(
+                    difflib.unified_diff(
+                        original.splitlines(keepends=True),
+                        rewrite.source.splitlines(keepends=True),
+                        fromfile=str(path),
+                        tofile=str(path),
+                    )
+                )
+            reports.append(file_report)
+            if human_reporter:
+                human_reporter.file(file_report)
 
     run_report = RunReport(
         source_version=config.source_version,
