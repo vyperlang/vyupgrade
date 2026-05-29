@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from importlib.metadata import version
+
+from vyupgrade import __version__
 from vyupgrade.versions import (
     MigrationContext,
     VyperVersion,
@@ -9,6 +12,10 @@ from vyupgrade.versions import (
     known_versions_satisfying,
     minimum_satisfying_version,
 )
+
+
+def test_package_version_is_exposed() -> None:
+    assert __version__ == version("vyupgrade")
 
 
 def test_known_versions_cover_full_supported_range() -> None:

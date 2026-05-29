@@ -68,6 +68,12 @@ belongs to another project, the nearest `pyproject.toml` is read and any
 declared packages matching its Vyper imports (such as `snekmate`) are added to
 the compiler environment.
 
+Dependency inference is intentionally conservative. Exact requirements,
+ordinary version ranges, and Git dependencies are supported. Project-specific
+specifier syntaxes that cannot be translated to a compiler environment, such as
+Poetry caret requirements, are skipped; use `--compiler-search-paths`,
+`--source-vyper`, or `--target-vyper` for unusual layouts.
+
 ## Options
 
 - `--target-version` — target Vyper version or spec (default `0.4.3`).
@@ -122,3 +128,5 @@ diagnostic instead of being applied.
 - [docs/vyper-syntax-history.md](docs/vyper-syntax-history.md) — the versioned
   Vyper syntax history from `0.4.3` back to `0.2.1`, with PR links and
   before/after examples.
+- [CHANGELOG.md](CHANGELOG.md) — release notes.
+- [DEVELOPMENT.md](DEVELOPMENT.md) — maintainer validation and release workflow.

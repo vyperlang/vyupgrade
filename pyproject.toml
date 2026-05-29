@@ -8,9 +8,26 @@ version = "0.1.0"
 description = "Compiler-backed tool for upgrading Vyper contracts."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [{ name = "banteg" }]
+keywords = ["codemod", "migration", "smart-contracts", "vyper"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = ["rich>=13.0.0", "uv>=0.8.0"]
+
+[project.urls]
+Homepage = "https://github.com/banteg/vyupgrade"
+Repository = "https://github.com/banteg/vyupgrade"
+Issues = "https://github.com/banteg/vyupgrade/issues"
+Changelog = "https://github.com/banteg/vyupgrade/blob/master/CHANGELOG.md"
 
 [project.scripts]
 vyupgrade = "vyupgrade.cli:main"
