@@ -1,94 +1,124 @@
 # vyupgrade
 
-A compiler-backed codemod tool for upgrading Vyper contracts across language versions.
+A compiler-backed tool for upgrading Vyper contracts across language
+versions. It rewrites legacy syntax to a chosen target compiler, then proves the
+rewrite is safe by compiling the source and the result and comparing their ABI,
+method identifiers, and storage layout.
 
-The supported migration model covers Vyper syntax changes from `0.2.1` through
-`0.4.3`, with version-gated rules so patch-level changes only apply when the
-source and target range crosses the relevant compiler version.
+It covers the syntax changes from Vyper `0.2.1` through `0.4.3`. Rules are
+version-gated: a given rewrite only fires when the migration from the source
+version to the target version actually crosses the compiler release that
+introduced the change.
 
-```bash
-vyupgrade contracts/ --target-version 0.4.3 --diff
-vyupgrade contracts/ --target-version 0.4.3 --write --report-json vyupgrade-report.json
-```
+## Install
 
-Use `--bump-pragma` when you want the migration output to compile against the
-target compiler instead of preserving the original pragma range.
-
-The current rule set includes source-preserving rewrites and diagnostics for
-legacy 0.2.x syntax, 0.3.x patch changes, and 0.4.x migrations: pragma spelling,
-decorator renames, `@deploy`, ABI builtin renames, built-in interface imports,
-external call keywords, integer `//`, struct keyword arguments, typed loops,
-single-name `@nonreentrant`, `sqrt`, bitwise builtins, legacy constants, and
-manual-review diagnostics where source intent cannot be proved safely.
-
-See [docs/vyper-syntax-history.md](docs/vyper-syntax-history.md) for the
-versioned Vyper syntax history from `0.4.3` through `0.2.1`, with PR links and
-before/after examples. See
-[docs/migration-coverage.md](docs/migration-coverage.md) for the rule-level
-coverage map.
-
-For the local Yearn smoke contracts:
+Run it once without installing:
 
 ```bash
-sh scripts/smoke-yearn.sh
+uvx vyupgrade contracts/
 ```
 
-For a broader local corpus, build an ignored checkout-local corpus and run the
-compiler-backed smoke over its manifest:
+Or install it as a tool:
 
 ```bash
-uv run scripts/corpus.py build
-uv run scripts/corpus.py smoke --workers 8
+uv tool install vyupgrade
+vyupgrade contracts/
 ```
 
-The builder copies supported Vyper sources from `~/dev` and `~/yearn` into
-`corpus/vyper/contracts/`, writes `corpus/vyper/manifest.json`, and keeps the
-corpus out of git. Codeslaw can also seed deployed verified contracts. The
-Codeslaw search endpoint currently returns at most 100 results per query and
-does not expose pagination, so `codeslaw` is a top-results sample:
+## Usage
+
+Preview the changes as a unified diff:
 
 ```bash
-uv run scripts/corpus.py codeslaw --limit 100
-uv run scripts/corpus.py smoke --manifest corpus/vyper/codeslaw-manifest.json --output corpus/vyper/codeslaw-smoke-results.json
+vyupgrade contracts/ --diff
 ```
 
-For broader Codeslaw coverage, use chain/version buckets and review
-`capped_buckets` in the manifest for partitions that still hit the 100-result
-search cap:
+Apply them in place and write a machine-readable report:
 
 ```bash
-uv run scripts/corpus.py codeslaw-buckets
-uv run scripts/corpus.py smoke --manifest corpus/vyper/codeslaw-buckets-manifest.json --output corpus/vyper/codeslaw-buckets-smoke-results.json
+vyupgrade contracts/ --write --report-json vyupgrade-report.json
 ```
 
-The 2023 Etherscan Vyper reentrancy corpus can be imported from the local
-`~/yearn/old-vyper-bug` checkout. This uses its explorer CSV exports for source
-compiler attribution, so contracts without a clean in-source pragma still carry
-the original version:
+Fail without writing when files would change, for use in CI:
 
 ```bash
-uv run scripts/corpus.py old-vyper-bug
-uv run scripts/corpus.py smoke --manifest corpus/vyper/old-vyper-bug-manifest.json --output corpus/vyper/old-vyper-bug-smoke-results.json
+vyupgrade contracts/ --check
 ```
 
-Smart Contract Fiesta and the local `vyper-2026` workspace can be folded into
-the same ignored corpus. Fiesta contributes source files from verified Vyper
-metadata. The 2026 workspace contributes source-hash/version provenance when
-the Parquet tables do not include local raw source paths:
+The target defaults to `0.4.3`; pass `--target-version` to migrate to a
+different release.
 
-```bash
-uv run scripts/corpus.py smart-contract-fiesta
-uv run scripts/corpus.py vyper-2026
-uv run scripts/corpus.py dedupe
-uv run scripts/corpus.py smoke --manifest corpus/vyper/deduped-manifest.json --output corpus/vyper/deduped-smoke-results.json --workers 8
+Paths may be files or directories; directories are searched recursively for
+`.vy` and `.vyi` sources. The source version is inferred per file from its
+`#pragma version` (or legacy `# @version`) line. Pass `--source-version` to
+override the inference for files that have no pragma.
+
+### How it validates
+
+For each file, `vyupgrade` compiles the original under its source compiler and
+the rewritten output under the target compiler, then compares the two
+artifacts. A migration is only written back when every file still compiles
+under the target. Differences in ABI, method identifiers, or storage layout are
+surfaced as diagnostics rather than silently accepted.
+
+Compiler subprocesses run through the bundled `uv`, using
+`uv run --no-project --with vyper==<version>` so each side gets the exact
+compiler it needs instead of inheriting an incompatible interpreter. When a file
+belongs to another project, the nearest `pyproject.toml` is read and any
+declared packages matching its Vyper imports (such as `snekmate`) are added to
+the compiler environment.
+
+## Options
+
+- `--target-version` — target Vyper version or spec (default `0.4.3`).
+- `--source-version` — override the per-file inferred source version.
+- `--diff` — print a unified diff instead of the report.
+- `--write` — apply changes in place (only when every file compiles).
+- `--check` — exit non-zero if any file would change; write nothing.
+- `--bump-pragma` — rewrite the pragma to the target so output compiles against the target compiler instead of preserving the original range.
+- `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
+- `--select` / `--ignore` — comma-separated rule codes to include or exclude.
+- `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.
+- `--format mamushi` — run `mamushi` over written files to reformat them.
+- `--test-command CMD` — run a test command after a successful write and record its result.
+- `--enable-decimals` — treat decimals as enabled when reasoning about `0.4.x` rules.
+- `--source-vyper` / `--target-vyper` — pin the exact compiler version for each side.
+- `--source-python` / `--target-python` — pin the Python interpreter for each compiler subprocess.
+- `--compiler-search-paths` — extra import search paths for the compiler.
+- `--config PATH` — read configuration from a specific `pyproject.toml`.
+
+### Configuration
+
+Defaults can live in `pyproject.toml` under `[tool.vyupgrade]`. Command-line
+flags take precedence.
+
+```toml
+[tool.vyupgrade]
+paths = ["contracts/"]
+target-version = "0.4.3"
+source-version = "infer"
+report-json = "vyupgrade-report.json"
+aggressive = false
+format = "none"
 ```
 
-Compiler subprocesses run through the packaged `uv` executable discovered with
-`uv.find_uv_bin()`, using `uv run --no-project --python ... --with
-vyper==...` by default so older source compilers do not inherit an incompatible
-project interpreter.
-When compiling a file from another project, `vyupgrade` also reads the nearest
-`pyproject.toml` and adds declared packages that match Vyper imports, such as
-`from snekmate.utils import math`, to the compiler subprocess.
-Override with `--source-python`, `--target-python`, `--source-vyper`, or
-`--target-vyper` when needed.
+### Exit codes
+
+- `0` — success.
+- `1` — `--check` found files that would change.
+- `2` — a file failed to compile under the target compiler.
+- `3` — a file failed to compile under the source compiler.
+- `4` — usage error (no paths, or conflicting flags).
+- `5` — an error-severity diagnostic was raised.
+
+## Coverage
+
+Rewrites carry a `VY###` code and diagnostics a `VYD###` code. Where the source
+intent cannot be proven safe, the change is reported as a manual-review
+diagnostic instead of being applied.
+
+- [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax change
+  mapped to a rule, diagnostic, or explicit no-op.
+- [docs/vyper-syntax-history.md](docs/vyper-syntax-history.md) — the versioned
+  Vyper syntax history from `0.4.3` back to `0.2.1`, with PR links and
+  before/after examples.

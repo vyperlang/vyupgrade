@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "vyupgrade"
 version = "0.1.0"
-description = "Compiler-backed codemod tool for upgrading Vyper contracts."
+description = "Compiler-backed tool for upgrading Vyper contracts."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
