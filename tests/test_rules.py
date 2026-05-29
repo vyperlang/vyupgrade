@@ -2756,6 +2756,96 @@ def transfer(_to: address, _value: uint256):
     assert "ERC20m(self.token).transfer(_to, _value)" in result.source
 
 
+def test_inline_interface_comment_keeps_call_keyword_inference() -> None:
+    source = """# pragma version 0.3.10
+interface Controller:  # legacy deployment
+    def liquidate(user: address): nonpayable
+
+controller: address
+
+@external
+def run(user: address):
+    Controller(self.controller).liquidate(user)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "extcall Controller(self.controller).liquidate(user)" in result.source
+
+
+def test_struct_array_interface_call_gets_keyword() -> None:
+    source = """# pragma version 0.3.10
+interface ERC20:
+    def decimals() -> uint256: view
+    def transfer(_to: address, _value: uint256) -> bool: nonpayable
+
+struct SwapData:
+    coins: DynArray[ERC20, 5]
+
+@internal
+@view
+def decimals(data: SwapData, i: uint256) -> uint256:
+    return data.coins[i].decimals()
+
+@external
+def send(data: SwapData, i: uint256, receiver: address):
+    assert data.coins[i].transfer(receiver, 1)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return staticcall data.coins[i].decimals()" in result.source
+    assert "assert extcall data.coins[i].transfer(receiver, 1)" in result.source
+
+
+def test_pure_function_with_view_external_call_becomes_view() -> None:
+    source = """# pragma version 0.3.10
+interface Coin:
+    def token() -> address: view
+
+@internal
+@pure
+def burns_to(coin: Coin) -> address:
+    return coin.token()
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "@view\ndef burns_to" in result.source
+    assert "return staticcall coin.token()" in result.source
+
+
+def test_signed_hashmap_key_is_not_rewritten_to_uint_index() -> None:
+    source = """# pragma version 0.3.10
+values: HashMap[int128, uint256]
+
+@external
+def get(period: int128) -> uint256:
+    return self.values[period]
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "self.values[period]" in result.source
+    assert "convert(period, uint256)" not in result.source
+
+
+def test_signed_storage_hashmap_key_ignores_shadowing_local_name() -> None:
+    source = """# pragma version 0.3.10
+integrate_inv_supply: HashMap[int128, uint256]
+
+@external
+def get(period: int128) -> uint256:
+    integrate_inv_supply: uint256 = self.integrate_inv_supply[period]
+    return integrate_inv_supply
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "self.integrate_inv_supply[period]" in result.source
+    assert "convert(period, uint256)" not in result.source
+
+
 def test_integer_constant_initializer_casts_to_declared_type() -> None:
     source = """# pragma version 0.3.10
 N_COINS: constant(uint256) = 3
