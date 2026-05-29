@@ -215,8 +215,38 @@ def test_render_rich_marks_success_warning_and_error_output() -> None:
     assert "\x1b[" in text
     assert "source compile: \x1b[32mpassed" in text
     assert "target compile: \x1b[1;31mfailed" in text
-    assert "VYD001 warning message (line 1)" in text
-    assert "VYD002 error message (line 2)" in text
+    assert "  \x1b[1;33mVYD001\x1b[0m\x1b[33m warning message\x1b[0m\x1b[2m (line 1)\x1b[0m" in text
+    assert "  \x1b[1;31mVYD002\x1b[0m\x1b[31m error message\x1b[0m\x1b[2m (line 2)\x1b[0m" in text
     assert "changed selector: f() 0x11111111 -> 0x22222222" in text
     assert "storage layout unchanged: \x1b[33mFalse" in text
     assert "changed storage: balance slot 1 uint256 -> 0 uint256" in text
+
+
+def test_render_rich_splits_diagnostic_line_styles() -> None:
+    file_report = FileReport(
+        path=Path("styled.vy"),
+        changed=True,
+        fixes=[
+            Fix("VY001", 2, "modernized version pragma", "", ""),
+        ],
+        source_compile="passed",
+        target_compile="passed",
+    )
+    report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
+    stream = StringIO()
+    console = Console(
+        file=stream,
+        force_terminal=True,
+        color_system="standard",
+        no_color=False,
+        theme=THEME,
+        width=120,
+    )
+
+    render_rich(report, console)
+
+    assert (
+        "  \x1b[1;32mVY001\x1b[0m"
+        "\x1b[32m modernized version pragma\x1b[0m"
+        "\x1b[2m (line 2)\x1b[0m"
+    ) in stream.getvalue()

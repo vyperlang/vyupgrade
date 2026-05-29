@@ -23,6 +23,11 @@ THEME = Theme(
         "vy.error": "bold red",
         "vy.fix": "green",
         "vy.info": "cyan",
+        "vy.fix.rule": "bold green",
+        "vy.info.rule": "bold cyan",
+        "vy.warning.rule": "bold yellow",
+        "vy.error.rule": "bold red",
+        "vy.error.message": "red",
     }
 )
 
@@ -169,9 +174,9 @@ def _render_file(console: Console, file: FileReport) -> None:
     console.print()
     console.print(Text(str(file.path), style="vy.path"))
     for group in _group_items(file.fixes, lambda _fix: "vy.fix"):
-        console.print(_indented(_group_text(group), group.style))
+        console.print(_group_rich_text(group))
     for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
-        console.print(_indented(_group_text(group), group.style))
+        console.print(_group_rich_text(group))
     console.print(_compile_line("source compile", file.source_compile))
     if file.source_compile == "failed" and file.source_error:
         console.print(_indented("source error:", "vy.error"))
@@ -251,6 +256,14 @@ def _group_text(group: ReportGroup) -> str:
     return f"{group.rule} {group.message} ({_line_list(group.lines)})"
 
 
+def _group_rich_text(group: ReportGroup) -> Text:
+    text = Text("  ")
+    text.append(group.rule, style=_rule_style(group.style))
+    text.append(f" {group.message}", style=_message_style(group.style))
+    text.append(f" ({_line_list(group.lines)})", style="vy.muted")
+    return text
+
+
 def _line_list(lines: tuple[int, ...]) -> str:
     prefix = "line" if len(lines) == 1 else "lines"
     return f"{prefix} {', '.join(map(str, lines))}"
@@ -274,6 +287,21 @@ def _severity_style(severity: str) -> str:
         "warning": "vy.warning",
         "info": "vy.info",
     }.get(severity, "vy.warning")
+
+
+def _rule_style(style: str) -> str:
+    return {
+        "vy.error": "vy.error.rule",
+        "vy.fix": "vy.fix.rule",
+        "vy.info": "vy.info.rule",
+        "vy.warning": "vy.warning.rule",
+    }.get(style, "bold")
+
+
+def _message_style(style: str) -> str:
+    return {
+        "vy.error": "vy.error.message",
+    }.get(style, style)
 
 
 def write_json_report(path: Path, report: RunReport) -> None:
