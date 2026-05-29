@@ -597,6 +597,41 @@ def x() -> uint256:
     assert "return self.x()" in result.source
 
 
+def test_local_interface_nonpayable_matches_view_function() -> None:
+    source = """# @version 0.3.10
+interface Bucket:
+    def above_floor() -> bool: nonpayable
+
+implements: Bucket
+
+@external
+@view
+def above_floor() -> bool:
+    return False
+"""
+
+    result = apply_rules(source, config())
+
+    assert "def above_floor() -> bool: view" in result.source
+    assert any(fix.rule == "VY014" for fix in result.fixes)
+
+
+def test_local_interface_nonpayable_matches_public_getter() -> None:
+    source = """# @version 0.3.10
+interface RateProvider:
+    def rate(_asset: address) -> uint256: nonpayable
+
+implements: RateProvider
+
+rate: public(HashMap[address, uint256])
+"""
+
+    result = apply_rules(source, config())
+
+    assert "def rate(_asset: address) -> uint256: view" in result.source
+    assert any(fix.rule == "VY014" for fix in result.fixes)
+
+
 def test_compound_assignment_integer_division() -> None:
     source = """# @version 0.3.7
 MAX_BPS: constant(uint256) = 10_000

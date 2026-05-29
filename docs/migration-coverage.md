@@ -73,6 +73,9 @@ the supported range.
   constants, `ZERO_ADDRESS`, and `EMPTY_BYTES32`.
 - Immutable variables now collide with explicit same-name accessors: `VY013`
   renames the immutable backing variable and preserves the external getter name.
+- Local interface mutability is checked more strictly: `VY014` changes
+  `nonpayable` interface entries to `view` when the implementation is a view
+  function or `public(...)` getter.
 - Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
   ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and

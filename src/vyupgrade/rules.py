@@ -59,6 +59,7 @@ RULE_CHANGES = {
     "VY011": RuleChange(VyperVersion(0, 4, 0)),
     "VY012": RuleChange(VyperVersion(0, 4, 0)),
     "VY013": RuleChange(VyperVersion(0, 4, 0)),
+    "VY014": RuleChange(VyperVersion(0, 4, 0)),
     "VY020": RuleChange(VyperVersion(0, 4, 0)),
     "VY030": RuleChange(VyperVersion(0, 4, 0)),
     "VY040": RuleChange(VyperVersion(0, 4, 0)),
@@ -133,6 +134,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _abi_builtins,
         _legacy_constants,
         _immutable_accessor_collisions,
+        _interface_view_mutability,
         _interface_imports,
         _absolute_relative_imports(path),
         _enum_to_flag,
@@ -608,6 +610,62 @@ def _is_immutable_declaration_name(source: str, start: int) -> bool:
     if line_end == -1:
         line_end = len(source)
     return bool(re.search(r":\s*immutable\s*\(", source[start:line_end]))
+
+
+def _interface_view_mutability(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY014", config, context):
+        return source, [], []
+    view_names = _view_implementation_names(source)
+    if not view_names:
+        return source, [], []
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    pattern = re.compile(
+        r"^([ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^#\n]*\)[ \t]*(?:->[ \t]*[^:#\n]+)?[ \t]*:[ \t]*)(nonpayable)\b",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if match.group(2) not in view_names or not span_is_code(mask, match.start(), match.end()):
+            continue
+        edits.append(TextEdit(match.start(3), match.end(3), "view"))
+        fixes.append(
+            Fix(
+                "VY014",
+                line_number(source, match.start()),
+                "changed local interface mutability to match view implementation",
+                match.group(0),
+                f"{match.group(1)}view",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _view_implementation_names(source: str) -> set[str]:
+    names = {
+        match.group(1)
+        for match in re.finditer(
+            r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*public\s*\(",
+            source,
+            re.MULTILINE,
+        )
+    }
+    decorators: set[str] = set()
+    for line in source.splitlines():
+        stripped = line.strip()
+        decorator = re.fullmatch(r"@([A-Za-z_][A-Za-z0-9_]*)", stripped)
+        if decorator is not None:
+            decorators.add(decorator.group(1))
+            continue
+        def_match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
+        if def_match is not None:
+            if decorators & {"view", "pure"}:
+                names.add(def_match.group(1))
+            decorators = set()
+            continue
+        if stripped:
+            decorators = set()
+    return names
 
 
 def _redundant_integer_convert(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
