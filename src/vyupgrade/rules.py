@@ -3378,6 +3378,9 @@ def _nonreentrant(source: str, config: Config, context: MigrationContext) -> tup
 def _sqrt(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY100", config, context):
         return source, [], []
+    facts = parse_source_facts(source)
+    if _name_is_user_defined(facts, "sqrt") or _name_is_imported(source, "sqrt"):
+        return source, [], []
     mask = code_mask(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -3394,6 +3397,37 @@ def _sqrt(source: str, config: Config, context: MigrationContext) -> tuple[str, 
         next_source = _insert_import(next_source, "import math\n")
         fixes.append(Fix("VY100", 1, "added math import", "", "import math"))
     return next_source, fixes, []
+
+
+def _name_is_user_defined(facts: SourceFacts, name: str) -> bool:
+    return (
+        name in facts.global_vars
+        or name in facts.function_return_names
+        or any(name in vars_for_func for vars_for_func in facts.function_vars.values())
+    )
+
+
+def _name_is_imported(source: str, name: str) -> bool:
+    mask = code_mask(source)
+    for match in re.finditer(r"^[ \t]*from[ \t]+[A-Za-z0-9_.]+[ \t]+import[ \t]+(.+)$", source, re.MULTILINE):
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            continue
+        for part in match.group(1).split(","):
+            imported = part.split("#", 1)[0].strip()
+            imported_name, _sep, alias = imported.partition(" as ")
+            bound_name = alias.strip() if alias else imported_name.strip()
+            if bound_name == name:
+                return True
+    for match in re.finditer(r"^[ \t]*import[ \t]+(.+)$", source, re.MULTILINE):
+        if not _line_match_starts_outside_string(source, mask, match.start()):
+            continue
+        for part in match.group(1).split(","):
+            imported = part.split("#", 1)[0].strip()
+            module, _sep, alias = imported.partition(" as ")
+            bound_name = alias.strip() if alias else module.split(".", 1)[0].strip()
+            if bound_name == name:
+                return True
+    return False
 
 
 def _bitwise(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:

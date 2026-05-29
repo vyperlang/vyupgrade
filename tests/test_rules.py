@@ -2524,7 +2524,7 @@ def f(a: uint256, b: uint256) -> uint256:
     assert {fix.rule for fix in result.fixes} >= {"VY100", "VY110"}
 
 
-def test_sqrt_rewrite_skips_function_definitions() -> None:
+def test_sqrt_rewrite_skips_local_function_shadowing() -> None:
     source = """# @version ^0.4.0
 @external
 @pure
@@ -2541,7 +2541,24 @@ def f(x: uint256) -> uint256:
 
     assert "def sqrt(x: uint256)" in result.source
     assert "def math.sqrt" not in result.source
-    assert "return math.sqrt(x)" in result.source
+    assert "return sqrt(x)" in result.source
+    assert "import math" not in result.source
+
+
+def test_sqrt_rewrite_skips_import_shadowing() -> None:
+    source = """# @version ^0.4.0
+from snekmate.utils import sqrt
+
+@external
+@pure
+def f(x: uint256) -> uint256:
+    return sqrt(x)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "return sqrt(x)" in result.source
+    assert "import math" not in result.source
 
 
 def test_source_at_change_skips_already_current_patch_rewrites() -> None:
