@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -1112,62 +1113,14 @@ def _immutable_accessor_collisions(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY013", config, context):
         return source, [], []
-    immutable_names = {
-        match.group(1)
-        for match in re.finditer(
-            r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*immutable\s*\(",
-            source,
-            re.MULTILINE,
-        )
-    }
-    if not immutable_names:
-        return source, [], []
-    function_names = {
-        match.group(1)
-        for match in re.finditer(
-            r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
-            source,
-            re.MULTILINE,
-        )
-    }
-    collisions = sorted(immutable_names & function_names)
-    if not collisions:
-        return source, [], []
-
-    mask = code_mask(source)
-    edits: list[TextEdit] = []
-    fixes: list[Fix] = []
-    taken = _code_identifiers(source)
-    for name in collisions:
-        replacement = _private_backing_name(name, taken)
-        pattern = re.compile(rf"\b{re.escape(name)}\b")
-        name_edits: list[TextEdit] = []
-        for match in pattern.finditer(source):
-            if not span_is_code(mask, match.start(), match.end()):
-                continue
-            if _is_function_definition_name(source, match.start()):
-                continue
-            if _is_attribute_name(source, match.start()):
-                continue
-            if _is_type_declaration_name(
-                source, match.start(), match.end()
-            ) and not _is_immutable_declaration_name(source, match.start()):
-                continue
-            if _is_keyword_argument_name(source, match.start(), match.end()):
-                continue
-            name_edits.append(TextEdit(match.start(), match.end(), replacement))
-        edits.extend(name_edits)
-        fixes.extend(
-            Fix(
-                "VY013",
-                line_number(source, edit.start),
-                "renamed immutable backing variable that collides with accessor",
-                name,
-                replacement,
-            )
-            for edit in name_edits
-        )
-    return apply_edits(source, edits), fixes, []
+    current, fixes = _accessor_collision_rewrites(
+        source,
+        r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*immutable\s*\(",
+        "VY013",
+        "immutable",
+        _is_immutable_declaration_name,
+    )
+    return current, fixes, []
 
 
 def _constant_accessor_collisions(
@@ -1175,16 +1128,33 @@ def _constant_accessor_collisions(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY016", config, context):
         return source, [], []
-    constant_names = {
+    current, fixes = _accessor_collision_rewrites(
+        source,
+        r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\(",
+        "VY016",
+        "constant",
+        _is_constant_declaration_name,
+    )
+    return current, fixes, []
+
+
+def _accessor_collision_rewrites(
+    source: str,
+    declaration_pattern: str,
+    rule: str,
+    kind: str,
+    is_allowed_declaration: Callable[[str, int], bool],
+) -> tuple[str, list[Fix]]:
+    declaration_names = {
         match.group(1)
         for match in re.finditer(
-            r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\(",
+            declaration_pattern,
             source,
             re.MULTILINE,
         )
     }
-    if not constant_names:
-        return source, [], []
+    if not declaration_names:
+        return source, []
     function_names = {
         match.group(1)
         for match in re.finditer(
@@ -1193,9 +1163,9 @@ def _constant_accessor_collisions(
             re.MULTILINE,
         )
     }
-    collisions = sorted(constant_names & function_names)
+    collisions = sorted(declaration_names & function_names)
     if not collisions:
-        return source, [], []
+        return source, []
 
     mask = code_mask(source)
     edits: list[TextEdit] = []
@@ -1214,7 +1184,7 @@ def _constant_accessor_collisions(
                 continue
             if _is_type_declaration_name(
                 source, match.start(), match.end()
-            ) and not _is_constant_declaration_name(source, match.start()):
+            ) and not is_allowed_declaration(source, match.start()):
                 continue
             if _is_keyword_argument_name(source, match.start(), match.end()):
                 continue
@@ -1222,15 +1192,15 @@ def _constant_accessor_collisions(
         edits.extend(name_edits)
         fixes.extend(
             Fix(
-                "VY016",
+                rule,
                 line_number(source, edit.start),
-                "renamed constant backing variable that collides with accessor",
+                f"renamed {kind} backing variable that collides with accessor",
                 name,
                 replacement,
             )
             for edit in name_edits
         )
-    return apply_edits(source, edits), fixes, []
+    return apply_edits(source, edits), fixes
 
 
 def _private_backing_name(name: str, taken: set[str]) -> str:
