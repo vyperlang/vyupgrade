@@ -19,12 +19,27 @@ from typing import Any
 from vyupgrade.compiler import compare_artifacts, compile_source_file, compile_target_source
 from vyupgrade.models import Config
 from vyupgrade.rules import apply_rules
-from vyupgrade.versions import KNOWN_VERSIONS, compiler_version_for_spec, infer_pragma, is_supported_source_version
+from vyupgrade.versions import (
+    KNOWN_VERSIONS,
+    compiler_version_for_spec,
+    infer_pragma,
+    is_supported_source_version,
+)
 
 
 DEFAULT_ROOTS = (Path("~/dev").expanduser(), Path("~/yearn").expanduser())
 DEFAULT_OUTPUT = Path("corpus/vyper")
-CODESLAW_CHAINS = ("ethereum", "arbitrum", "optimism", "base", "polygon", "bnbchain", "scroll", "blast", "fraxtal")
+CODESLAW_CHAINS = (
+    "ethereum",
+    "arbitrum",
+    "optimism",
+    "base",
+    "polygon",
+    "bnbchain",
+    "scroll",
+    "blast",
+    "fraxtal",
+)
 EXCLUDED_PARTS = {
     ".git",
     "corpus",
@@ -81,10 +96,14 @@ def main() -> int:
     old_vyper_bug = subparsers.add_parser(
         "old-vyper-bug", help="import the 2023 Etherscan Vyper reentrancy corpus"
     )
-    old_vyper_bug.add_argument("--source", type=Path, default=Path("~/yearn/old-vyper-bug").expanduser())
+    old_vyper_bug.add_argument(
+        "--source", type=Path, default=Path("~/yearn/old-vyper-bug").expanduser()
+    )
     old_vyper_bug.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
 
-    fiesta = subparsers.add_parser("smart-contract-fiesta", help="import the Smart Contract Fiesta Vyper corpus")
+    fiesta = subparsers.add_parser(
+        "smart-contract-fiesta", help="import the Smart Contract Fiesta Vyper corpus"
+    )
     fiesta.add_argument(
         "--source",
         type=Path,
@@ -100,11 +119,15 @@ def main() -> int:
     )
     vyper_2026.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
 
-    dedupe = subparsers.add_parser("dedupe", help="merge manifests and dedupe source items by sha256")
+    dedupe = subparsers.add_parser(
+        "dedupe", help="merge manifests and dedupe source items by sha256"
+    )
     dedupe.add_argument("--manifest", action="append", type=Path, dest="manifests")
     dedupe.add_argument("--output", type=Path, default=DEFAULT_OUTPUT / "deduped-manifest.json")
 
-    smoke = subparsers.add_parser("smoke", help="run compiler-backed migration smoke over a corpus manifest")
+    smoke = subparsers.add_parser(
+        "smoke", help="run compiler-backed migration smoke over a corpus manifest"
+    )
     smoke.add_argument("--manifest", type=Path, default=DEFAULT_OUTPUT / "manifest.json")
     smoke.add_argument("--output", type=Path, default=DEFAULT_OUTPUT / "smoke-results.json")
     smoke.add_argument("--target-version", default="0.4.3")
@@ -141,7 +164,9 @@ def main() -> int:
         print(json.dumps(_build_summary(manifest), indent=2))
         return 0
     if args.command == "smoke":
-        summary = smoke_corpus(args.manifest, args.output, args.target_version, args.workers, args.limit)
+        summary = smoke_corpus(
+            args.manifest, args.output, args.target_version, args.workers, args.limit
+        )
         print(json.dumps(summary, indent=2))
         return 0
     raise AssertionError(args.command)
@@ -204,7 +229,7 @@ def build_corpus(roots: tuple[Path, ...], output: Path, max_per_repo: int = 0) -
                 "corpus_repo_root": str(contracts_dir / corpus_repo),
                 "pragma": pragma,
                 "source_compiler": compiler,
-                    "sha256": digest,
+                "sha256": digest,
             }
             items.append(item)
             counts["applicable"] += 1
@@ -222,9 +247,7 @@ def build_corpus(roots: tuple[Path, ...], output: Path, max_per_repo: int = 0) -
         "by_source_compiler": by_compiler.most_common(),
         "items": items,
     }
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(manifest_path, manifest)
 
 
 def import_old_vyper_bug(source: Path, output: Path) -> dict[str, Any]:
@@ -266,7 +289,9 @@ def import_old_vyper_bug(source: Path, output: Path) -> dict[str, Any]:
                     continue
 
                 seen_sources.add(source_path)
-                compiler = compiler_version_for_spec(csv_version) or compiler_version_for_spec(source_spec)
+                compiler = compiler_version_for_spec(csv_version) or compiler_version_for_spec(
+                    source_spec
+                )
                 corpus_repo = "old_vyper_bug"
                 relpath = Path(chain) / source_path.name
                 digest = _source_hash(source_text)
@@ -309,9 +334,7 @@ def import_old_vyper_bug(source: Path, output: Path) -> dict[str, Any]:
         "archive": str(archive_path) if archive_path.exists() else None,
         "items": items,
     }
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(manifest_path, manifest)
 
 
 def import_smart_contract_fiesta(source: Path, output: Path) -> dict[str, Any]:
@@ -385,9 +408,7 @@ def import_smart_contract_fiesta(source: Path, output: Path) -> dict[str, Any]:
         "by_source_compiler": by_compiler.most_common(),
         "items": items,
     }
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(manifest_path, manifest)
 
 
 def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
@@ -510,9 +531,7 @@ def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
         "metadata_items": metadata_items,
         "items": items,
     }
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(manifest_path, manifest)
 
 
 def dedupe_manifests(manifest_paths: list[Path] | None, output_path: Path) -> dict[str, Any]:
@@ -582,9 +601,7 @@ def dedupe_manifests(manifest_paths: list[Path] | None, output_path: Path) -> di
         "by_source_compiler": by_compiler.most_common(),
         "items": items,
     }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(output_path, manifest)
 
 
 def fetch_codeslaw(chain: str, query: str, sort: str, limit: int, output: Path) -> dict[str, Any]:
@@ -601,7 +618,9 @@ def fetch_codeslaw(chain: str, query: str, sort: str, limit: int, output: Path) 
     items: list[dict[str, Any]] = []
     seen_addresses: set[tuple[str, str]] = set()
 
-    _collect_codeslaw_matches(matches, contracts_dir, counts, by_repo, by_compiler, items, seen_addresses)
+    _collect_codeslaw_matches(
+        matches, contracts_dir, counts, by_repo, by_compiler, items, seen_addresses
+    )
 
     manifest_path = output / "codeslaw-manifest.json"
     manifest = {
@@ -613,9 +632,7 @@ def fetch_codeslaw(chain: str, query: str, sort: str, limit: int, output: Path) 
         "by_source_compiler": by_compiler.most_common(),
         "items": items,
     }
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(manifest_path, manifest)
 
 
 def fetch_codeslaw_buckets(chains: tuple[str, ...], output: Path) -> dict[str, Any]:
@@ -636,7 +653,9 @@ def fetch_codeslaw_buckets(chains: tuple[str, ...], output: Path) -> dict[str, A
                 chain,
                 rf'lang:vyper regex:"(?:@version|pragma version)[^\n]*{escaped}"',
             )
-            search_url = "https://www.codeslaw.app/api/search?" + urllib.parse.urlencode({"q": query})
+            search_url = "https://www.codeslaw.app/api/search?" + urllib.parse.urlencode(
+                {"q": query}
+            )
             roots.append(search_url)
             result = _fetch_json(search_url).get("result", {})
             matches = result.get("FileMatches", []) or []
@@ -655,7 +674,9 @@ def fetch_codeslaw_buckets(chains: tuple[str, ...], output: Path) -> dict[str, A
             if file_count > len(matches):
                 capped_buckets.append(bucket)
                 counts["capped_buckets"] += 1
-            _collect_codeslaw_matches(matches, contracts_dir, counts, by_repo, by_compiler, items, seen_addresses)
+            _collect_codeslaw_matches(
+                matches, contracts_dir, counts, by_repo, by_compiler, items, seen_addresses
+            )
 
     manifest_path = output / "codeslaw-buckets-manifest.json"
     manifest = {
@@ -669,9 +690,7 @@ def fetch_codeslaw_buckets(chains: tuple[str, ...], output: Path) -> dict[str, A
         "capped_buckets": capped_buckets,
         "items": items,
     }
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    return manifest
+    return _write_manifest(manifest_path, manifest)
 
 
 def _collect_codeslaw_matches(
@@ -773,10 +792,14 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
         )
         source_compile = compile_source_file(path, config, item["pragma"])
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
-        file_config = replace(config, source_ast=source_ast if isinstance(source_ast, dict) else None)
+        file_config = replace(
+            config, source_ast=source_ast if isinstance(source_ast, dict) else None
+        )
         rewrite = apply_rules(original, file_config, path)
         target_compile = compile_target_source(path, rewrite.source, config)
-        abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(source_compile, target_compile)
+        abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
+            source_compile, target_compile
+        )
         return {
             **item,
             "changed": original != rewrite.source,
@@ -807,19 +830,25 @@ def _smoke_summary(
 ) -> dict[str, Any]:
     status_pairs = Counter((item["source_compile"], item["target_compile"]) for item in results)
     failed_repos = Counter(
-        item["repo"] for item in results if item["source_compile"] != "passed" or item["target_compile"] != "passed"
+        item["repo"]
+        for item in results
+        if item["source_compile"] != "passed" or item["target_compile"] != "passed"
     )
     return {
         "manifest": str(manifest_path),
         "results": str(output_path),
         "total": len(results),
         "elapsed_seconds": round(elapsed, 2),
-        "status_pairs": {f"{source}->{target}": count for (source, target), count in status_pairs.most_common()},
+        "status_pairs": {
+            f"{source}->{target}": count for (source, target), count in status_pairs.most_common()
+        },
         "failed_repos": failed_repos.most_common(20),
         "changed": sum(1 for item in results if item.get("changed")),
         "abi_changed": sum(1 for item in results if item.get("abi_equal") is False),
         "method_ids_changed": sum(1 for item in results if item.get("method_ids_equal") is False),
-        "storage_layout_changed": sum(1 for item in results if item.get("storage_layout_equal") is False),
+        "storage_layout_changed": sum(
+            1 for item in results if item.get("storage_layout_equal") is False
+        ),
     }
 
 
@@ -838,12 +867,18 @@ def _build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def _summary_path(results_path: Path) -> Path:
     if results_path.name.endswith("-results.json"):
-        return results_path.with_name(f"{results_path.name[:-len('-results.json')]}-summary.json")
+        return results_path.with_name(f"{results_path.name[: -len('-results.json')]}-summary.json")
     return results_path.with_name(f"{results_path.stem}-summary.json")
 
 
 def _source_hash(source: str) -> str:
     return hashlib.sha256(source.encode()).hexdigest()
+
+
+def _write_manifest(path: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
 
 
 def _file_hash(path: Path) -> str | None:
@@ -853,7 +888,9 @@ def _file_hash(path: Path) -> str | None:
         return None
 
 
-def _write_corpus_source(source: str, preferred_path: Path, digest: str, counts: Counter[str]) -> Path:
+def _write_corpus_source(
+    source: str, preferred_path: Path, digest: str, counts: Counter[str]
+) -> Path:
     target = _collision_safe_path(preferred_path, digest)
     if target != preferred_path:
         counts["corpus_path_collisions"] += 1
@@ -881,7 +918,9 @@ def _collision_safe_path(preferred_path: Path, digest: str) -> Path:
         index += 1
 
 
-def _repair_manifest_item_path(item: dict[str, Any], digest: str, counts: Counter[str]) -> dict[str, Any] | None:
+def _repair_manifest_item_path(
+    item: dict[str, Any], digest: str, counts: Counter[str]
+) -> dict[str, Any] | None:
     corpus_path = Path(str(item["corpus_path"]))
     if _file_hash(corpus_path) == digest:
         return item
@@ -926,7 +965,9 @@ def _is_excluded(path: Path) -> bool:
 def _has_marker(path: Path, marker: tuple[str, ...]) -> bool:
     parts = path.parts
     width = len(marker)
-    return any(tuple(parts[index : index + width]) == marker for index in range(len(parts) - width + 1))
+    return any(
+        tuple(parts[index : index + width]) == marker for index in range(len(parts) - width + 1)
+    )
 
 
 def _git_root(path: Path) -> Path:
@@ -981,7 +1022,9 @@ def _standard_json_sources(payload: dict[str, Any]) -> list[tuple[str, str]]:
         if not isinstance(source_info, dict):
             continue
         content = source_info.get("content")
-        if isinstance(content, str) and (str(name).endswith(".vy") or infer_pragma(content) is not None):
+        if isinstance(content, str) and (
+            str(name).endswith(".vy") or infer_pragma(content) is not None
+        ):
             extracted.append((str(name), content))
     return extracted
 
