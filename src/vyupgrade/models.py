@@ -72,6 +72,8 @@ class RunReport:
     source_version: str | None
     target_version: str
     files: list[FileReport]
+    write_requested: bool = False
+    wrote_changes: bool = False
     test_command: str | None = None
     test_status: str = "skipped"
     test_output: str | None = None
@@ -92,6 +94,8 @@ class RunReport:
         return {
             "source_version": self.source_version,
             "target_version": self.target_version,
+            "write_requested": self.write_requested,
+            "wrote_changes": self.wrote_changes,
             "files": [
                 {
                     "path": str(file.path),

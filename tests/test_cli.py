@@ -23,6 +23,8 @@ def __init__():
 
     assert code in {1, 2}
     data = json.loads(report.read_text())
+    assert data["write_requested"] is False
+    assert data["wrote_changes"] is False
     assert data["files"][0]["changed"] is True
     assert any(fix["rule"] == "VY002" for fix in data["files"][0]["fixes"])
 
@@ -39,7 +41,10 @@ def test_write_mode_is_idempotent_with_target_compile(tmp_path: Path) -> None:
     assert "#pragma version 0.4.3" in rewritten
     assert "staticcall self.token.balanceOf(msg.sender)" in rewritten
     assert "for i: uint256 in range(3):" in rewritten
-    assert json.loads(report.read_text())["files"][0]["validation"]["target_compile"] == "passed"
+    data = json.loads(report.read_text())
+    assert data["write_requested"] is True
+    assert data["wrote_changes"] is True
+    assert data["files"][0]["validation"]["target_compile"] == "passed"
 
     second_report = tmp_path / "second.json"
     second = main([str(contract), "--check", "--bump-pragma", "--report-json", str(second_report)])

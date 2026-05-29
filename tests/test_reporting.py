@@ -101,6 +101,52 @@ def test_write_human_report_uses_plain_text_for_non_tty_streams() -> None:
     assert stream.getvalue() == render_text(report)
 
 
+def test_render_text_summary_labels_default_dry_run_changes() -> None:
+    report = RunReport(
+        source_version=None,
+        target_version="0.4.3",
+        files=[
+            FileReport(
+                path=Path("ok.vy"),
+                changed=True,
+                fixes=[Fix("VY001", 1, "modernized version pragma", "", "")],
+                source_compile="passed",
+                target_compile="passed",
+            )
+        ],
+    )
+
+    text = render_text(report)
+
+    assert "would change 1 files" in text
+    assert "would apply 1 fixes" in text
+    assert "run with --write to apply these changes" in text
+
+
+def test_render_text_summary_labels_written_changes() -> None:
+    report = RunReport(
+        source_version=None,
+        target_version="0.4.3",
+        files=[
+            FileReport(
+                path=Path("ok.vy"),
+                changed=True,
+                fixes=[Fix("VY001", 1, "modernized version pragma", "", "")],
+                source_compile="passed",
+                target_compile="passed",
+            )
+        ],
+        write_requested=True,
+        wrote_changes=True,
+    )
+
+    text = render_text(report)
+
+    assert "changed 1 files" in text
+    assert "applied 1 fixes" in text
+    assert "run with --write" not in text
+
+
 def test_human_reporter_flushes_incremental_plain_text_output() -> None:
     file_report = FileReport(
         path=Path("streamed.vy"),
@@ -131,7 +177,7 @@ def test_human_reporter_flushes_incremental_plain_text_output() -> None:
 
     reporter.summary(report)
 
-    assert "changed 1 files" in stream.getvalue()
+    assert "would change 1 files" in stream.getvalue()
     assert stream.flush_count == 3
 
 

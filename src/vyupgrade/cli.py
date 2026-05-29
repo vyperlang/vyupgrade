@@ -113,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         source_version=config.source_version,
         target_version=config.target_version,
         files=reports,
+        write_requested=config.write,
+        wrote_changes=config.write and not any_target_failed,
         test_command=config.test_command,
     )
 

@@ -133,12 +133,16 @@ def _render_text_file(file: FileReport) -> str:
 
 
 def _render_text_summary(report: RunReport) -> str:
+    change_verb = "changed" if report.wrote_changes else "would change"
+    fix_verb = "applied" if report.wrote_changes else "would apply"
     lines = [
         "",
-        f"changed {report.changed_count} files",
-        f"applied {report.fix_count} fixes",
+        f"{change_verb} {report.changed_count} files",
+        f"{fix_verb} {report.fix_count} fixes",
         f"left {report.diagnostic_count} review diagnostics",
     ]
+    if not report.write_requested and report.changed_count:
+        lines.append("run with --write to apply these changes")
     if report.test_command:
         lines.append(f"test command: {report.test_status}")
         if report.test_output:
@@ -147,10 +151,14 @@ def _render_text_summary(report: RunReport) -> str:
 
 
 def _render_summary(console: Console, report: RunReport) -> None:
+    change_verb = "changed" if report.wrote_changes else "would change"
+    fix_verb = "applied" if report.wrote_changes else "would apply"
     console.print()
-    console.print(_summary_line("changed", report.changed_count, "files", _count_style(report.changed_count)))
-    console.print(_summary_line("applied", report.fix_count, "fixes", _count_style(report.fix_count)))
+    console.print(_summary_line(change_verb, report.changed_count, "files", _count_style(report.changed_count)))
+    console.print(_summary_line(fix_verb, report.fix_count, "fixes", _count_style(report.fix_count)))
     console.print(_summary_line("left", report.diagnostic_count, "review diagnostics", _count_style(report.diagnostic_count)))
+    if not report.write_requested and report.changed_count:
+        console.print(Text("run with --write to apply these changes", style="vy.muted"))
     if report.test_command:
         console.print(_label_value("test command", report.test_status, _status_style(report.test_status)))
         if report.test_output:
