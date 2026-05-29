@@ -1867,7 +1867,9 @@ def _signed_name_has_unsigned_context(
         return True
     if _inside_array_subscript(source, index, vars_for_line):
         return True
-    return _has_unsigned_context(_local_expression(source, index), vars_for_line)
+    return _has_unsigned_context(
+        _local_expression(source, index), vars_for_line
+    ) or _enclosing_argument_has_unsigned_context(source, index, vars_for_line)
 
 
 def _has_unsigned_context(line: str, vars_for_line: dict[str, str]) -> bool:
@@ -1878,6 +1880,30 @@ def _has_unsigned_context(line: str, vars_for_line: dict[str, str]) -> bool:
     for name, type_name in vars_for_line.items():
         if _is_unsigned_integer_type(type_name) and re.search(rf"\b(?:self\.)?{re.escape(name)}\b", line):
             return True
+    return False
+
+
+def _enclosing_argument_has_unsigned_context(
+    source: str, index: int, vars_for_line: dict[str, str]
+) -> bool:
+    line_start = source.rfind("\n", 0, index) + 1
+    line_end = source.find("\n", index)
+    if line_end == -1:
+        line_end = len(source)
+    opens = [match.start() for match in re.finditer(r"\(", source[line_start:index])]
+    for relative_open in reversed(opens):
+        open_index = line_start + relative_open
+        close = find_matching(source, open_index)
+        if close is None or close < index or close > line_end:
+            continue
+        raw_args = source[open_index + 1 : close]
+        offset = index - open_index - 1
+        spans = _split_top_level_arg_spans(raw_args)
+        if spans is None:
+            continue
+        for start, end, arg in spans:
+            if start <= offset <= end and _has_unsigned_context(arg, vars_for_line):
+                return True
     return False
 
 

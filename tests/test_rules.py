@@ -1201,6 +1201,23 @@ def f(amounts: uint256[4]) -> uint256[3]:
     assert "base_amounts[i] = amounts[convert(i, uint256) + convert(MAX_COIN, uint256)]" in result.source
 
 
+def test_signed_constant_converted_in_nested_uint_call_argument() -> None:
+    source = """# @version 0.2.8
+interface Pool:
+    def calc(i: uint256) -> uint256: view
+
+N_STABLECOINS: constant(int128) = 3
+
+@external
+def f(pool: address, i: uint256) -> uint256:
+    return Pool(pool).calc(i - (N_STABLECOINS - 1))
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall Pool(pool).calc(i - (convert(N_STABLECOINS, uint256) - 1))" in result.source
+
+
 def test_signed_time_constant_converted_in_uint_comparison() -> None:
     source = """# @version 0.2.8
 BASE_CACHE_EXPIRES: constant(int128) = 600
