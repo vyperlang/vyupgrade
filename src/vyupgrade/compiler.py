@@ -140,7 +140,7 @@ def _default_python(version: str) -> str:
 
 def _supports_warning_policy(version: str | None) -> bool:
     parsed = parse_version(version)
-    return parsed is not None and parsed >= VyperVersion(0, 4, 0)
+    return parsed is not None and parsed >= VyperVersion(0, 4, 1)
 
 
 def _target_compile_config(source: str, config: Config) -> Config:

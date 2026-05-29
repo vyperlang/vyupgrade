@@ -265,6 +265,7 @@ def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatc
 
 
 def test_warning_policy_is_only_used_for_modern_vyper() -> None:
-    assert _supports_warning_policy("0.4.0")
+    assert not _supports_warning_policy("0.4.0")
+    assert _supports_warning_policy("0.4.1")
     assert _supports_warning_policy("0.4.3")
     assert not _supports_warning_policy("0.3.10")
