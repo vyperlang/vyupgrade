@@ -50,6 +50,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
 def compile_target_source(path: Path, source: str, config: Config) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
+    compile_source = _target_validation_source(source, config.target_version)
     try:
         tmp = tempfile.NamedTemporaryFile(
             "w",
@@ -68,12 +69,12 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
             delete=False,
         )
     with tmp:
-        tmp.write(source)
+        tmp.write(compile_source)
         tmp_path = Path(tmp.name)
     try:
         normalized = _normalize_version(config.target_version)
         command = _compiler_command(config.target_vyper, normalized, config.target_python)
-        compile_config = _target_compile_config(source, config)
+        compile_config = _target_compile_config(compile_source, config)
         return _run_compile(
             command,
             tmp_path,
@@ -107,11 +108,89 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
 def compare_artifacts(source: CompileResult, target: CompileResult) -> tuple[bool | None, bool | None, bool | None]:
     if source.artifacts is None or target.artifacts is None:
         return None, None, None
+    source_layout = _canonical_storage_layout(source.artifacts.get("layout"))
+    target_layout = _canonical_storage_layout(target.artifacts.get("layout"))
+    source_abi = source.artifacts.get("abi")
+    target_abi = target.artifacts.get("abi")
+    source_methods = source.artifacts.get("method_identifiers")
+    target_methods = target.artifacts.get("method_identifiers")
     return (
-        source.artifacts.get("abi") == target.artifacts.get("abi"),
-        source.artifacts.get("method_identifiers") == target.artifacts.get("method_identifiers"),
-        source.artifacts.get("layout") == target.artifacts.get("layout"),
+        None if source_abi is None or target_abi is None else _canonical_abi(source_abi) == _canonical_abi(target_abi),
+        None
+        if source_methods is None or target_methods is None
+        else _canonical_method_identifiers(source_methods)
+        == _canonical_method_identifiers(target_methods),
+        None if source_layout is None or target_layout is None else source_layout == target_layout,
     )
+
+
+def _target_validation_source(source: str, target_version: str) -> str:
+    pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
+    return pattern.sub(lambda match: f"{match.group(1)}#pragma version {target_version}", source, count=1)
+
+
+def _canonical_abi(abi: object) -> object:
+    if not isinstance(abi, list):
+        return abi
+    entries = [_strip_abi_metadata(entry) for entry in abi if isinstance(entry, dict)]
+    return sorted(entries, key=lambda entry: json.dumps(_abi_sort_key(entry), sort_keys=True))
+
+
+def _strip_abi_metadata(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _strip_abi_metadata(item)
+            for key, item in sorted(value.items())
+            if key not in {"gas"}
+        }
+    if isinstance(value, list):
+        return [_strip_abi_metadata(item) for item in value]
+    return value
+
+
+def _abi_sort_key(entry: dict[str, object]) -> tuple[object, ...]:
+    inputs = entry.get("inputs")
+    input_types: tuple[object, ...] = ()
+    if isinstance(inputs, list):
+        input_types = tuple(
+            item.get("type") if isinstance(item, dict) else None
+            for item in inputs
+        )
+    return (entry.get("type"), entry.get("name", ""), input_types, entry.get("stateMutability", ""))
+
+
+def _canonical_method_identifiers(methods: object) -> object:
+    if not isinstance(methods, dict):
+        return methods
+    return {key: value for key, value in sorted(methods.items()) if key != "__init__()"}
+
+
+def _canonical_storage_layout(layout: object) -> dict[str, tuple[int, str]] | None:
+    if not isinstance(layout, dict):
+        return None
+    storage = layout.get("storage_layout")
+    if isinstance(storage, dict):
+        layout = storage
+    normalized: dict[str, tuple[int, str]] = {}
+    for name, value in layout.items():
+        if not isinstance(name, str) or not isinstance(value, dict):
+            continue
+        if value.get("location", "storage") != "storage":
+            continue
+        slot = value.get("slot")
+        type_name = value.get("type")
+        if not isinstance(slot, int) or not isinstance(type_name, str):
+            continue
+        normalized[name] = (slot, _canonical_storage_type(type_name))
+    return normalized
+
+
+def _canonical_storage_type(type_name: str) -> str:
+    type_name = type_name.rsplit("/", 1)[-1]
+    type_name = type_name.removesuffix(".vyi")
+    if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
+        return type_name[1:]
+    return type_name
 
 
 def _compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:

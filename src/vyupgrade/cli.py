@@ -66,12 +66,12 @@ def main(argv: list[str] | None = None) -> int:
         changed = original != rewrite.source
         file_report = FileReport(path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics)
         file_report.source_compile = source_compile.status
-        file_report.source_error = source_compile.stderr
+        file_report.source_error = source_compile.stderr if source_compile.status == "failed" else None
         any_source_failed = any_source_failed or source_compile.status == "failed"
 
         target_compile = compile_target_source(path, rewrite.source, config)
         file_report.target_compile = target_compile.status
-        file_report.target_error = target_compile.stderr
+        file_report.target_error = target_compile.stderr if target_compile.status == "failed" else None
         any_target_failed = any_target_failed or target_compile.status == "failed"
 
         abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(source_compile, target_compile)

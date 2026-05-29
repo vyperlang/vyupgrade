@@ -27,7 +27,13 @@ def render_text(report: RunReport) -> str:
         for diag in file.diagnostics:
             lines.append(f"  {diag.rule}:{diag.line} {diag.message}")
         lines.append(f"  source compile: {file.source_compile}")
+        if file.source_compile == "failed" and file.source_error:
+            lines.append("  source error:")
+            lines.extend(f"    {line}" for line in file.source_error.splitlines())
         lines.append(f"  target compile: {file.target_compile}")
+        if file.target_compile == "failed" and file.target_error:
+            lines.append("  target error:")
+            lines.extend(f"    {line}" for line in file.target_error.splitlines())
         if file.abi_equal is not None:
             lines.append(f"  ABI unchanged: {file.abi_equal}")
         if file.method_ids_equal is not None:
@@ -45,4 +51,3 @@ def render_text(report: RunReport) -> str:
 
 def write_json_report(path: Path, report: RunReport) -> None:
     path.write_text(json.dumps(report.to_json_obj(), indent=2, sort_keys=True) + "\n")
-

@@ -11,6 +11,7 @@ from vyupgrade.compiler import (
     _run_compile,
     _supports_warning_policy,
     _uv_bin,
+    compare_artifacts,
     compile_source_ast,
     compile_source_file,
     compile_target_source,
@@ -235,6 +236,36 @@ def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tm
     assert calls["run"] == (["vyper"], True, (contract.parent,), True)
 
 
+def test_compile_target_source_bumps_temp_pragma_for_validation(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# @version 0.2.11\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["source"] = path.read_text(encoding="utf-8")
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    result = compile_target_source(
+        contract,
+        "#pragma version 0.2.11\n@external\ndef f():\n    pass\n",
+        Config(paths=(contract,), target_version="0.4.3"),
+    )
+
+    assert result.status == "passed"
+    assert "#pragma version 0.4.3" in calls["source"]
+    assert "#pragma version 0.2.11" not in calls["source"]
+
+
 def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contracts" / "contract.vy"
     contract.parent.mkdir()
@@ -295,3 +326,100 @@ def test_warning_policy_is_only_used_for_modern_vyper() -> None:
     assert _supports_warning_policy("0.4.1")
     assert _supports_warning_policy("0.4.3")
     assert not _supports_warning_policy("0.3.10")
+
+
+def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {"type": "constructor", "stateMutability": "nonpayable", "inputs": [], "outputs": []},
+                {
+                    "type": "function",
+                    "name": "f",
+                    "stateMutability": "view",
+                    "inputs": [],
+                    "outputs": [{"type": "uint256", "name": ""}],
+                    "gas": 1234,
+                },
+            ],
+            "method_identifiers": {"__init__()": "0xdeadbeef", "f()": "0x26121ff0"},
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "f",
+                    "stateMutability": "view",
+                    "inputs": [],
+                    "outputs": [{"type": "uint256", "name": ""}],
+                },
+                {"type": "constructor", "stateMutability": "nonpayable", "inputs": [], "outputs": []},
+            ],
+            "method_identifiers": {"f()": "0x26121ff0"},
+        },
+    )
+
+    assert compare_artifacts(source, target) == (True, True, None)
+
+
+def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "token": {"location": "storage", "slot": 0, "type": "ERC20"},
+                "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "token": {"slot": 0, "type": "/tmp/IERC20.vyi", "n_slots": 1},
+                    "balance": {"slot": 1, "type": "uint256", "n_slots": 1},
+                },
+                "transient_storage_layout": {
+                    "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock"},
+                },
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+def test_compare_artifacts_flags_real_storage_slot_shift() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.withdraw": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                },
+                "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "balance": {"slot": 0, "type": "uint256", "n_slots": 1},
+                },
+                "transient_storage_layout": {
+                    "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock"},
+                },
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
