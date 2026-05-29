@@ -307,21 +307,8 @@ def parse_source_facts(source: str) -> SourceFacts:
                         facts.function_ends[current_function_line] = pending_function_line - 1
                     current_function_line = pending_function_line
                     current_function_indent = pending_function_indent
-                    facts.function_names[current_function_line] = def_match.group(1)
-                    facts.function_decorators[current_function_line] = tuple(
-                        name for name, _line in pending_decorators
-                    )
-                    facts.function_decorator_lines[current_function_line] = {
-                        name: decorator_line for name, decorator_line in pending_decorators
-                    }
+                    _record_function(facts, current_function_line, def_match, pending_decorators)
                     pending_decorators = []
-                    params = _parse_params(def_match.group(2))
-                    facts.function_vars[current_function_line] = params
-                    facts.function_params[def_match.group(1)] = params
-                    facts.function_loop_vars[current_function_line] = set()
-                    if def_match.group(3):
-                        facts.function_returns[current_function_line] = def_match.group(3).strip()
-                        facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
                 pending_function_line = None
                 pending_function_header = []
             continue
@@ -381,17 +368,7 @@ def parse_source_facts(source: str) -> SourceFacts:
                 if _balanced_parens(" ".join(pending_interface_header)):
                     def_match = DEF_RE.match(" ".join(pending_interface_header))
                     if def_match:
-                        method_name = def_match.group(1)
-                        facts.interfaces[current_interface][method_name] = (
-                            def_match.group(4) or "nonpayable"
-                        )
-                        facts.interface_params[current_interface][method_name] = _parse_params(
-                            def_match.group(2)
-                        )
-                        if def_match.group(3):
-                            facts.interface_returns[current_interface][method_name] = (
-                                def_match.group(3).strip()
-                            )
+                        method_name = _record_interface_method(facts, current_interface, def_match)
                         pending_interface_method = (
                             method_name if def_match.group(4) is None else None
                         )
@@ -399,17 +376,7 @@ def parse_source_facts(source: str) -> SourceFacts:
                 continue
             def_match = DEF_RE.match(stripped)
             if def_match:
-                method_name = def_match.group(1)
-                facts.interfaces[current_interface][method_name] = (
-                    def_match.group(4) or "nonpayable"
-                )
-                facts.interface_params[current_interface][method_name] = _parse_params(
-                    def_match.group(2)
-                )
-                if def_match.group(3):
-                    facts.interface_returns[current_interface][method_name] = def_match.group(
-                        3
-                    ).strip()
+                method_name = _record_interface_method(facts, current_interface, def_match)
                 pending_interface_method = method_name if def_match.group(4) is None else None
                 continue
             multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
@@ -429,21 +396,8 @@ def parse_source_facts(source: str) -> SourceFacts:
                 facts.function_ends[current_function_line] = line_no - 1
             current_function_line = line_no
             current_function_indent = indent
-            facts.function_names[current_function_line] = def_match.group(1)
-            facts.function_decorators[current_function_line] = tuple(
-                name for name, _line in pending_decorators
-            )
-            facts.function_decorator_lines[current_function_line] = {
-                name: decorator_line for name, decorator_line in pending_decorators
-            }
+            _record_function(facts, current_function_line, def_match, pending_decorators)
             pending_decorators = []
-            params = _parse_params(def_match.group(2))
-            facts.function_vars[current_function_line] = params
-            facts.function_params[def_match.group(1)] = params
-            facts.function_loop_vars[current_function_line] = set()
-            if def_match.group(3):
-                facts.function_returns[current_function_line] = def_match.group(3).strip()
-                facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
             continue
         if re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", function_header):
             pending_function_line = line_no
@@ -484,6 +438,37 @@ def parse_source_facts(source: str) -> SourceFacts:
     if current_function_line is not None:
         facts.function_ends[current_function_line] = len(lines)
     return facts
+
+
+def _record_function(
+    facts: SourceFacts,
+    line_no: int,
+    def_match: re.Match[str],
+    decorators: list[tuple[str, int]],
+) -> None:
+    name = def_match.group(1)
+    facts.function_names[line_no] = name
+    facts.function_decorators[line_no] = tuple(name for name, _line in decorators)
+    facts.function_decorator_lines[line_no] = {
+        name: decorator_line for name, decorator_line in decorators
+    }
+    params = _parse_params(def_match.group(2))
+    facts.function_vars[line_no] = params
+    facts.function_params[name] = params
+    facts.function_loop_vars[line_no] = set()
+    if def_match.group(3):
+        return_type = def_match.group(3).strip()
+        facts.function_returns[line_no] = return_type
+        facts.function_return_names[name] = return_type
+
+
+def _record_interface_method(facts: SourceFacts, interface: str, def_match: re.Match[str]) -> str:
+    method_name = def_match.group(1)
+    facts.interfaces[interface][method_name] = def_match.group(4) or "nonpayable"
+    facts.interface_params[interface][method_name] = _parse_params(def_match.group(2))
+    if def_match.group(3):
+        facts.interface_returns[interface][method_name] = def_match.group(3).strip()
+    return method_name
 
 
 def _line_starts_inside_string(source: str, mask: list[bool], line_start: int) -> bool:
