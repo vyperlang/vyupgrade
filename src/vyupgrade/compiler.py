@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import cache
@@ -309,25 +309,13 @@ def _abi_diff(source: object, target: object) -> list[str]:
         return []
     source_entries = _abi_entry_map(_canonical_abi(source))
     target_entries = _abi_entry_map(_canonical_abi(target))
-    lines = [
-        *(
-            f"removed ABI entry: {key}"
-            for key in sorted(source_entries.keys() - target_entries.keys())
-        ),
-        *(
-            f"added ABI entry: {key}"
-            for key in sorted(target_entries.keys() - source_entries.keys())
-        ),
-    ]
-    for key in sorted(source_entries.keys() & target_entries.keys()):
-        if source_entries[key] == target_entries[key]:
-            continue
-        details = _abi_entry_diff(source_entries[key], target_entries[key])
-        if not details:
-            lines.append(f"changed ABI entry: {key}")
-            continue
-        lines.extend(f"changed ABI entry: {key}: {detail}" for detail in details)
-    return lines
+    return _mapping_diff_lines(
+        source_entries,
+        target_entries,
+        removed=lambda key, value: f"removed ABI entry: {key}",
+        added=lambda key, value: f"added ABI entry: {key}",
+        changed=_changed_abi_lines,
+    )
 
 
 def _abi_entry_diff(source: object, target: object) -> list[str]:
@@ -375,21 +363,13 @@ def _method_identifier_diff(source: object, target: object) -> list[str]:
     target_methods = _canonical_method_identifiers(target)
     if not isinstance(source_methods, dict) or not isinstance(target_methods, dict):
         return []
-    return [
-        *(
-            f"removed selector: {key} = {source_methods[key]}"
-            for key in sorted(source_methods.keys() - target_methods.keys())
-        ),
-        *(
-            f"added selector: {key} = {target_methods[key]}"
-            for key in sorted(target_methods.keys() - source_methods.keys())
-        ),
-        *(
-            f"changed selector: {key} {source_methods[key]} -> {target_methods[key]}"
-            for key in sorted(source_methods.keys() & target_methods.keys())
-            if source_methods[key] != target_methods[key]
-        ),
-    ]
+    return _mapping_diff_lines(
+        source_methods,
+        target_methods,
+        removed=lambda key, value: f"removed selector: {key} = {value}",
+        added=lambda key, value: f"added selector: {key} = {value}",
+        changed=lambda key, before, after: [f"changed selector: {key} {before} -> {after}"],
+    )
 
 
 def _storage_layout_diff(
@@ -407,20 +387,44 @@ def _storage_layout_diff(
             f"moved storage to transient: {name} slot {_slot_type(source[name])} -> {target_name} slot {_slot_type(target_transient[target_name])}"
             for name, target_name in moved_locks.items()
         ),
-        *(
-            f"removed storage: {name} slot {_slot_type(source[name])}"
-            for name in sorted((source.keys() - target.keys()) - moved_lock_names)
-        ),
-        *(
-            f"added storage: {name} slot {_slot_type(target[name])}"
-            for name in sorted(target.keys() - source.keys())
-        ),
-        *(
-            f"changed storage: {name} slot {_slot_type(source[name])} -> {_slot_type(target[name])}"
-            for name in sorted(source.keys() & target.keys())
-            if source[name] != target[name]
+        *_mapping_diff_lines(
+            source,
+            target,
+            removed=lambda key, value: f"removed storage: {key} slot {_slot_type(value)}",
+            added=lambda key, value: f"added storage: {key} slot {_slot_type(value)}",
+            changed=lambda key, before, after: [
+                f"changed storage: {key} slot {_slot_type(before)} -> {_slot_type(after)}"
+            ],
+            skip_removed=moved_lock_names,
         ),
     ]
+
+
+def _mapping_diff_lines(
+    source: Mapping[str, object],
+    target: Mapping[str, object],
+    *,
+    removed: Callable[[str, object], str],
+    added: Callable[[str, object], str],
+    changed: Callable[[str, object, object], list[str]],
+    skip_removed: set[str] | None = None,
+) -> list[str]:
+    skip_removed = skip_removed or set()
+    lines = [
+        removed(key, source[key]) for key in sorted((source.keys() - target.keys()) - skip_removed)
+    ]
+    lines.extend(added(key, target[key]) for key in sorted(target.keys() - source.keys()))
+    for key in sorted(source.keys() & target.keys()):
+        if source[key] != target[key]:
+            lines.extend(changed(key, source[key], target[key]))
+    return lines
+
+
+def _changed_abi_lines(key: str, source: object, target: object) -> list[str]:
+    details = _abi_entry_diff(source, target)
+    if not details:
+        return [f"changed ABI entry: {key}"]
+    return [f"changed ABI entry: {key}: {detail}" for detail in details]
 
 
 def _moved_nonreentrant_locks(
