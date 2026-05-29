@@ -86,6 +86,10 @@ the supported range.
   renames the immutable backing variable and preserves the external getter name.
 - Constant variables now collide with explicit same-name accessors: `VY016`
   renames the constant backing variable and preserves the external getter name.
+- NatSpec validation is stricter: `VY058` removes stale `@param` lines whose
+  names do not exist in the function signature or have no description, strips
+  Solidity-style colons from valid `@param name:` tags, and rewrites unknown
+  `@fork` tags to `@custom:fork`.
 - Local interface mutability is checked more strictly: `VY014` changes
   `nonpayable` interface entries to `view` when the implementation is a view
   function or `public(...)` getter.

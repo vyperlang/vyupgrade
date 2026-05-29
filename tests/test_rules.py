@@ -719,6 +719,39 @@ def f(eta: uint256):
     assert "eta + _GRACE_PERIOD" in result.source
 
 
+def test_natspec_strictness_removes_unknown_params_and_customizes_unknown_tags() -> None:
+    source = '''# @version 0.3.10
+"""
+@title Voting Escrow
+@fork Curve Finance
+"""
+
+@external
+def createMotion(
+    targets: DynArray[address, 4],
+    values: DynArray[uint256, 4],
+) -> uint256:
+    """
+    @notice Create a motion.
+    @param targets: The contracts to call
+    @param values: The values to send
+    @param calldatas: The calldata payloads
+    @param emptyParam
+    @return motionId: The id of the motion
+    """
+    return 1
+'''
+
+    result = apply_rules(source, config())
+
+    assert "@custom:fork Curve Finance" in result.source
+    assert "@param targets The contracts to call" in result.source
+    assert "@param values The values to send" in result.source
+    assert "calldatas" not in result.source
+    assert "emptyParam" not in result.source
+    assert any(fix.rule == "VY058" for fix in result.fixes)
+
+
 def test_local_interface_nonpayable_matches_view_function() -> None:
     source = """# @version 0.3.10
 interface Bucket:

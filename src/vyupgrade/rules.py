@@ -77,6 +77,7 @@ RULE_CHANGES = {
     "VY055": RuleChange(VyperVersion(0, 4, 0)),
     "VY056": RuleChange(VyperVersion(0, 4, 0)),
     "VY057": RuleChange(VyperVersion(0, 4, 0)),
+    "VY058": RuleChange(VyperVersion(0, 4, 0)),
     "VY060": RuleChange(VyperVersion(0, 4, 0)),
     "VY070": RuleChange(VyperVersion(0, 4, 0)),
     "VY071": RuleChange(VyperVersion(0, 4, 0)),
@@ -134,6 +135,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _legacy_maps_and_interfaces,
         _legacy_dynamic_types,
         _legacy_diagnostics,
+        _natspec_strictness,
         _legacy_builtin_calls,
         _not_in_comparator,
         _legacy_constructor_locks,
@@ -438,6 +440,79 @@ def _legacy_diagnostics(source: str, config: Config, context: MigrationContext) 
             if span_is_code(mask, match.start(), match.end())
         )
     return source, [], diagnostics
+
+
+def _natspec_strictness(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY058", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    in_docstring = False
+    quote = ""
+    doc_function_start: int | None = None
+    offset = 0
+    for line_no, raw_line in enumerate(source.splitlines(keepends=True), start=1):
+        line = raw_line.rstrip("\n")
+        stripped = line.lstrip()
+        if not in_docstring:
+            if stripped.startswith(('"""', "'''")):
+                quote = stripped[:3]
+                in_docstring = True
+                doc_function_start = _function_start_at_line(facts, line_no)
+                if stripped.count(quote) >= 2:
+                    in_docstring = False
+                    doc_function_start = None
+            offset += len(raw_line)
+            continue
+
+        if stripped.startswith(quote):
+            in_docstring = False
+            doc_function_start = None
+            offset += len(raw_line)
+            continue
+
+        params = _function_param_names_at_start(facts, doc_function_start)
+        replacement = _natspec_line_replacement(line, params)
+        if replacement is None:
+            edits.append(TextEdit(offset, offset + len(raw_line), ""))
+            fixes.append(Fix("VY058", line_no, "removed NatSpec line for unknown function parameter", line, ""))
+        elif replacement != line:
+            edits.append(TextEdit(offset, offset + len(line), replacement))
+            fixes.append(Fix("VY058", line_no, "updated NatSpec tag syntax", line, replacement))
+        offset += len(raw_line)
+    return apply_edits(source, edits), fixes, []
+
+
+def _function_start_at_line(facts: SourceFacts, line_no: int) -> int | None:
+    for start, end in sorted(facts.function_ends.items()):
+        if start < line_no <= end:
+            return start
+    return None
+
+
+def _function_param_names_at_start(facts: SourceFacts, start: int | None) -> set[str] | None:
+    if start is None:
+        return None
+    name = facts.function_names.get(start)
+    if name is None:
+        return None
+    return set(facts.function_params.get(name, {}))
+
+
+def _natspec_line_replacement(line: str, params: set[str] | None) -> str | None:
+    param_match = re.match(r"^(\s*)@param\s+([A-Za-z_][A-Za-z0-9_]*)(:)?(\s+.*)?$", line)
+    if param_match is not None and params is not None:
+        name = param_match.group(2)
+        if name not in params or not (param_match.group(4) or "").strip():
+            return None
+        if param_match.group(3):
+            return f"{param_match.group(1)}@param {name}{param_match.group(4) or ''}"
+        return line
+    fork_match = re.match(r"^(\s*)@fork(\s+.*)?$", line)
+    if fork_match is not None:
+        return f"{fork_match.group(1)}@custom:fork{fork_match.group(2) or ''}"
+    return line
 
 
 def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
