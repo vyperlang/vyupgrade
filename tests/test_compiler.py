@@ -344,7 +344,7 @@ def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
                     "gas": 1234,
                 },
             ],
-            "method_identifiers": {"__init__()": "0xdeadbeef", "f()": "0x26121ff0"},
+            "method_identifiers": {"__init__(string,string,uint256)": "0xdeadbeef", "f()": "0x26121ff0"},
         },
     )
     target = CompileResult(
@@ -365,6 +365,26 @@ def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
     )
 
     assert compare_artifacts(source, target) == (True, True, None)
+
+
+def test_compare_artifact_details_ignores_constructor_selector() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "method_identifiers": {
+                "__init__(string,string,uint256)": "0xcece287e",
+                "f()": "0x26121ff0",
+            },
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={"method_identifiers": {"f()": "0x26121ff0"}},
+    )
+
+    _abi_diff, method_diff, _storage_diff = compare_artifact_details(source, target)
+
+    assert method_diff == []
 
 
 def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:

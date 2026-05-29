@@ -181,7 +181,7 @@ def _abi_sort_key(entry: dict[str, object]) -> tuple[object, ...]:
 def _canonical_method_identifiers(methods: object) -> object:
     if not isinstance(methods, dict):
         return methods
-    return {key: value for key, value in sorted(methods.items()) if key != "__init__()"}
+    return {key: value for key, value in sorted(methods.items()) if not key.startswith("__init__(")}
 
 
 def _canonical_storage_layout(layout: object) -> dict[str, tuple[int, str]] | None:
