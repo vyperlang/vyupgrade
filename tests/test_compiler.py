@@ -192,6 +192,46 @@ def test_compile_reports_timeout_as_failure(monkeypatch) -> None:
     assert result.command is not None
 
 
+def test_compile_retries_missing_pyproject_import_dependency(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contracts" / "utils" / "contract.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.3\nfrom snekmate.utils import math\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.poetry.dependencies]
+python = ">=3.11,<4"
+snekmate = "0.1.2"
+curve-std = {git = "https://github.com/curvefi/curve-std.git", rev = "09ad21756cd573cd6ac7afb32fb299fef32429cc"}
+""",
+        encoding="utf-8",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="vyper.exceptions.ModuleNotFound: curve_std.stableswap.lp_oracle_2",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="[]\n{}\n{}\n", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["/tmp/uv", "run", "--no-project", "--python", "3.11", "--with", "vyper==0.4.3", "vyper"],
+        contract,
+        Config(paths=(contract,)),
+    )
+
+    assert result.status == "passed"
+    assert len(calls) == 2
+    assert "snekmate==0.1.2" in calls[0]
+    assert "curve-std @ git+https://github.com/curvefi/curve-std.git@09ad21756cd573cd6ac7afb32fb299fef32429cc" in calls[1]
+
+
 def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.4.3\n", encoding="utf-8")

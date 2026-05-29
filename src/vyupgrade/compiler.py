@@ -493,6 +493,9 @@ def _run_compile_with_formats(
         if "Unsupported format type 'layout'" in stderr and "layout" in formats:
             fallback_formats = tuple(name for name in formats if name != "layout")
             return _run_compile_with_formats(command, path, config, fallback_formats, extra_paths, suppress_warnings)
+        retry_command = _command_with_missing_module_dependency(command, path, stderr)
+        if retry_command is not None:
+            return _run_compile_with_formats(retry_command, path, config, formats, extra_paths, suppress_warnings)
         return CompileResult("failed", stderr=proc.stderr.strip() or proc.stdout.strip(), command=full)
     try:
         artifacts = _parse_outputs(proc.stdout, formats)
@@ -507,11 +510,44 @@ def _with_project_import_dependencies(command: list[str], path: Path) -> list[st
     packages = _project_import_packages(path)
     if not packages:
         return command
+    return _uv_command_with_packages(command, packages)
+
+
+def _command_with_missing_module_dependency(command: list[str], path: Path, stderr: str) -> list[str] | None:
+    if not _is_uv_run_command(command):
+        return None
+    missing = _missing_module_name(stderr)
+    if missing is None:
+        return None
+    pyproject = _nearest_pyproject(path.parent)
+    dependencies = _pyproject_dependencies(pyproject) if pyproject is not None else {}
+    package = dependencies.get(missing.split(".", 1)[0])
+    if package is None:
+        return None
+    retry_command = _uv_command_with_packages(command, (package,))
+    return retry_command if retry_command != command else None
+
+
+def _missing_module_name(stderr: str) -> str | None:
+    match = re.search(r"\bModuleNotFound:\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)", stderr)
+    return match.group(1) if match else None
+
+
+def _uv_command_with_packages(command: list[str], packages: tuple[str, ...]) -> list[str]:
     full = command[:-1]
     for package in packages:
+        if _uv_command_has_package(command, package):
+            continue
         full.extend(["--with", package])
     full.append(command[-1])
     return full
+
+
+def _uv_command_has_package(command: list[str], package: str) -> bool:
+    return any(
+        arg == "--with" and index + 1 < len(command) and command[index + 1] == package
+        for index, arg in enumerate(command)
+    )
 
 
 def _is_uv_run_command(command: list[str]) -> bool:
