@@ -18,7 +18,6 @@ from .versions import VyperVersion, compiler_version_for_spec, infer_pragma, par
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 COMPILE_TIMEOUT_SECONDS = 120
-MAX_ARTIFACT_DIFF_LINES = 12
 
 
 @dataclass
@@ -218,17 +217,21 @@ def _abi_diff(source: object, target: object) -> list[str]:
         return []
     source_entries = _abi_entry_map(_canonical_abi(source))
     target_entries = _abi_entry_map(_canonical_abi(target))
-    return _limited_diff_lines(
-        [
-            *(f"removed ABI entry: {key}" for key in sorted(source_entries.keys() - target_entries.keys())),
-            *(f"added ABI entry: {key}" for key in sorted(target_entries.keys() - source_entries.keys())),
-            *(
-                f"changed ABI entry: {key}"
-                for key in sorted(source_entries.keys() & target_entries.keys())
-                if source_entries[key] != target_entries[key]
-            ),
-        ]
-    )
+    return [
+        *(
+            f"removed ABI entry: {key}"
+            for key in sorted(source_entries.keys() - target_entries.keys())
+        ),
+        *(
+            f"added ABI entry: {key}"
+            for key in sorted(target_entries.keys() - source_entries.keys())
+        ),
+        *(
+            f"changed ABI entry: {key}"
+            for key in sorted(source_entries.keys() & target_entries.keys())
+            if source_entries[key] != target_entries[key]
+        ),
+    ]
 
 
 def _method_identifier_diff(source: object, target: object) -> list[str]:
@@ -238,17 +241,21 @@ def _method_identifier_diff(source: object, target: object) -> list[str]:
     target_methods = _canonical_method_identifiers(target)
     if not isinstance(source_methods, dict) or not isinstance(target_methods, dict):
         return []
-    return _limited_diff_lines(
-        [
-            *(f"removed selector: {key} = {source_methods[key]}" for key in sorted(source_methods.keys() - target_methods.keys())),
-            *(f"added selector: {key} = {target_methods[key]}" for key in sorted(target_methods.keys() - source_methods.keys())),
-            *(
-                f"changed selector: {key} {source_methods[key]} -> {target_methods[key]}"
-                for key in sorted(source_methods.keys() & target_methods.keys())
-                if source_methods[key] != target_methods[key]
-            ),
-        ]
-    )
+    return [
+        *(
+            f"removed selector: {key} = {source_methods[key]}"
+            for key in sorted(source_methods.keys() - target_methods.keys())
+        ),
+        *(
+            f"added selector: {key} = {target_methods[key]}"
+            for key in sorted(target_methods.keys() - source_methods.keys())
+        ),
+        *(
+            f"changed selector: {key} {source_methods[key]} -> {target_methods[key]}"
+            for key in sorted(source_methods.keys() & target_methods.keys())
+            if source_methods[key] != target_methods[key]
+        ),
+    ]
 
 
 def _storage_layout_diff(
@@ -257,17 +264,21 @@ def _storage_layout_diff(
 ) -> list[str]:
     if source is None or target is None:
         return []
-    return _limited_diff_lines(
-        [
-            *(f"removed storage: {name} slot {_slot_type(source[name])}" for name in sorted(source.keys() - target.keys())),
-            *(f"added storage: {name} slot {_slot_type(target[name])}" for name in sorted(target.keys() - source.keys())),
-            *(
-                f"changed storage: {name} slot {_slot_type(source[name])} -> {_slot_type(target[name])}"
-                for name in sorted(source.keys() & target.keys())
-                if source[name] != target[name]
-            ),
-        ]
-    )
+    return [
+        *(
+            f"removed storage: {name} slot {_slot_type(source[name])}"
+            for name in sorted(source.keys() - target.keys())
+        ),
+        *(
+            f"added storage: {name} slot {_slot_type(target[name])}"
+            for name in sorted(target.keys() - source.keys())
+        ),
+        *(
+            f"changed storage: {name} slot {_slot_type(source[name])} -> {_slot_type(target[name])}"
+            for name in sorted(source.keys() & target.keys())
+            if source[name] != target[name]
+        ),
+    ]
 
 
 def _abi_entry_map(abi: object) -> dict[str, object]:
@@ -296,14 +307,6 @@ def _abi_input_types(entry: dict[str, object]) -> str:
 def _slot_type(value: tuple[int, str]) -> str:
     slot, type_name = value
     return f"{slot} {type_name}"
-
-
-def _limited_diff_lines(lines: list[str]) -> list[str]:
-    if len(lines) <= MAX_ARTIFACT_DIFF_LINES:
-        return lines
-    shown = lines[:MAX_ARTIFACT_DIFF_LINES]
-    shown.append(f"... {len(lines) - MAX_ARTIFACT_DIFF_LINES} more")
-    return shown
 
 
 def _compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:

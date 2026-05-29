@@ -468,3 +468,36 @@ def test_compare_artifact_details_reports_changed_selectors_and_storage() -> Non
         "added storage: recipient slot 1 address",
         "changed storage: balance slot 1 uint256 -> 0 uint256",
     ]
+
+
+def test_compare_artifact_details_reports_full_storage_changes() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                f"slot_{index:02d}": {
+                    "location": "storage",
+                    "slot": index,
+                    "type": "uint256",
+                }
+                for index in range(15)
+            },
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    f"slot_{index:02d}": {"slot": index + 1, "type": "uint256"}
+                    for index in range(15)
+                },
+            },
+        },
+    )
+
+    _abi_diff, _method_diff, storage_diff = compare_artifact_details(source, target)
+
+    assert len(storage_diff) == 15
+    assert storage_diff[-1] == "changed storage: slot_14 slot 14 uint256 -> 15 uint256"
+    assert not any(line.startswith("... ") for line in storage_diff)
