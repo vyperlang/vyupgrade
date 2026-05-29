@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -4804,14 +4804,7 @@ def _replace_call_keyword(
 ) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        close = find_matching(source, source.find("(", match.start()))
-        if close is None:
-            continue
-        args = source[match.end() : close]
+    for match, _open_index, _close, args in _iter_calls(source, call_name):
         keyword_match = re.search(rf"(?<!\w){re.escape(before)}\s*=", args)
         if keyword_match is None:
             continue
@@ -4833,14 +4826,8 @@ def _replace_call_keyword(
 def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(r"\bassert_modifiable\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        close = find_matching(source, source.find("(", match.start()))
-        if close is None:
-            continue
-        args = split_top_level_args(source[match.end() : close])
+    for match, _open_index, close, raw_args in _iter_calls(source, "assert_modifiable"):
+        args = split_top_level_args(raw_args)
         if args is None or len(args) != 1:
             continue
         replacement = f"assert {args[0].strip()}"
@@ -4860,14 +4847,8 @@ def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
 def _unwrap_legacy_builtin(source: str, call_name: str, rule: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        close = find_matching(source, source.find("(", match.start()))
-        if close is None:
-            continue
-        args = split_top_level_args(source[match.end() : close])
+    for match, _open_index, close, raw_args in _iter_calls(source, call_name):
+        args = split_top_level_args(raw_args)
         if args is None or len(args) != 1:
             continue
         replacement = args[0].strip()
@@ -4893,15 +4874,7 @@ def _remove_call_keyword_arg(
 ) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        open_index = source.find("(", match.start())
-        close = find_matching(source, open_index)
-        if close is None:
-            continue
-        raw_args = source[open_index + 1 : close]
+    for match, _open_index, close, raw_args in _iter_calls(source, call_name):
         args = split_top_level_args(raw_args)
         if args is None:
             continue
@@ -4932,15 +4905,7 @@ def _remove_call_keyword_arg(
 def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(r"\bmethod_id\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        open_index = source.find("(", match.start())
-        close = find_matching(source, open_index)
-        if close is None:
-            continue
-        raw_args = source[open_index + 1 : close]
+    for match, open_index, close, raw_args in _iter_calls(source, "method_id"):
         arg_spans = split_top_level_arg_spans(raw_args)
         if arg_spans is None:
             continue
@@ -4979,14 +4944,7 @@ def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]
 def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(r"\bmethod_id\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        open_index = source.find("(", match.start())
-        close = find_matching(source, open_index)
-        if close is None:
-            continue
+    for match, open_index, close, raw_args in _iter_calls(source, "method_id"):
         line_start = source.rfind("\n", 0, match.start()) + 1
         line_end = source.find("\n", close)
         if line_end == -1:
@@ -4997,7 +4955,6 @@ def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
             or re.search(r",\s*uint256\s*\)\s*,\s*\d+\s*\)", after_call)
         ):
             continue
-        raw_args = source[open_index + 1 : close]
         arg_spans = split_top_level_arg_spans(raw_args)
         if arg_spans is None:
             continue
@@ -5029,6 +4986,20 @@ def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
             )
         )
     return apply_edits(source, edits), fixes
+
+
+def _iter_calls(
+    source: str, call_name: str, mask: list[bool] | None = None
+) -> Iterator[tuple[re.Match[str], int, int, str]]:
+    if mask is None:
+        mask = code_mask(source)
+    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        open_index = match.end() - 1
+        close = find_matching(source, open_index)
+        if close is not None:
+            yield match, open_index, close, source[open_index + 1 : close]
 
 
 def _method_id_comparison_operand(
