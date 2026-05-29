@@ -73,6 +73,40 @@ def f(target: address):
     assert contract.read_text(encoding="utf-8") == original
 
 
+def test_split_interfaces_writes_sibling_vyi_files(tmp_path: Path) -> None:
+    contract = tmp_path / "Main.vy"
+    contract.write_text(
+        """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+    def transfer(to: address, amount: uint256) -> bool: nonpayable
+
+@external
+def f(token: Token, owner: address) -> uint256:
+    return staticcall token.balanceOf(owner)
+""",
+        encoding="utf-8",
+    )
+
+    code = main([str(contract), "--write", "--split-interfaces"])
+
+    assert code == 0
+    assert contract.read_text(encoding="utf-8") == """#pragma version 0.4.3
+
+import Token
+@external
+def f(token: Token, owner: address) -> uint256:
+    return staticcall token.balanceOf(owner)
+"""
+    assert (tmp_path / "Token.vyi").read_text(encoding="utf-8") == """@view
+@external
+def balanceOf(owner: address) -> uint256: ...
+@external
+def transfer(to: address, amount: uint256) -> bool: ...
+"""
+
+
 def test_target_validation_uses_rewritten_import_overlay(tmp_path: Path) -> None:
     (tmp_path / "lib.vy").write_text(
         """# pragma version 0.4.0

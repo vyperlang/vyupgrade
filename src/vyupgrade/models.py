@@ -62,6 +62,7 @@ class Config:
     target_python: str | None = None
     compiler_search_paths: tuple[Path, ...] = ()
     enable_decimals: bool = False
+    split_interfaces: bool = False
     format: str = "none"
     source_ast: dict[str, Any] | None = None
 

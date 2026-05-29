@@ -17,6 +17,7 @@ from .compiler import (
     compile_target_source,
     target_overlay,
 )
+from .interfaces import GeneratedInterface, split_interfaces_to_vyi
 from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
@@ -54,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         target_python=args.target_python or _string_or_none(pyproject.get("target-python")),
         compiler_search_paths=tuple(Path(path) for path in (args.compiler_search_paths or pyproject.get("compiler-search-paths", []))),
         enable_decimals=args.enable_decimals,
+        split_interfaces=args.split_interfaces or bool(pyproject.get("split-interfaces", False)),
         format=args.format or pyproject.get("format", "none"),
     )
 
@@ -79,16 +81,27 @@ def main(argv: list[str] | None = None) -> int:
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         file_config = replace(config, source_ast=source_ast if isinstance(source_ast, dict) else None)
         rewrite = apply_rules(original, file_config, path)
+        generated_interfaces: tuple[GeneratedInterface, ...] = ()
+        if config.split_interfaces and path.suffix == ".vy":
+            split = split_interfaces_to_vyi(rewrite.source, path)
+            rewrite.source = split.source
+            rewrite.fixes.extend(split.fixes)
+            generated_interfaces = split.generated
         changed = original != rewrite.source
         file_report = FileReport(path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics)
         file_report.source_compile = source_compile.status
         file_report.source_error = source_compile.stderr if source_compile.status == "failed" else None
         any_source_failed = any_source_failed or source_compile.status == "failed"
-        rewrites.append((path, original, rewrite, file_report, source_compile, source_version))
+        rewrites.append((path, original, rewrite, file_report, source_compile, source_version, generated_interfaces))
 
-    target_sources = {path: rewrite.source for path, _original, rewrite, _file_report, _source_compile, _source_version in rewrites}
+    target_sources = {
+        path: rewrite.source
+        for path, _original, rewrite, _file_report, _source_compile, _source_version, _generated in rewrites
+    }
+    for _path, _original, _rewrite, _file_report, _source_compile, _source_version, generated in rewrites:
+        target_sources.update({interface.path: interface.source for interface in generated})
     with target_overlay(target_sources, config.target_version) as overlay:
-        for path, original, rewrite, file_report, source_compile, source_version in rewrites:
+        for path, original, rewrite, file_report, source_compile, source_version, generated in rewrites:
             target_compile = compile_target_source(path, rewrite.source, config, overlay)
             file_report.target_compile = target_compile.status
             file_report.target_error = target_compile.stderr if target_compile.status == "failed" else None
@@ -120,6 +133,23 @@ def main(argv: list[str] | None = None) -> int:
             reports.append(file_report)
             if human_reporter:
                 human_reporter.file(file_report)
+            for interface in generated:
+                previous = interface.path.read_text(encoding="utf-8") if interface.path.exists() else ""
+                if previous == interface.source:
+                    continue
+                write_back.append((interface.path, interface.source))
+                diff_chunks.extend(
+                    difflib.unified_diff(
+                        previous.splitlines(keepends=True),
+                        interface.source.splitlines(keepends=True),
+                        fromfile=str(interface.path),
+                        tofile=str(interface.path),
+                    )
+                )
+                generated_report = FileReport(path=interface.path, changed=True, fixes=[interface.fix])
+                reports.append(generated_report)
+                if human_reporter:
+                    human_reporter.file(generated_report)
 
     run_report = RunReport(
         source_version=config.source_version,
@@ -180,6 +210,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-python")
     parser.add_argument("--compiler-search-paths", nargs="*", default=[])
     parser.add_argument("--enable-decimals", action="store_true")
+    parser.add_argument("--split-interfaces", "--interfaces-to-vyi", action="store_true")
     parser.add_argument("--format", choices=["none", "mamushi"])
     parser.add_argument("--config", help="path to a pyproject.toml file")
     return parser

@@ -90,6 +90,7 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--write` — apply changes in place (only when every file compiles).
 - `--check` — exit non-zero if any file would change; write nothing.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
+- `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
 - `--select` / `--ignore` — comma-separated rule codes to include or exclude.
 - `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.
 - `--format mamushi` — run `mamushi` over written files to reformat them.
@@ -112,6 +113,7 @@ target-version = "0.4.3"
 source-version = "infer"
 report-json = "vyupgrade-report.json"
 aggressive = false
+split-interfaces = false
 format = "none"
 ```
 
