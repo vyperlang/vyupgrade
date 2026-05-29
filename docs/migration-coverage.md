@@ -321,6 +321,7 @@ modern Python interpreter.
 - `raise` can omit a reason string: no-op.
 - `method_id()` type argument made optional: `VY209`.
 - `raw_call` can perform `STATICCALL`: no-op.
+- Interfaces can be split into generated `.vyi` files: `VY120`.
 
 ## Global Diagnostics
 

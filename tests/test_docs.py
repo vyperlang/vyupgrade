@@ -14,6 +14,24 @@ def test_migration_coverage_references_all_version_gated_rules() -> None:
     assert set(RULE_CHANGES) <= referenced
 
 
+def test_emitted_rule_codes_are_version_gated() -> None:
+    emitted: set[str] = set()
+    for path in Path("src/vyupgrade").glob("*.py"):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name not in {"Fix", "Diagnostic"}:
+                continue
+            rule = node.args[0]
+            if isinstance(rule, ast.Constant) and isinstance(rule.value, str):
+                emitted.add(rule.value)
+
+    assert emitted <= set(RULE_CHANGES)
+
+
 def test_migration_coverage_uses_no_tables() -> None:
     coverage = Path("docs/migration-coverage.md").read_text(encoding="utf-8")
 
