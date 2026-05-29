@@ -8,7 +8,12 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 
-from .compiler import compare_artifacts, compile_source_file, compile_target_source
+from .compiler import (
+    compare_artifact_details,
+    compare_artifacts,
+    compile_source_file,
+    compile_target_source,
+)
 from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
@@ -81,6 +86,13 @@ def main(argv: list[str] | None = None) -> int:
         file_report.abi_equal = abi_equal
         file_report.method_ids_equal = method_ids_equal
         file_report.storage_layout_equal = storage_layout_equal
+        abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
+            source_compile,
+            target_compile,
+        )
+        file_report.abi_diff = abi_diff
+        file_report.method_id_diff = method_id_diff
+        file_report.storage_layout_diff = storage_layout_diff
         _add_validation_diagnostics(file_report, source_version, config)
 
         if changed:

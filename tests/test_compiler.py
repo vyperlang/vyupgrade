@@ -11,6 +11,7 @@ from vyupgrade.compiler import (
     _run_compile,
     _supports_warning_policy,
     _uv_bin,
+    compare_artifact_details,
     compare_artifacts,
     compile_source_ast,
     compile_source_file,
@@ -423,3 +424,47 @@ def test_compare_artifacts_flags_real_storage_slot_shift() -> None:
     )
 
     assert compare_artifacts(source, target) == (None, None, False)
+
+
+def test_compare_artifact_details_reports_changed_selectors_and_storage() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "method_identifiers": {
+                "old()": "0x11111111",
+                "shared()": "0x22222222",
+            },
+            "layout": {
+                "owner": {"location": "storage", "slot": 0, "type": "address"},
+                "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+            },
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "method_identifiers": {
+                "shared()": "0x33333333",
+                "new()": "0x44444444",
+            },
+            "layout": {
+                "storage_layout": {
+                    "balance": {"slot": 0, "type": "uint256"},
+                    "recipient": {"slot": 1, "type": "address"},
+                },
+            },
+        },
+    )
+
+    _abi_diff, method_diff, storage_diff = compare_artifact_details(source, target)
+
+    assert method_diff == [
+        "removed selector: old() = 0x11111111",
+        "added selector: new() = 0x44444444",
+        "changed selector: shared() 0x22222222 -> 0x33333333",
+    ]
+    assert storage_diff == [
+        "removed storage: owner slot 0 address",
+        "added storage: recipient slot 1 address",
+        "changed storage: balance slot 1 uint256 -> 0 uint256",
+    ]

@@ -18,6 +18,7 @@ from .versions import VyperVersion, compiler_version_for_spec, infer_pragma, par
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 COMPILE_TIMEOUT_SECONDS = 120
+MAX_ARTIFACT_DIFF_LINES = 12
 
 
 @dataclass
@@ -124,6 +125,25 @@ def compare_artifacts(source: CompileResult, target: CompileResult) -> tuple[boo
     )
 
 
+def compare_artifact_details(
+    source: CompileResult,
+    target: CompileResult,
+) -> tuple[list[str], list[str], list[str]]:
+    if source.artifacts is None or target.artifacts is None:
+        return [], [], []
+    source_abi = source.artifacts.get("abi")
+    target_abi = target.artifacts.get("abi")
+    source_methods = source.artifacts.get("method_identifiers")
+    target_methods = target.artifacts.get("method_identifiers")
+    source_layout = _canonical_storage_layout(source.artifacts.get("layout"))
+    target_layout = _canonical_storage_layout(target.artifacts.get("layout"))
+    return (
+        _abi_diff(source_abi, target_abi),
+        _method_identifier_diff(source_methods, target_methods),
+        _storage_layout_diff(source_layout, target_layout),
+    )
+
+
 def _target_validation_source(source: str, target_version: str) -> str:
     pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
     return pattern.sub(lambda match: f"{match.group(1)}#pragma version {target_version}", source, count=1)
@@ -191,6 +211,99 @@ def _canonical_storage_type(type_name: str) -> str:
     if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
         return type_name[1:]
     return type_name
+
+
+def _abi_diff(source: object, target: object) -> list[str]:
+    if source is None or target is None:
+        return []
+    source_entries = _abi_entry_map(_canonical_abi(source))
+    target_entries = _abi_entry_map(_canonical_abi(target))
+    return _limited_diff_lines(
+        [
+            *(f"removed ABI entry: {key}" for key in sorted(source_entries.keys() - target_entries.keys())),
+            *(f"added ABI entry: {key}" for key in sorted(target_entries.keys() - source_entries.keys())),
+            *(
+                f"changed ABI entry: {key}"
+                for key in sorted(source_entries.keys() & target_entries.keys())
+                if source_entries[key] != target_entries[key]
+            ),
+        ]
+    )
+
+
+def _method_identifier_diff(source: object, target: object) -> list[str]:
+    if source is None or target is None:
+        return []
+    source_methods = _canonical_method_identifiers(source)
+    target_methods = _canonical_method_identifiers(target)
+    if not isinstance(source_methods, dict) or not isinstance(target_methods, dict):
+        return []
+    return _limited_diff_lines(
+        [
+            *(f"removed selector: {key} = {source_methods[key]}" for key in sorted(source_methods.keys() - target_methods.keys())),
+            *(f"added selector: {key} = {target_methods[key]}" for key in sorted(target_methods.keys() - source_methods.keys())),
+            *(
+                f"changed selector: {key} {source_methods[key]} -> {target_methods[key]}"
+                for key in sorted(source_methods.keys() & target_methods.keys())
+                if source_methods[key] != target_methods[key]
+            ),
+        ]
+    )
+
+
+def _storage_layout_diff(
+    source: dict[str, tuple[int, str]] | None,
+    target: dict[str, tuple[int, str]] | None,
+) -> list[str]:
+    if source is None or target is None:
+        return []
+    return _limited_diff_lines(
+        [
+            *(f"removed storage: {name} slot {_slot_type(source[name])}" for name in sorted(source.keys() - target.keys())),
+            *(f"added storage: {name} slot {_slot_type(target[name])}" for name in sorted(target.keys() - source.keys())),
+            *(
+                f"changed storage: {name} slot {_slot_type(source[name])} -> {_slot_type(target[name])}"
+                for name in sorted(source.keys() & target.keys())
+                if source[name] != target[name]
+            ),
+        ]
+    )
+
+
+def _abi_entry_map(abi: object) -> dict[str, object]:
+    if not isinstance(abi, list):
+        return {}
+    return {_abi_entry_key(entry): entry for entry in abi if isinstance(entry, dict)}
+
+
+def _abi_entry_key(entry: dict[str, object]) -> str:
+    entry_type = str(entry.get("type", "unknown"))
+    if entry_type in {"function", "event", "error"}:
+        return f"{entry_type} {entry.get('name', '')}({_abi_input_types(entry)})"
+    return entry_type
+
+
+def _abi_input_types(entry: dict[str, object]) -> str:
+    inputs = entry.get("inputs")
+    if not isinstance(inputs, list):
+        return ""
+    return ", ".join(
+        str(item.get("type", "?")) if isinstance(item, dict) else "?"
+        for item in inputs
+    )
+
+
+def _slot_type(value: tuple[int, str]) -> str:
+    slot, type_name = value
+    return f"{slot} {type_name}"
+
+
+def _limited_diff_lines(lines: list[str]) -> list[str]:
+    if len(lines) <= MAX_ARTIFACT_DIFF_LINES:
+        return lines
+    shown = lines[:MAX_ARTIFACT_DIFF_LINES]
+    shown.append(f"... {len(lines) - MAX_ARTIFACT_DIFF_LINES} more")
+    return shown
 
 
 def _compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:

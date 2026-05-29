@@ -38,6 +38,9 @@ class FileReport:
     abi_equal: bool | None = None
     method_ids_equal: bool | None = None
     storage_layout_equal: bool | None = None
+    abi_diff: list[str] = field(default_factory=list)
+    method_id_diff: list[str] = field(default_factory=list)
+    storage_layout_diff: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,9 @@ class RunReport:
                         "abi_equal": file.abi_equal,
                         "method_ids_equal": file.method_ids_equal,
                         "storage_layout_equal": file.storage_layout_equal,
+                        "abi_diff": file.abi_diff,
+                        "method_id_diff": file.method_id_diff,
+                        "storage_layout_diff": file.storage_layout_diff,
                     },
                     "source_error": file.source_error,
                     "target_error": file.target_error,

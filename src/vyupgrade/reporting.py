@@ -122,10 +122,13 @@ def _render_text_file(file: FileReport) -> str:
         lines.extend(f"    {line}" for line in file.target_error.splitlines())
     if file.abi_equal is not None:
         lines.append(f"  ABI unchanged: {file.abi_equal}")
+        lines.extend(f"    {line}" for line in file.abi_diff)
     if file.method_ids_equal is not None:
         lines.append(f"  method IDs unchanged: {file.method_ids_equal}")
+        lines.extend(f"    {line}" for line in file.method_id_diff)
     if file.storage_layout_equal is not None:
         lines.append(f"  storage layout unchanged: {file.storage_layout_equal}")
+        lines.extend(f"    {line}" for line in file.storage_layout_diff)
     return "\n".join(lines) + "\n"
 
 
@@ -173,10 +176,13 @@ def _render_file(console: Console, file: FileReport) -> None:
             console.print(_indented(f"  {line}", "vy.error"))
     if file.abi_equal is not None:
         console.print(_bool_line("ABI unchanged", file.abi_equal))
+        _render_detail_lines(console, file.abi_diff)
     if file.method_ids_equal is not None:
         console.print(_bool_line("method IDs unchanged", file.method_ids_equal))
+        _render_detail_lines(console, file.method_id_diff)
     if file.storage_layout_equal is not None:
         console.print(_bool_line("storage layout unchanged", file.storage_layout_equal))
+        _render_detail_lines(console, file.storage_layout_diff)
 
 
 def _should_render_file(file: FileReport) -> bool:
@@ -210,6 +216,11 @@ def _bool_line(label: str, value: bool) -> Text:
 
 def _indented(value: str, style: str) -> Text:
     return Text(f"  {value}", style=style)
+
+
+def _render_detail_lines(console: Console, lines: list[str]) -> None:
+    for line in lines:
+        console.print(Text(f"    {line}", style="vy.warning"))
 
 
 def _group_items(

@@ -147,7 +147,10 @@ def test_render_rich_marks_success_warning_and_error_output() -> None:
         target_compile="failed",
         target_error="compiler failed",
         abi_equal=True,
+        method_ids_equal=False,
+        method_id_diff=["changed selector: f() 0x11111111 -> 0x22222222"],
         storage_layout_equal=False,
+        storage_layout_diff=["changed storage: balance slot 1 uint256 -> 0 uint256"],
     )
     report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
     stream = StringIO()
@@ -168,4 +171,6 @@ def test_render_rich_marks_success_warning_and_error_output() -> None:
     assert "target compile: \x1b[1;31mfailed" in text
     assert "VYD001 warning message (line 1)" in text
     assert "VYD002 error message (line 2)" in text
+    assert "changed selector: f() 0x11111111 -> 0x22222222" in text
     assert "storage layout unchanged: \x1b[33mFalse" in text
+    assert "changed storage: balance slot 1 uint256 -> 0 uint256" in text
