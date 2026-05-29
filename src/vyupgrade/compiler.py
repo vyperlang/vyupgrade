@@ -136,10 +136,11 @@ def compare_artifact_details(
     target_methods = target.artifacts.get("method_identifiers")
     source_layout = _canonical_storage_layout(source.artifacts.get("layout"))
     target_layout = _canonical_storage_layout(target.artifacts.get("layout"))
+    target_transient_layout = _canonical_transient_storage_layout(target.artifacts.get("layout"))
     return (
         _abi_diff(source_abi, target_abi),
         _method_identifier_diff(source_methods, target_methods),
-        _storage_layout_diff(source_layout, target_layout),
+        _storage_layout_diff(source_layout, target_layout, target_transient_layout),
     )
 
 
@@ -195,6 +196,24 @@ def _canonical_storage_layout(layout: object) -> dict[str, tuple[int, str]] | No
         if not isinstance(name, str) or not isinstance(value, dict):
             continue
         if value.get("location", "storage") != "storage":
+            continue
+        slot = value.get("slot")
+        type_name = value.get("type")
+        if not isinstance(slot, int) or not isinstance(type_name, str):
+            continue
+        normalized[name] = (slot, _canonical_storage_type(type_name))
+    return normalized
+
+
+def _canonical_transient_storage_layout(layout: object) -> dict[str, tuple[int, str]]:
+    if not isinstance(layout, dict):
+        return {}
+    transient = layout.get("transient_storage_layout")
+    if not isinstance(transient, dict):
+        return {}
+    normalized: dict[str, tuple[int, str]] = {}
+    for name, value in transient.items():
+        if not isinstance(name, str) or not isinstance(value, dict):
             continue
         slot = value.get("slot")
         type_name = value.get("type")
@@ -261,13 +280,21 @@ def _method_identifier_diff(source: object, target: object) -> list[str]:
 def _storage_layout_diff(
     source: dict[str, tuple[int, str]] | None,
     target: dict[str, tuple[int, str]] | None,
+    target_transient: dict[str, tuple[int, str]] | None = None,
 ) -> list[str]:
     if source is None or target is None:
         return []
+    target_transient = target_transient or {}
+    moved_locks = _moved_nonreentrant_locks(source, target, target_transient)
+    moved_lock_names = set(moved_locks)
     return [
         *(
+            f"moved storage to transient: {name} slot {_slot_type(source[name])} -> {target_name} slot {_slot_type(target_transient[target_name])}"
+            for name, target_name in moved_locks.items()
+        ),
+        *(
             f"removed storage: {name} slot {_slot_type(source[name])}"
-            for name in sorted(source.keys() - target.keys())
+            for name in sorted((source.keys() - target.keys()) - moved_lock_names)
         ),
         *(
             f"added storage: {name} slot {_slot_type(target[name])}"
@@ -279,6 +306,29 @@ def _storage_layout_diff(
             if source[name] != target[name]
         ),
     ]
+
+
+def _moved_nonreentrant_locks(
+    source: dict[str, tuple[int, str]],
+    target: dict[str, tuple[int, str]],
+    target_transient: dict[str, tuple[int, str]],
+) -> dict[str, str]:
+    transient_locks = [
+        name
+        for name, value in sorted(target_transient.items())
+        if value[1] == "nonreentrant lock"
+    ]
+    if not transient_locks:
+        return {}
+    moved: dict[str, str] = {}
+    target_name = transient_locks[0]
+    for name, value in sorted(source.items()):
+        if name in target:
+            continue
+        if not name.startswith("nonreentrant.") or value[1] != "nonreentrant lock":
+            continue
+        moved[name] = target_name
+    return moved
 
 
 def _abi_entry_map(abi: object) -> dict[str, object]:

@@ -446,6 +446,42 @@ def test_compare_artifacts_flags_real_storage_slot_shift() -> None:
     assert compare_artifacts(source, target) == (None, None, False)
 
 
+def test_compare_artifact_details_reports_nonreentrant_lock_moved_to_transient_storage() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                },
+                "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "balance": {"slot": 0, "type": "uint256", "n_slots": 1},
+                },
+                "transient_storage_layout": {
+                    "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock", "n_slots": 1},
+                },
+            }
+        },
+    )
+
+    _abi_diff, _method_diff, storage_diff = compare_artifact_details(source, target)
+
+    assert storage_diff == [
+        "moved storage to transient: nonreentrant.lock slot 0 nonreentrant lock -> $.nonreentrant_key slot 0 nonreentrant lock",
+        "changed storage: balance slot 1 uint256 -> 0 uint256",
+    ]
+
+
 def test_compare_artifact_details_reports_changed_selectors_and_storage() -> None:
     source = CompileResult(
         "passed",
