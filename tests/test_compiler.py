@@ -129,6 +129,19 @@ def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
     assert calls[0][calls[0].index("-W") + 1] == "none"
 
 
+def test_compile_reports_timeout_as_failure(monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),)))
+
+    assert result.status == "failed"
+    assert result.stderr == "compiler timed out after 120 seconds"
+    assert result.command is not None
+
+
 def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.4.3\n", encoding="utf-8")

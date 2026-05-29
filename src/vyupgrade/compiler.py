@@ -17,6 +17,7 @@ from .versions import VyperVersion, compiler_version_for_spec, infer_pragma, par
 
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
+COMPILE_TIMEOUT_SECONDS = 120
 
 
 @dataclass
@@ -181,7 +182,10 @@ def _run_compile_with_formats(
     if suppress_warnings:
         full.extend(["-W", "none"])
     full.append(str(path))
-    proc = subprocess.run(full, capture_output=True, text=True, timeout=60)
+    try:
+        proc = subprocess.run(full, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return CompileResult("failed", stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds", command=full)
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or proc.stdout.strip()
         if "Unsupported format type 'layout'" in stderr and "layout" in formats:

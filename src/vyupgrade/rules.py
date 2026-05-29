@@ -1432,13 +1432,26 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
 def _constant_exponent_literals(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY054", config, context):
         return source, [], []
-    constant_values = _integer_constant_values(source, config.source_ast)
-    if not constant_values:
-        return source, [], []
-
+    facts = parse_source_facts(source)
     mask = code_mask(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
+    max_int128_re = re.compile(r"(?<![\w])(?:\(\s*)?2\s*\*\*\s*127\s*-\s*1(?:\s*\))?")
+    for match in max_int128_re.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()) or not _int128_literal_context(source, match.start(), facts):
+            continue
+        replacement = "max_value(int128)"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY054",
+                line_number(source, match.start()),
+                "replaced signed int128 max literal",
+                match.group(0),
+                replacement,
+            )
+        )
+    constant_values = _integer_constant_values(source, config.source_ast)
     for name, value in constant_values.items():
         if value < 0:
             continue
@@ -1461,6 +1474,20 @@ def _constant_exponent_literals(source: str, config: Config, context: MigrationC
             )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool:
+    line_no = line_number(source, index)
+    return_type = facts.return_type_at_line(line_no)
+    if normalize_type(return_type or "") == "int128":
+        return True
+    line_start = source.rfind("\n", 0, index) + 1
+    line_end = source.find("\n", index)
+    if line_end == -1:
+        line_end = len(source)
+    line = source[line_start:line_end]
+    vars_for_line = facts.vars_at_line(line_no)
+    return normalize_type(_lhs_declared_type(line) or _lhs_assigned_type(line, vars_for_line) or "") == "int128"
 
 
 def _dynamic_pow_mod256(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:

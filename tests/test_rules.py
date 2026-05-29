@@ -1080,6 +1080,24 @@ MAX_A: constant(uint256) = N_COINS**N_COINS * 1000
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
+def test_int128_max_literal_rewrites_to_max_value() -> None:
+    source = """# @version 0.3.10
+@external
+def pos(i: int128) -> int128:
+    return (2**127-1) + i
+
+@external
+def neg(i: int128) -> int128:
+    return i - (2 ** 127 - 1)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return max_value(int128) + i" in result.source
+    assert "return i - max_value(int128)" in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
+
+
 def test_dynamic_uint_exponent_rewrites_to_pow_mod256() -> None:
     source = """# @version 0.3.10
 @external
