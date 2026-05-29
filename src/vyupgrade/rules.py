@@ -4081,9 +4081,7 @@ def _lhs_assigned_type(line: str, vars_for_line: dict[str, str]) -> str | None:
 def _is_unsigned_integer_type(type_name: str | None) -> bool:
     if type_name is None:
         return False
-    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name.strip())
-    if wrapper:
-        type_name = wrapper.group(1).strip()
+    type_name = unwrap_type(type_name)
     return bool(
         re.fullmatch(
             r"uint(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?",
@@ -4095,9 +4093,7 @@ def _is_unsigned_integer_type(type_name: str | None) -> bool:
 def _is_signed_integer_type(type_name: str | None) -> bool:
     if type_name is None:
         return False
-    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name.strip())
-    if wrapper:
-        type_name = wrapper.group(1).strip()
+    type_name = unwrap_type(type_name)
     return bool(
         re.fullmatch(
             r"int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?",

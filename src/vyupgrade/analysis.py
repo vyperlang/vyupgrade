@@ -18,6 +18,7 @@ INTERFACE_RE = re.compile(r"^interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:
 STRUCT_RE = re.compile(r"^struct\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
 FLAG_RE = re.compile(r"^(?:enum|flag)\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
 EVENT_RE = re.compile(r"^event\s+[A-Za-z_][A-Za-z0-9_]*:\s*$")
+TYPE_WRAPPER_RE = re.compile(r"(?:public|constant|immutable)\((.+)\)$")
 
 
 INTERFACE_ALIASES = (
@@ -497,21 +498,18 @@ def _line_starts_inside_string(source: str, mask: list[bool], line_start: int) -
 def is_integer_type(type_name: str | None) -> bool:
     if type_name is None:
         return False
-    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name.strip())
-    if wrapper:
-        type_name = wrapper.group(1)
+    type_name = unwrap_type(type_name)
     return bool(INT_TYPE_RE.match(type_name))
 
 
 def normalize_type(type_name: str) -> str:
     type_name = type_name.split("[", 1)[0].strip()
-    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name)
-    return wrapper.group(1).strip() if wrapper else type_name
+    return unwrap_type(type_name)
 
 
 def unwrap_type(type_name: str) -> str:
     type_name = type_name.strip()
-    wrapper = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name)
+    wrapper = TYPE_WRAPPER_RE.match(type_name)
     return wrapper.group(1).strip() if wrapper else type_name
 
 
@@ -781,7 +779,7 @@ def _strip_inline_comment(line: str) -> str:
 
 
 def _unwrap_public_or_constant(type_name: str) -> str | None:
-    match = re.match(r"(?:public|constant|immutable)\((.+)\)$", type_name)
+    match = TYPE_WRAPPER_RE.match(type_name)
     if match:
         return match.group(1).strip()
     if TYPE_NAME_RE.fullmatch(type_name):
@@ -790,7 +788,7 @@ def _unwrap_public_or_constant(type_name: str) -> str | None:
 
 
 def _looks_like_type(type_name: str) -> bool:
-    if re.fullmatch(r"(?:public|constant|immutable)\(.+\)", type_name):
+    if TYPE_WRAPPER_RE.fullmatch(type_name):
         return True
     if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):
         return True
