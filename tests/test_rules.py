@@ -2773,6 +2773,19 @@ def run(user: address):
     assert "extcall Controller(self.controller).liquidate(user)" in result.source
 
 
+def test_shifted_method_id_uses_bytes4_output_type() -> None:
+    source = """# pragma version 0.3.1
+@external
+def f() -> uint256:
+    return convert(method_id("callback(address)", output_type=bytes32), uint256) << 224
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert 'method_id("callback(address)")' in result.source
+    assert "output_type=bytes32" not in result.source
+
+
 def test_struct_array_interface_call_gets_keyword() -> None:
     source = """# pragma version 0.3.10
 interface ERC20:

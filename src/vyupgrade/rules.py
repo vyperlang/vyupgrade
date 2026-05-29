@@ -845,6 +845,8 @@ def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext
     if _enabled("VY209", config, context):
         current, new_fixes = _rewrite_method_id_bytes32_comparisons(current)
         fixes.extend(new_fixes)
+        current, new_fixes = _rewrite_method_id_shift_output_type(current)
+        fixes.extend(new_fixes)
         current, new_fixes = _remove_call_keyword_arg(current, "method_id", "output_type", "bytes4", "VY209")
         fixes.extend(new_fixes)
     return current, fixes, []
@@ -4355,6 +4357,57 @@ def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]
                 "converted bytes32 method_id comparison to bytes4",
                 source[expr_start : close + 1],
                 f"{replacement} == {source[match.start() : close + 1].replace('output_type=bytes32', 'output_type=bytes4')}",
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\bmethod_id\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        open_index = source.find("(", match.start())
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        line_end = source.find("\n", close)
+        if line_end == -1:
+            line_end = len(source)
+        after_call = source[close:line_end]
+        if "convert(" not in source[line_start : match.start()] or not (
+            re.search(r"\)\s*(?:<<|>>)\s*\d+", after_call)
+            or re.search(r",\s*uint256\s*\)\s*,\s*\d+\s*\)", after_call)
+        ):
+            continue
+        raw_args = source[open_index + 1 : close]
+        arg_spans = _split_top_level_arg_spans(raw_args)
+        if arg_spans is None:
+            continue
+        output_value_span: tuple[int, int] | None = None
+        for arg_start, arg_end, arg in arg_spans:
+            name, sep, raw_value = arg.partition("=")
+            if not sep or name.strip() != "output_type" or raw_value.strip() != "bytes32":
+                continue
+            value_start = arg_start + arg.index(raw_value) + len(raw_value) - len(raw_value.lstrip())
+            value_end = value_start + len(raw_value.strip())
+            output_value_span = (open_index + 1 + value_start, open_index + 1 + value_end)
+            break
+        if output_value_span is None:
+            continue
+        edits.append(TextEdit(output_value_span[0], output_value_span[1], "bytes4"))
+        before = source[line_start:line_end].strip()
+        after = before.replace("output_type=bytes32", "output_type=bytes4").replace("output_type = bytes32", "output_type = bytes4")
+        fixes.append(
+            Fix(
+                "VY209",
+                line_number(source, match.start()),
+                "changed shifted method_id output type to bytes4",
+                before,
+                after,
             )
         )
     return apply_edits(source, edits), fixes
