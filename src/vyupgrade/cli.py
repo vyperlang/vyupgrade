@@ -18,7 +18,12 @@ from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
 from .rules import apply_rules
-from .versions import MigrationContext, infer_pragma
+from .versions import (
+    MigrationContext,
+    compiler_version_for_spec,
+    default_evm_version_for_spec,
+    infer_pragma,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,9 +220,32 @@ def _add_validation_diagnostics(file_report: FileReport, source_version: str | N
         file_report.diagnostics.append(Diagnostic("VYD007", 1, "method identifiers changed after migration"))
     if file_report.storage_layout_equal is False:
         file_report.diagnostics.append(Diagnostic("VYD008", 1, "storage layout changed after migration"))
-    context = MigrationContext.from_specs(source_version, config.target_version)
-    if context.crosses("0.4.0"):
-        file_report.diagnostics.append(Diagnostic("VYD009", 1, "target compiler default EVM version differs from source-era default; review or pin explicitly"))
+    evm_diagnostic = _evm_default_diagnostic(source_version, config.target_version)
+    if evm_diagnostic is not None:
+        file_report.diagnostics.append(evm_diagnostic)
+
+
+def _evm_default_diagnostic(source_version: str | None, target_version: str) -> Diagnostic | None:
+    source_evm = default_evm_version_for_spec(source_version)
+    target_evm = default_evm_version_for_spec(target_version)
+    if source_evm is not None and target_evm is not None:
+        if source_evm == target_evm:
+            return None
+        source_compiler = compiler_version_for_spec(source_version) or "unknown"
+        target_compiler = compiler_version_for_spec(target_version) or target_version
+        return Diagnostic(
+            "VYD009",
+            1,
+            f"default EVM version changed from {source_evm} (source compiler {source_compiler}) to {target_evm} (target compiler {target_compiler}); review or pin explicitly",
+        )
+    context = MigrationContext.from_specs(source_version, target_version)
+    if not context.crosses("0.4.0"):
+        return None
+    if target_evm is not None:
+        message = f"target compiler defaults to EVM {target_evm}; source-era default is unknown; review or pin explicitly"
+    else:
+        message = "target compiler default EVM version differs from source-era default; review or pin explicitly"
+    return Diagnostic("VYD009", 1, message)
 
 
 def _run_mamushi(paths: list[Path], report: RunReport) -> None:

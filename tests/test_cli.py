@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from vyupgrade.cli import main
+from vyupgrade.cli import _evm_default_diagnostic, main
 
 
 def test_check_mode_reports_changes(tmp_path: Path) -> None:
@@ -104,3 +104,22 @@ def __init__():
     assert code in {1, 2, 3}
     fixes = json.loads(report.read_text())["files"][0]["fixes"]
     assert {fix["rule"] for fix in fixes} == {"VY001"}
+
+
+def test_evm_default_diagnostic_reports_exact_change() -> None:
+    diagnostic = _evm_default_diagnostic("0.3.7", "0.4.3")
+
+    assert diagnostic is not None
+    assert diagnostic.rule == "VYD009"
+    assert diagnostic.message == (
+        "default EVM version changed from paris (source compiler 0.3.7) "
+        "to prague (target compiler 0.4.3); review or pin explicitly"
+    )
+
+
+def test_evm_default_diagnostic_tracks_patch_level_default_changes() -> None:
+    diagnostic = _evm_default_diagnostic("0.4.2", "0.4.3")
+
+    assert diagnostic is not None
+    assert "cancun (source compiler 0.4.2) to prague (target compiler 0.4.3)" in diagnostic.message
+    assert _evm_default_diagnostic("0.4.0", "0.4.2") is None

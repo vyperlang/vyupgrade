@@ -97,6 +97,27 @@ def compiler_version_for_spec(spec: str | None) -> str | None:
     return str(version) if version else None
 
 
+def default_evm_version_for_spec(spec: str | None) -> str | None:
+    version = parse_version(compiler_version_for_spec(spec))
+    return default_evm_version(version)
+
+
+def default_evm_version(version: VyperVersion | None) -> str | None:
+    if version is None:
+        return None
+    if version < VyperVersion(0, 2, 12):
+        return "istanbul"
+    if version < VyperVersion(0, 3, 7):
+        return "berlin"
+    if version < VyperVersion(0, 3, 8):
+        return "paris"
+    if version < VyperVersion(0, 4, 0):
+        return "shanghai"
+    if version < VyperVersion(0, 4, 3):
+        return "cancun"
+    return "prague"
+
+
 def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
     if not spec:
         return ()

@@ -4,6 +4,7 @@ from vyupgrade.versions import (
     MigrationContext,
     VyperVersion,
     compiler_version_for_spec,
+    default_evm_version_for_spec,
     is_supported_source_version,
     known_versions_satisfying,
     minimum_satisfying_version,
@@ -34,3 +35,12 @@ def test_migration_context_tracks_patch_level_crossings() -> None:
     assert older.crosses("0.4.2")
     assert not current.crosses("0.4.2")
     assert not below_target.crosses("0.4.2")
+
+
+def test_default_evm_versions_track_vyper_release_defaults() -> None:
+    assert default_evm_version_for_spec("0.2.4") == "istanbul"
+    assert default_evm_version_for_spec("0.2.12") == "berlin"
+    assert default_evm_version_for_spec("0.3.7") == "paris"
+    assert default_evm_version_for_spec("0.3.10") == "shanghai"
+    assert default_evm_version_for_spec("0.4.2") == "cancun"
+    assert default_evm_version_for_spec("0.4.3") == "prague"
