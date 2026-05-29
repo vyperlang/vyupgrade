@@ -56,7 +56,9 @@ the supported range.
 - `@internal` became optional: no-op. Existing `@internal` source remains valid.
 - External calls require keywords: `VY040` adds `extcall`; `VY041` adds
   `staticcall`. `VY042` parenthesizes keyworded calls before subscripting.
-  `VYD003` flags calls whose mutability cannot be inferred.
+  `VY057` assigns ignored `staticcall` results to a generated local variable
+  when the interface return type is known. `VYD003` flags calls whose mutability
+  cannot be inferred.
 - Integer division uses `//`: `VY050` rewrites proven integer division.
   `VYD004` flags ambiguous `/` expressions.
 - Redundant integer `convert(...)` calls rejected by modern Vyper: `VY051`

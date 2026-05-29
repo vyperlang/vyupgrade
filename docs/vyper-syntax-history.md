@@ -200,11 +200,13 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0>
   ```vyper
   token.transfer(to, amount)
   balance: uint256 = token.balanceOf(self)
+  checker.ping(msg.sender)
   ```
   After:
   ```vyper
   extcall token.transfer(to, amount)
   balance: uint256 = staticcall token.balanceOf(self)
+  _unused: uint256 = staticcall checker.ping(msg.sender)
   ```
 - Integer division uses `//`; `/` is banned for integers. [#2937](https://github.com/vyperlang/vyper/pull/2937)
   Before:

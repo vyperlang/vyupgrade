@@ -98,6 +98,72 @@ def f(vault: address) -> uint256:
     assert "return staticcall IERC4626(vault).convertToAssets(10**18)" in result.source
 
 
+def test_ignored_external_call_result_is_assigned() -> None:
+    source = """# @version 0.3.10
+interface VeDelegation:
+    def adjusted_balance_of(_account: address) -> uint256: view
+
+@external
+def set_delegation(delegation: address):
+    VeDelegation(delegation).adjusted_balance_of(msg.sender)  # validation call
+"""
+
+    result = apply_rules(source, config())
+
+    assert "__vyupgrade_discard_7: uint256 = staticcall VeDelegation(delegation).adjusted_balance_of(msg.sender)  # validation call" in result.source
+    assert any(fix.rule == "VY057" for fix in result.fixes)
+
+
+def test_ignored_external_call_without_return_stays_statement() -> None:
+    source = """# @version 0.3.10
+interface Token:
+    def transfer(receiver: address, amount: uint256): nonpayable
+
+@external
+def f(token: address, receiver: address):
+    Token(token).transfer(receiver, 1)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "extcall Token(token).transfer(receiver, 1)" in result.source
+    assert "__vyupgrade_discard" not in result.source
+
+
+def test_external_call_inside_multiline_expression_is_not_discard_assigned() -> None:
+    source = """# @version 0.3.10
+interface Strategy:
+    def maxRedeem(owner: address) -> uint256: view
+    def convertToAssets(shares: uint256) -> uint256: view
+
+@external
+def f(strategy: address) -> uint256:
+    return Strategy(strategy).convertToAssets(
+        Strategy(strategy).maxRedeem(self)
+    )
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall Strategy(strategy).maxRedeem(self)" in result.source
+    assert "__vyupgrade_discard" not in result.source
+
+
+def test_ignored_staticcall_array_result_keeps_full_return_type() -> None:
+    source = """# @version 0.3.10
+interface Synth:
+    def settle(key: bytes32) -> uint256[3]: view
+
+@external
+def f(target: address, key: bytes32):
+    Synth(target).settle(key)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "__vyupgrade_discard_7: uint256[3] = staticcall Synth(target).settle(key)" in result.source
+
+
 def test_nested_struct_literals_rewrite_without_overlapping_edits() -> None:
     source = """# @version 0.3.10
 struct TokenPermissions:
@@ -1636,9 +1702,25 @@ def f():
 
     result = apply_rules(source, config())
 
-    assert "range(i, i + MAX_COINS, bound=MAX_COINS)" in result.source
+    assert "range(i, i + MAX_COINS, bound=8)" in result.source
     assert "for i: int128 in range" in result.source
     assert "for x: int128 in range" in result.source
+
+
+def test_unsigned_range_bound_does_not_convert_existing_bound_keyword() -> None:
+    source = """# @version 0.3.10
+MAX_COINS: constant(int128) = 8
+
+@external
+def f(i2: uint256):
+    for x: uint256 in range(i2, i2 + MAX_COINS, bound=MAX_COINS):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(i2, i2 + convert(MAX_COINS, uint256), bound=MAX_COINS)" in result.source
+    assert "bound=convert(MAX_COINS, uint256)" not in result.source
 
 
 def test_range_loop_type_ignores_bound_keyword() -> None:

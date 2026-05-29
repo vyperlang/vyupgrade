@@ -15,6 +15,7 @@ from .analysis import (
     iterable_element_type,
     normalize_type,
     parse_source_facts,
+    unwrap_type,
 )
 from .models import Config, Diagnostic, Fix
 from .source import (
@@ -74,6 +75,7 @@ RULE_CHANGES = {
     "VY054": RuleChange(VyperVersion(0, 4, 0)),
     "VY055": RuleChange(VyperVersion(0, 4, 0)),
     "VY056": RuleChange(VyperVersion(0, 4, 0)),
+    "VY057": RuleChange(VyperVersion(0, 4, 0)),
     "VY060": RuleChange(VyperVersion(0, 4, 0)),
     "VY070": RuleChange(VyperVersion(0, 4, 0)),
     "VY071": RuleChange(VyperVersion(0, 4, 0)),
@@ -148,6 +150,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _typed_range_loops,
         _external_call_keywords,
         _external_call_subscripts,
+        _ignored_external_call_results,
         _integer_division,
         _constant_exponent_literals,
         _mixed_signed_unsigned_arithmetic,
@@ -339,6 +342,44 @@ def _strip_arg_comments(raw_args: str) -> str:
         if line.strip():
             lines.append(line)
     return "\n".join(lines)
+
+
+def _split_top_level_arg_spans(text: str) -> list[tuple[int, int, str]] | None:
+    spans: list[tuple[int, int, str]] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    for index, char in enumerate(text):
+        if quote is not None:
+            if char == "\\":
+                continue
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "," and depth == 0:
+            _append_arg_span(spans, text, start, index)
+            start = index + 1
+    if depth != 0 or quote is not None:
+        return None
+    _append_arg_span(spans, text, start, len(text))
+    return spans
+
+
+def _append_arg_span(spans: list[tuple[int, int, str]], text: str, start: int, end: int) -> None:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    if start < end:
+        spans.append((start, end, text[start:end]))
 
 
 def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -1059,6 +1100,111 @@ def _external_call_expression_end(source: str, start: int) -> int | None:
     return None if close is None else close + 1
 
 
+def _ignored_external_call_results(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY057", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    taken_names = _code_identifiers(source)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    offset = 0
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line.rstrip("\n")
+        line_no = line_number(source, offset)
+        code_part, comment_part = _split_inline_comment_preserving_strings(line)
+        stripped = code_part.strip()
+        if not stripped.startswith("staticcall ") or _delimiter_depth_before(source, offset) != 0:
+            offset += len(raw_line)
+            continue
+        indent = code_part[: len(code_part) - len(code_part.lstrip(" \t"))]
+        expr_start = offset + len(indent)
+        keyword_match = re.match(r"(?:staticcall|extcall)\s+", source[expr_start:])
+        if keyword_match is None:
+            offset += len(raw_line)
+            continue
+        expr_end = _external_call_expression_end(source, expr_start + keyword_match.end())
+        if expr_end is None or source[expr_end : offset + len(code_part)].strip():
+            offset += len(raw_line)
+            continue
+        expr = source[expr_start:expr_end]
+        expr_type = infer_expr_type(expr, facts.vars_at_line(line_no), facts)
+        if expr_type is None:
+            offset += len(raw_line)
+            continue
+        name = _discard_assignment_name(line_no, taken_names)
+        replacement = f"{indent}{name}: {unwrap_type(expr_type)} = {expr}{comment_part}"
+        edits.append(TextEdit(offset, offset + len(line), replacement))
+        fixes.append(
+            Fix(
+                "VY057",
+                line_no,
+                "assigned ignored external call result",
+                line,
+                replacement,
+            )
+        )
+        offset += len(raw_line)
+    return apply_edits(source, edits), fixes, []
+
+
+def _delimiter_depth_before(source: str, end: int) -> int:
+    mask = code_mask(source[:end])
+    depth = 0
+    for index, char in enumerate(source[:end]):
+        if not mask[index]:
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}" and depth > 0:
+            depth -= 1
+    return depth
+
+
+def _code_identifiers(source: str) -> set[str]:
+    mask = code_mask(source)
+    return {
+        match.group(0)
+        for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source)
+        if span_is_code(mask, match.start(), match.end())
+    }
+
+
+def _discard_assignment_name(line_no: int, taken_names: set[str]) -> str:
+    base = f"__vyupgrade_discard_{line_no}"
+    candidate = base
+    suffix = 2
+    while candidate in taken_names:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    taken_names.add(candidate)
+    return candidate
+
+
+def _split_inline_comment_preserving_strings(line: str) -> tuple[str, str]:
+    quote: str | None = None
+    i = 0
+    while i < len(line):
+        char = line[i]
+        if quote is not None:
+            if char == "\\":
+                i += 2
+                continue
+            if char == quote:
+                quote = None
+            i += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            i += 1
+            continue
+        if char == "#":
+            code = line[:i].rstrip()
+            spacer = "  " if code else ""
+            return code, spacer + line[i:]
+        i += 1
+    return line, ""
+
+
 def _integer_division(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _any_enabled({"VY050", "VYD004"}, config, context):
         return source, [], []
@@ -1407,6 +1553,15 @@ def _unsigned_range_bound_signed_constants(source: str, config: Config, context:
             continue
         args_start = match.end()
         args = source[args_start:close]
+        arg_spans = _split_top_level_arg_spans(args)
+        if arg_spans is None:
+            continue
+        positional_spans = [
+            (start, end, arg)
+            for start, end, arg in arg_spans
+            if not re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*=", arg)
+        ]
+        has_bound_keyword = any(re.match(r"bound\s*=", arg) for _start, _end, arg in arg_spans)
         line_no = line_number(source, match.start())
         vars_for_line = facts.vars_at_line(line_no)
         converted = False
@@ -1414,6 +1569,8 @@ def _unsigned_range_bound_signed_constants(source: str, config: Config, context:
             if not _is_signed_integer_type(type_name):
                 continue
             for name_match in re.finditer(rf"\b{re.escape(name)}\b", args):
+                if not any(start <= name_match.start() and name_match.end() <= end for start, end, _arg in positional_spans):
+                    continue
                 start = args_start + name_match.start()
                 end = args_start + name_match.end()
                 if _inside_convert_call(source, start) or not span_is_code(mask, start, end):
@@ -1430,8 +1587,8 @@ def _unsigned_range_bound_signed_constants(source: str, config: Config, context:
                         replacement,
                     )
                 )
-        if converted and "bound=" not in args:
-            bound = _constant_range_iteration_bound(args, constant_values)
+        if converted and not has_bound_keyword:
+            bound = _constant_range_iteration_bound(", ".join(arg for _start, _end, arg in positional_spans), constant_values)
             if bound is not None:
                 replacement = f", bound={bound}"
                 edits.append(TextEdit(close, close, replacement))
@@ -2041,7 +2198,7 @@ def _range_bound(source: str, config: Config, context: MigrationContext) -> tupl
             continue
         if _literal_integer(args[0]) and _literal_integer(args[1]):
             continue
-        bound = _infer_range_bound(args[0], args[1])
+        bound = _infer_range_bound(args[0], args[1], _integer_constant_values(source))
         if bound is None:
             diagnostics.append(
                 Diagnostic(
@@ -2381,17 +2538,28 @@ def _multiline_integer_division_assignment_context(
     return False
 
 
-def _infer_range_bound(start: str, stop: str) -> str | None:
+def _infer_range_bound(start: str, stop: str, values: dict[str, int] | None = None) -> str | None:
     start = start.strip()
     stop = stop.strip()
+    values = values or {}
     escaped = re.escape(start)
     plus_match = re.fullmatch(rf"{escaped}\s*\+\s*([A-Za-z_][A-Za-z0-9_]*|(?:\d|_)+)", stop)
     if plus_match:
-        return plus_match.group(1)
+        return _range_bound_literal(plus_match.group(1), values)
     minus_match = re.fullmatch(rf"{escaped}\s*-\s*([A-Za-z_][A-Za-z0-9_]*|(?:\d|_)+)", stop)
     if minus_match:
-        return minus_match.group(1)
+        return _range_bound_literal(minus_match.group(1), values)
     return None
+
+
+def _range_bound_literal(value: str, values: dict[str, int]) -> str | None:
+    value = value.strip()
+    if _literal_integer(value):
+        return value
+    constant = values.get(value)
+    if constant is None or constant < 0:
+        return None
+    return str(constant)
 
 
 def _literal_integer(value: str) -> bool:
