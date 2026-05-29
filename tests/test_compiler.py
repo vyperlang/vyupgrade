@@ -435,6 +435,61 @@ def test_compare_artifact_details_ignores_constructor_selector() -> None:
     assert method_diff == []
 
 
+def test_compare_artifact_details_reports_abi_output_shape_changes() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "points_sum",
+                    "stateMutability": "view",
+                    "inputs": [
+                        {"name": "arg0", "type": "int128"},
+                        {"name": "arg1", "type": "uint256"},
+                    ],
+                    "outputs": [
+                        {"name": "bias", "type": "uint256"},
+                        {"name": "slope", "type": "uint256"},
+                    ],
+                }
+            ],
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "points_sum",
+                    "stateMutability": "view",
+                    "inputs": [
+                        {"name": "arg0", "type": "int128"},
+                        {"name": "arg1", "type": "uint256"},
+                    ],
+                    "outputs": [
+                        {
+                            "name": "",
+                            "type": "tuple",
+                            "components": [
+                                {"name": "bias", "type": "uint256"},
+                                {"name": "slope", "type": "uint256"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    abi_diff, _method_diff, _storage_diff = compare_artifact_details(source, target)
+
+    assert abi_diff == [
+        "changed ABI entry: function points_sum(int128, uint256): outputs (bias: uint256, slope: uint256) -> (tuple(bias: uint256, slope: uint256))",
+    ]
+
+
 def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
     source = CompileResult(
         "passed",

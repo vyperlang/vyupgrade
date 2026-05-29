@@ -237,7 +237,7 @@ def _abi_diff(source: object, target: object) -> list[str]:
         return []
     source_entries = _abi_entry_map(_canonical_abi(source))
     target_entries = _abi_entry_map(_canonical_abi(target))
-    return [
+    lines = [
         *(
             f"removed ABI entry: {key}"
             for key in sorted(source_entries.keys() - target_entries.keys())
@@ -246,12 +246,54 @@ def _abi_diff(source: object, target: object) -> list[str]:
             f"added ABI entry: {key}"
             for key in sorted(target_entries.keys() - source_entries.keys())
         ),
-        *(
-            f"changed ABI entry: {key}"
-            for key in sorted(source_entries.keys() & target_entries.keys())
-            if source_entries[key] != target_entries[key]
-        ),
     ]
+    for key in sorted(source_entries.keys() & target_entries.keys()):
+        if source_entries[key] == target_entries[key]:
+            continue
+        details = _abi_entry_diff(source_entries[key], target_entries[key])
+        if not details:
+            lines.append(f"changed ABI entry: {key}")
+            continue
+        lines.extend(f"changed ABI entry: {key}: {detail}" for detail in details)
+    return lines
+
+
+def _abi_entry_diff(source: object, target: object) -> list[str]:
+    if not isinstance(source, dict) or not isinstance(target, dict):
+        return []
+    details: list[str] = []
+    for field, label in (
+        ("inputs", "inputs"),
+        ("outputs", "outputs"),
+    ):
+        if source.get(field) != target.get(field):
+            details.append(
+                f"{label} {_format_abi_params(source.get(field))} -> {_format_abi_params(target.get(field))}"
+            )
+    for field in ("stateMutability", "anonymous"):
+        if source.get(field) != target.get(field):
+            details.append(f"{field} {source.get(field)!r} -> {target.get(field)!r}")
+    if details:
+        return details
+    return [f"{json.dumps(source, sort_keys=True)} -> {json.dumps(target, sort_keys=True)}"]
+
+
+def _format_abi_params(value: object) -> str:
+    if not isinstance(value, list):
+        return str(value)
+    if not value:
+        return "()"
+    return "(" + ", ".join(_format_abi_param(item) for item in value) + ")"
+
+
+def _format_abi_param(value: object) -> str:
+    if not isinstance(value, dict):
+        return str(value)
+    type_name = str(value.get("type", "?"))
+    if type_name == "tuple":
+        type_name = f"tuple{_format_abi_params(value.get('components'))}"
+    name = value.get("name")
+    return f"{name}: {type_name}" if isinstance(name, str) and name else type_name
 
 
 def _method_identifier_diff(source: object, target: object) -> list[str]:
