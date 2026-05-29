@@ -149,6 +149,28 @@ def f(strategy: address) -> uint256:
     assert "__vyupgrade_discard" not in result.source
 
 
+def test_external_call_in_backslash_assignment_is_not_discard_assigned() -> None:
+    source = """# @version 0.3.10
+interface Feed:
+    def latestRoundData() -> (uint256, int256, uint256, uint256, uint256): view
+
+@external
+def f(feed: address):
+    round_id: uint256 = 0
+    answer: int256 = 0
+    started_at: uint256 = 0
+    updated_at: uint256 = 0
+    answered_in_round: uint256 = 0
+    (round_id, answer, started_at, updated_at, answered_in_round) = \\
+        Feed(feed).latestRoundData()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "staticcall Feed(feed).latestRoundData()" in result.source
+    assert "__vyupgrade_discard" not in result.source
+
+
 def test_ignored_staticcall_array_result_keeps_full_return_type() -> None:
     source = """# @version 0.3.10
 interface Synth:
@@ -1296,6 +1318,38 @@ def f(i: int128, x: uint256) -> uint256:
     result = apply_rules(source, config())
 
     assert "x + i" in result.source
+
+
+def test_signed_attribute_fields_are_not_rewritten_as_methods() -> None:
+    source = """# @version 0.3.10
+struct Trade:
+    n2: int256
+
+bands_x: HashMap[int256, uint256]
+active_band: int256
+
+@internal
+@view
+def _p_oracle_up(n: int256) -> uint256:
+    return 1
+
+@external
+def f() -> uint256:
+    out: Trade = empty(Trade)
+    out.n2 = self.active_band
+    p: uint256 = self._p_oracle_up(out.n2)
+    x: uint256 = self.bands_x[out.n2]
+    y: uint256 = self.bands_x[self.active_band]
+    return p + x + y
+"""
+
+    result = apply_rules(source, config())
+
+    assert "out.convert" not in result.source
+    assert "self.convert" not in result.source
+    assert "self._p_oracle_up(out.n2)" in result.source
+    assert "self.bands_x[out.n2]" in result.source
+    assert "self.bands_x[self.active_band]" in result.source
 
 
 def test_signed_internal_call_argument_not_converted_for_uint_assignment() -> None:

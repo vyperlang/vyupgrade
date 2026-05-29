@@ -1256,7 +1256,11 @@ def _ignored_external_call_results(source: str, config: Config, context: Migrati
         line_no = line_number(source, offset)
         code_part, comment_part = _split_inline_comment_preserving_strings(line)
         stripped = code_part.strip()
-        if not stripped.startswith("staticcall ") or _delimiter_depth_before(source, offset) != 0:
+        if (
+            not stripped.startswith("staticcall ")
+            or _delimiter_depth_before(source, offset) != 0
+            or _previous_code_line_continues(source, offset)
+        ):
             offset += len(raw_line)
             continue
         indent = code_part[: len(code_part) - len(code_part.lstrip(" \t"))]
@@ -1301,6 +1305,15 @@ def _delimiter_depth_before(source: str, end: int) -> int:
         elif char in ")]}" and depth > 0:
             depth -= 1
     return depth
+
+
+def _previous_code_line_continues(source: str, offset: int) -> bool:
+    if offset <= 0 or source[offset - 1] != "\n":
+        return False
+    previous_end = offset - 1
+    previous_start = source.rfind("\n", 0, previous_end) + 1
+    code_part, _comment_part = _split_inline_comment_preserving_strings(source[previous_start:previous_end])
+    return code_part.rstrip().endswith("\\")
 
 
 def _code_identifiers(source: str) -> set[str]:
@@ -1578,8 +1591,10 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
         for name in signed_names:
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
+                end = start + len(name)
                 if (
-                    _inside_convert_call(source, start)
+                    _inside_attribute_access(source, start, end)
+                    or _inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
                     or _signed_comparison_target_type_at(source, start, name, vars_for_line) is not None
@@ -1590,7 +1605,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 ):
                     continue
                 replacement = f"convert({name}, uint256)"
-                edits.append(TextEdit(start, start + len(name), replacement))
+                edits.append(TextEdit(start, end, replacement))
                 fixes.append(
                     Fix(
                         "VY052",
@@ -1612,7 +1627,12 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
         for name in unsigned_loop_names:
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
-                if _inside_convert_call(source, start) or _inside_range_header(source, start):
+                end = start + len(name)
+                if (
+                    _inside_attribute_access(source, start, end)
+                    or _inside_convert_call(source, start)
+                    or _inside_range_header(source, start)
+                ):
                     continue
                 target_type = _signed_comparison_target_type(
                     _local_expression(source, start), name, vars_for_line
@@ -1624,7 +1644,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 if target_type is None:
                     continue
                 replacement = f"convert({name}, {target_type})"
-                edits.append(TextEdit(start, start + len(name), replacement))
+                edits.append(TextEdit(start, end, replacement))
                 fixes.append(
                     Fix(
                         "VY052",
@@ -1646,8 +1666,10 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
         for name in unsigned_constant_names:
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
+                end = start + len(name)
                 if (
-                    _inside_convert_call(source, start)
+                    _inside_attribute_access(source, start, end)
+                    or _inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
                     or _is_unsigned_integer_type(lhs_type)
@@ -1659,7 +1681,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 if target_type is None:
                     continue
                 replacement = f"convert({name}, {target_type})"
-                edits.append(TextEdit(start, start + len(name), replacement))
+                edits.append(TextEdit(start, end, replacement))
                 fixes.append(
                     Fix(
                         "VY052",
@@ -2089,6 +2111,10 @@ def _inside_type_subscript(source: str, index: int) -> bool:
             source[line_start:open_index],
         )
     )
+
+
+def _inside_attribute_access(source: str, start: int, end: int) -> bool:
+    return (start > 0 and source[start - 1] == ".") or (end < len(source) and source[end] == ".")
 
 
 def _struct_kwargs(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
