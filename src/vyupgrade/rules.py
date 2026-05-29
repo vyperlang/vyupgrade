@@ -60,6 +60,7 @@ RULE_CHANGES = {
     "VY012": RuleChange(VyperVersion(0, 4, 0)),
     "VY013": RuleChange(VyperVersion(0, 4, 0)),
     "VY014": RuleChange(VyperVersion(0, 4, 0)),
+    "VY015": RuleChange(VyperVersion(0, 4, 0)),
     "VY020": RuleChange(VyperVersion(0, 4, 0)),
     "VY030": RuleChange(VyperVersion(0, 4, 0)),
     "VY040": RuleChange(VyperVersion(0, 4, 0)),
@@ -135,6 +136,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _legacy_constants,
         _immutable_accessor_collisions,
         _interface_view_mutability,
+        _pure_immutable_reads,
         _interface_imports,
         _absolute_relative_imports(path),
         _enum_to_flag,
@@ -668,6 +670,85 @@ def _view_implementation_names(source: str) -> set[str]:
     return names
 
 
+def _pure_immutable_reads(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY015", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    immutable_names = _immutable_names(facts)
+    if not immutable_names:
+        return source, [], []
+
+    mask = code_mask(source)
+    line_offsets = _line_offsets(source)
+    lines = source.splitlines(keepends=True)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    for function_line, decorators in facts.function_decorators.items():
+        if "pure" not in decorators:
+            continue
+        read_name = _function_read_name(source, mask, line_offsets, facts, function_line, immutable_names)
+        if read_name is None:
+            continue
+        decorator_line = facts.function_decorator_lines.get(function_line, {}).get("pure")
+        if decorator_line is None or decorator_line > len(lines):
+            continue
+        line_start = line_offsets[decorator_line - 1]
+        decorator_match = re.search(r"@pure\b", lines[decorator_line - 1])
+        if decorator_match is None:
+            continue
+        edits.append(TextEdit(line_start + decorator_match.start() + 1, line_start + decorator_match.end(), "view"))
+        fixes.append(
+            Fix(
+                "VY015",
+                decorator_line,
+                f"relaxed pure function that reads immutable {read_name}",
+                "@pure",
+                "@view",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _immutable_names(facts: SourceFacts) -> set[str]:
+    return {name for name, type_name in facts.global_vars.items() if _is_immutable_type(type_name)}
+
+
+def _is_immutable_type(type_name: str) -> bool:
+    type_name = type_name.strip()
+    if type_name.startswith("immutable("):
+        return True
+    return bool(re.fullmatch(r"public\s*\(\s*immutable\s*\(.+\)\s*\)", type_name))
+
+
+def _function_read_name(
+    source: str,
+    mask: list[bool],
+    line_offsets: list[int],
+    facts: SourceFacts,
+    function_line: int,
+    names: set[str],
+) -> str | None:
+    body_start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
+    end_line = facts.function_ends.get(function_line, len(line_offsets))
+    body_end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+    local_names = set(facts.function_params.get(facts.function_names.get(function_line, ""), {}))
+    for name in sorted(names):
+        if name in local_names:
+            continue
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        for match in pattern.finditer(source, body_start, body_end):
+            if span_is_code(mask, match.start(), match.end()) and not _is_attribute_name(source, match.start()):
+                return name
+    return None
+
+
+def _line_offsets(source: str) -> list[int]:
+    offsets = [0]
+    for match in re.finditer("\n", source):
+        offsets.append(match.end())
+    return offsets
+
+
 def _redundant_integer_convert(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY051", config, context):
         return source, [], []
@@ -977,6 +1058,7 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
             (is_integer_type(left_type) and is_integer_type(right_type))
             or (_integerish_expression(left, vars_for_line, facts) and is_integer_type(right_type))
             or (is_integer_type(left_type) and _integerish_expression(right, vars_for_line, facts))
+            or (_integerish_expression(left, vars_for_line, facts) and _integerish_expression(right, vars_for_line, facts))
             or is_integer_type(lhs_type)
             or is_integer_type(assigned_type)
             or (line.lstrip().startswith("return ") and is_integer_type(return_type))
@@ -988,6 +1070,7 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
                 _integerish_expression(line[slash_col + 1 :], vars_for_line, facts)
                 and _multiline_integer_division_context(source, line_start)
             )
+            or _multiline_integer_division_assignment_context(source, line_start, vars_for_line)
             or (
                 _integerish_expression(line[slash_col + 1 :], vars_for_line, facts)
                 and line.lstrip().startswith("assert ")
@@ -1046,6 +1129,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     _inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
+                    or _signed_comparison_target_type_at(source, start, name, vars_for_line) is not None
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
                     or _signed_external_call_arg_target_type(source, start, name, facts, vars_for_line) is not None
                     or _signed_subscript_key_target_type(source, start, name, vars_for_line) is not None
@@ -1256,6 +1340,29 @@ def _unsigned_name_signed_division_target_type(
     else:
         return None
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _signed_comparison_target_type_at(source: str, index: int, name: str, vars_for_line: dict[str, str]) -> str | None:
+    other = _comparison_peer(_local_expression(source, index), name)
+    if other is None:
+        return None
+    loop_type = _nearest_loop_var_type(source, index, other) if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", other) else None
+    other_type = loop_type or infer_expr_type(other, vars_for_line)
+    return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _comparison_peer(expr: str, name: str) -> str | None:
+    expr = expr.strip().removesuffix(":").strip()
+    expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
+    if match is None:
+        return None
+    left, _op, right = (part.strip() for part in match.groups())
+    if left == name:
+        return right
+    if right == name:
+        return left
+    return None
 
 
 def _nearest_loop_var_type(source: str, index: int, name: str) -> str | None:
@@ -1964,7 +2071,20 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
         return bool(re.search(r"\d", expr))
     typed = False
     for token in tokens:
-        if token in {"convert", "max", "min", "unsafe_add", "unsafe_sub", "uint256", "uint128", "uint64", "uint8"}:
+        if token in {
+            "convert",
+            "max",
+            "min",
+            "pow_mod256",
+            "unsafe_add",
+            "unsafe_div",
+            "unsafe_mul",
+            "unsafe_sub",
+            "uint256",
+            "uint128",
+            "uint64",
+            "uint8",
+        }:
             typed = True
             continue
         token_type = vars_for_line.get(token)
@@ -2005,6 +2125,27 @@ def _multiline_integer_division_context(source: str, line_start: int) -> bool:
     if re.search(r"\bdecimal\b|\d+\.\d+", block):
         return False
     return bool(re.search(r"return\s*\($|:\s*u?int(?:\d+)?\s*=\s*\($", block, re.MULTILINE))
+
+
+def _multiline_integer_division_assignment_context(
+    source: str, line_start: int, vars_for_line: dict[str, str]
+) -> bool:
+    line_end = source.find("\n", line_start)
+    if line_end == -1:
+        line_end = len(source)
+    if source[line_start:line_end].strip() != "/":
+        return False
+    prefix = source[:line_start].splitlines()[-8:]
+    block = "\n".join(prefix)
+    if re.search(r"\bdecimal\b|\d+\.\d+", block):
+        return False
+    for line in reversed(prefix):
+        match = re.match(r"\s*((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\s*=\s*\(\s*$", line)
+        if match is None:
+            continue
+        target_type = infer_expr_type(match.group(1), vars_for_line)
+        return is_integer_type(target_type)
+    return False
 
 
 def _infer_range_bound(start: str, stop: str) -> str | None:

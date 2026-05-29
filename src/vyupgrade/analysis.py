@@ -145,6 +145,9 @@ class SourceFacts:
     function_vars: dict[int, dict[str, str]] = field(default_factory=dict)
     function_loop_vars: dict[int, set[str]] = field(default_factory=dict)
     function_ends: dict[int, int] = field(default_factory=dict)
+    function_names: dict[int, str] = field(default_factory=dict)
+    function_decorators: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    function_decorator_lines: dict[int, dict[str, int]] = field(default_factory=dict)
     function_returns: dict[int, str] = field(default_factory=dict)
     function_return_names: dict[str, str] = field(default_factory=dict)
     function_params: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -185,6 +188,7 @@ def parse_source_facts(source: str) -> SourceFacts:
     pending_function_line: int | None = None
     pending_function_indent = 0
     pending_function_header: list[str] = []
+    pending_decorators: list[tuple[str, int]] = []
     current_function_line: int | None = None
     current_function_indent = 0
 
@@ -208,6 +212,12 @@ def parse_source_facts(source: str) -> SourceFacts:
                         facts.function_ends[current_function_line] = pending_function_line - 1
                     current_function_line = pending_function_line
                     current_function_indent = pending_function_indent
+                    facts.function_names[current_function_line] = def_match.group(1)
+                    facts.function_decorators[current_function_line] = tuple(name for name, _line in pending_decorators)
+                    facts.function_decorator_lines[current_function_line] = {
+                        name: decorator_line for name, decorator_line in pending_decorators
+                    }
+                    pending_decorators = []
                     params = _parse_params(def_match.group(2))
                     facts.function_vars[current_function_line] = params
                     facts.function_params[def_match.group(1)] = params
@@ -291,6 +301,11 @@ def parse_source_facts(source: str) -> SourceFacts:
                 pending_interface_header = [_strip_inline_comment(stripped).strip()]
             continue
 
+        decorator_match = re.match(r"@([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
+        if decorator_match:
+            pending_decorators.append((decorator_match.group(1), line_no))
+            continue
+
         function_header = _strip_inline_comment(stripped).strip()
         def_match = DEF_RE.match(function_header)
         if def_match:
@@ -298,6 +313,12 @@ def parse_source_facts(source: str) -> SourceFacts:
                 facts.function_ends[current_function_line] = line_no - 1
             current_function_line = line_no
             current_function_indent = indent
+            facts.function_names[current_function_line] = def_match.group(1)
+            facts.function_decorators[current_function_line] = tuple(name for name, _line in pending_decorators)
+            facts.function_decorator_lines[current_function_line] = {
+                name: decorator_line for name, decorator_line in pending_decorators
+            }
+            pending_decorators = []
             params = _parse_params(def_match.group(2))
             facts.function_vars[current_function_line] = params
             facts.function_params[def_match.group(1)] = params
@@ -315,6 +336,9 @@ def parse_source_facts(source: str) -> SourceFacts:
         if current_function_line is not None and indent <= current_function_indent and stripped:
             facts.function_ends[current_function_line] = line_no - 1
             current_function_line = None
+
+        if current_function_line is None and stripped:
+            pending_decorators = []
 
         if current_function_line is not None:
             loop_var = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^:]+?)\s+in\b", stripped)

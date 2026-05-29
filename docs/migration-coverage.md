@@ -76,6 +76,9 @@ the supported range.
 - Local interface mutability is checked more strictly: `VY014` changes
   `nonpayable` interface entries to `view` when the implementation is a view
   function or `public(...)` getter.
+- Pure functions may no longer read immutable state: `VY015` changes `@pure`
+  functions to `@view` when source facts show the function body references a
+  top-level `immutable(...)` binding.
 - Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
   ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and

@@ -632,6 +632,59 @@ rate: public(HashMap[address, uint256])
     assert any(fix.rule == "VY014" for fix in result.fixes)
 
 
+def test_pure_function_reading_immutable_becomes_view() -> None:
+    source = """# @version 0.3.10
+TARGET: immutable(address)
+
+@external
+def __init__(_target: address):
+    TARGET = _target
+
+@pure
+@external
+def target() -> address:
+    return TARGET
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view\n@external\ndef target" in result.source
+    assert any(fix.rule == "VY015" for fix in result.fixes)
+
+
+def test_internal_pure_function_reading_immutable_becomes_view() -> None:
+    source = """# @version 0.3.10
+N_COINS: immutable(int128)
+
+@pure
+@internal
+def checked_coin(i: int128) -> int128:
+    assert i < N_COINS
+    return i
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view\n@internal\ndef checked_coin" in result.source
+    assert any(fix.rule == "VY015" for fix in result.fixes)
+
+
+def test_pure_function_without_immutable_read_stays_pure() -> None:
+    source = """# @version 0.3.10
+N_COINS: immutable(int128)
+
+@pure
+@internal
+def add_one(i: int128) -> int128:
+    return i + 1
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@pure\n@internal\ndef add_one" in result.source
+    assert not any(fix.rule == "VY015" for fix in result.fixes)
+
+
 def test_compound_assignment_integer_division() -> None:
     source = """# @version 0.3.7
 MAX_BPS: constant(uint256) = 10_000
@@ -791,6 +844,38 @@ def claimable(user: address, amount: uint256) -> uint256:
     assert "return amount * self.votes_used[user] // self.voted" in result.source
 
 
+def test_multiline_reassignment_integer_division_uses_target_type() -> None:
+    source = """# @version 0.3.10
+@external
+def f(x: uint256, y: uint256, z: uint256) -> uint256:
+    value: uint256 = x
+    value = (
+        x * y
+        /
+        z
+    )
+    return value
+"""
+
+    result = apply_rules(source, config())
+
+    assert "        //\n" in result.source
+
+
+def test_integerish_call_argument_division_is_rewritten() -> None:
+    source = """# @version 0.3.10
+@external
+def f(x: uint256, y: uint256) -> DynArray[uint256, 4]:
+    values: DynArray[uint256, 4] = []
+    values.append((10**18 * unsafe_div(x, y)) / (x + y))
+    return values
+"""
+
+    result = apply_rules(source, config())
+
+    assert "values.append((10**18 * unsafe_div(x, y)) // (x + y))" in result.source
+
+
 def test_signed_constant_converted_in_uint_arithmetic() -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 3
@@ -872,6 +957,28 @@ def f() -> bool:
     result = apply_rules(source, config())
 
     assert "self.base_cache_updated + convert(BASE_CACHE_EXPIRES, uint256)" in result.source
+
+
+def test_signed_constant_not_converted_in_signed_loop_comparison() -> None:
+    source = """# @version 0.2.8
+N_COINS: constant(int128) = 2
+
+@internal
+def f() -> uint256:
+    total: uint256 = 0
+    for i in range(N_COINS):
+        if i == N_COINS:
+            break
+        total += convert(i, uint256)
+    for i in range(10):
+        total += i
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if i == N_COINS:" in result.source
+    assert "if i == convert(N_COINS, uint256):" not in result.source
 
 
 def test_comment_identifier_does_not_create_unsigned_context() -> None:
