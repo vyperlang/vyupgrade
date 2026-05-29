@@ -108,6 +108,23 @@ asset: public(ERC4626)
     assert "asset: public(IERC4626)" in result.source
 
 
+def test_erc721_import_migration_preserves_staticcall_inference() -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC721
+
+@external
+def f(nft: ERC721, owner: address) -> uint256:
+    return nft.balanceOf(owner)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC721" in result.source
+    assert "def f(nft: IERC721, owner: address)" in result.source
+    assert "return staticcall nft.balanceOf(owner)" in result.source
+    assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
+
+
 def test_modern_erc_interface_imports_alias_when_new_name_exists() -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC20

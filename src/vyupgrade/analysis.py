@@ -37,6 +37,48 @@ BUILTIN_INTERFACES = {
     },
     "ERC20Detailed": {"name": "view", "symbol": "view", "decimals": "view"},
     "IERC20Detailed": {"name": "view", "symbol": "view", "decimals": "view"},
+    "ERC165": {"supportsInterface": "view"},
+    "IERC165": {"supportsInterface": "view"},
+    "ERC721": {
+        "balanceOf": "view",
+        "ownerOf": "view",
+        "safeTransferFrom": "nonpayable",
+        "transferFrom": "nonpayable",
+        "approve": "nonpayable",
+        "setApprovalForAll": "nonpayable",
+        "getApproved": "view",
+        "isApprovedForAll": "view",
+    },
+    "IERC721": {
+        "balanceOf": "view",
+        "ownerOf": "view",
+        "safeTransferFrom": "nonpayable",
+        "transferFrom": "nonpayable",
+        "approve": "nonpayable",
+        "setApprovalForAll": "nonpayable",
+        "getApproved": "view",
+        "isApprovedForAll": "view",
+    },
+    "ERC721Metadata": {"name": "view", "symbol": "view", "tokenURI": "view"},
+    "IERC721Metadata": {"name": "view", "symbol": "view", "tokenURI": "view"},
+    "ERC721Enumerable": {"totalSupply": "view", "tokenOfOwnerByIndex": "view", "tokenByIndex": "view"},
+    "IERC721Enumerable": {"totalSupply": "view", "tokenOfOwnerByIndex": "view", "tokenByIndex": "view"},
+    "ERC1155": {
+        "balanceOf": "view",
+        "balanceOfBatch": "view",
+        "setApprovalForAll": "nonpayable",
+        "isApprovedForAll": "view",
+        "safeTransferFrom": "nonpayable",
+        "safeBatchTransferFrom": "nonpayable",
+    },
+    "IERC1155": {
+        "balanceOf": "view",
+        "balanceOfBatch": "view",
+        "setApprovalForAll": "nonpayable",
+        "isApprovedForAll": "view",
+        "safeTransferFrom": "nonpayable",
+        "safeBatchTransferFrom": "nonpayable",
+    },
     "ERC4626": {
         "asset": "view",
         "totalAssets": "view",
@@ -94,6 +136,34 @@ BUILTIN_INTERFACE_RETURNS = {
     },
     "ERC20Detailed": {"name": "String[64]", "symbol": "String[32]", "decimals": "uint8"},
     "IERC20Detailed": {"name": "String[64]", "symbol": "String[32]", "decimals": "uint8"},
+    "ERC165": {"supportsInterface": "bool"},
+    "IERC165": {"supportsInterface": "bool"},
+    "ERC721": {
+        "balanceOf": "uint256",
+        "ownerOf": "address",
+        "getApproved": "address",
+        "isApprovedForAll": "bool",
+    },
+    "IERC721": {
+        "balanceOf": "uint256",
+        "ownerOf": "address",
+        "getApproved": "address",
+        "isApprovedForAll": "bool",
+    },
+    "ERC721Metadata": {"name": "String[64]", "symbol": "String[32]", "tokenURI": "String[256]"},
+    "IERC721Metadata": {"name": "String[64]", "symbol": "String[32]", "tokenURI": "String[256]"},
+    "ERC721Enumerable": {
+        "totalSupply": "uint256",
+        "tokenOfOwnerByIndex": "uint256",
+        "tokenByIndex": "uint256",
+    },
+    "IERC721Enumerable": {
+        "totalSupply": "uint256",
+        "tokenOfOwnerByIndex": "uint256",
+        "tokenByIndex": "uint256",
+    },
+    "ERC1155": {"balanceOf": "uint256", "balanceOfBatch": "DynArray[uint256, 1024]", "isApprovedForAll": "bool"},
+    "IERC1155": {"balanceOf": "uint256", "balanceOfBatch": "DynArray[uint256, 1024]", "isApprovedForAll": "bool"},
     "ERC4626": {
         "asset": "address",
         "totalAssets": "uint256",
@@ -133,6 +203,78 @@ BUILTIN_INTERFACE_RETURNS = {
 }
 
 
+BUILTIN_INTERFACE_PARAMS = {
+    "ERC20": {
+        "balanceOf": {"owner": "address"},
+        "allowance": {"owner": "address", "spender": "address"},
+        "transfer": {"to": "address", "amount": "uint256"},
+        "transferFrom": {"owner": "address", "to": "address", "amount": "uint256"},
+        "approve": {"spender": "address", "amount": "uint256"},
+    },
+    "IERC20": {
+        "balanceOf": {"owner": "address"},
+        "allowance": {"owner": "address", "spender": "address"},
+        "transfer": {"to": "address", "amount": "uint256"},
+        "transferFrom": {"owner": "address", "to": "address", "amount": "uint256"},
+        "approve": {"spender": "address", "amount": "uint256"},
+    },
+    "ERC165": {"supportsInterface": {"interface_id": "bytes4"}},
+    "IERC165": {"supportsInterface": {"interface_id": "bytes4"}},
+    "ERC721": {
+        "balanceOf": {"owner": "address"},
+        "ownerOf": {"tokenId": "uint256"},
+        "safeTransferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
+        "transferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
+        "approve": {"to": "address", "tokenId": "uint256"},
+        "setApprovalForAll": {"operator": "address", "approved": "bool"},
+        "getApproved": {"tokenId": "uint256"},
+        "isApprovedForAll": {"owner": "address", "operator": "address"},
+    },
+    "IERC721": {
+        "balanceOf": {"owner": "address"},
+        "ownerOf": {"tokenId": "uint256"},
+        "safeTransferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
+        "transferFrom": {"owner": "address", "to": "address", "tokenId": "uint256"},
+        "approve": {"to": "address", "tokenId": "uint256"},
+        "setApprovalForAll": {"operator": "address", "approved": "bool"},
+        "getApproved": {"tokenId": "uint256"},
+        "isApprovedForAll": {"owner": "address", "operator": "address"},
+    },
+    "ERC721Metadata": {"tokenURI": {"tokenId": "uint256"}},
+    "IERC721Metadata": {"tokenURI": {"tokenId": "uint256"}},
+    "ERC721Enumerable": {
+        "tokenOfOwnerByIndex": {"owner": "address", "index": "uint256"},
+        "tokenByIndex": {"index": "uint256"},
+    },
+    "IERC721Enumerable": {
+        "tokenOfOwnerByIndex": {"owner": "address", "index": "uint256"},
+        "tokenByIndex": {"index": "uint256"},
+    },
+    "ERC1155": {
+        "balanceOf": {"account": "address", "id": "uint256"},
+        "setApprovalForAll": {"operator": "address", "approved": "bool"},
+        "isApprovedForAll": {"account": "address", "operator": "address"},
+        "safeTransferFrom": {
+            "owner": "address",
+            "to": "address",
+            "id": "uint256",
+            "amount": "uint256",
+        },
+    },
+    "IERC1155": {
+        "balanceOf": {"account": "address", "id": "uint256"},
+        "setApprovalForAll": {"operator": "address", "approved": "bool"},
+        "isApprovedForAll": {"account": "address", "operator": "address"},
+        "safeTransferFrom": {
+            "owner": "address",
+            "to": "address",
+            "id": "uint256",
+            "amount": "uint256",
+        },
+    },
+}
+
+
 @dataclass
 class SourceFacts:
     interfaces: dict[str, dict[str, str]] = field(
@@ -145,7 +287,15 @@ class SourceFacts:
             name: methods.copy() for name, methods in BUILTIN_INTERFACE_RETURNS.items()
         }
     )
-    interface_params: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    interface_params: dict[str, dict[str, dict[str, str]]] = field(
+        default_factory=lambda: {
+            interface_name: {
+                method_name: params.copy()
+                for method_name, params in methods.items()
+            }
+            for interface_name, methods in BUILTIN_INTERFACE_PARAMS.items()
+        }
+    )
     structs: set[str] = field(default_factory=set)
     struct_fields: dict[str, dict[str, str]] = field(default_factory=dict)
     flags_or_enums: set[str] = field(default_factory=set)
@@ -286,6 +436,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_struct_indent = indent
             facts.structs.add(current_struct)
             facts.struct_fields.setdefault(current_struct, {})
+            offset += len(raw_line)
             continue
 
         if current_struct:
@@ -304,6 +455,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             if pending_interface_method is not None and stripped in {"view", "pure", "nonpayable", "payable"}:
                 facts.interfaces[current_interface][pending_interface_method] = stripped
                 pending_interface_method = None
+                offset += len(raw_line)
                 continue
             if pending_interface_header:
                 header_line = _strip_inline_comment(stripped).strip()
@@ -311,16 +463,16 @@ def parse_source_facts(source: str) -> SourceFacts:
                     pending_interface_header.append(header_line)
                 if _balanced_parens(" ".join(pending_interface_header)):
                     def_match = DEF_RE.match(" ".join(pending_interface_header))
-                if def_match:
-                    method_name = def_match.group(1)
-                    facts.interfaces[current_interface][method_name] = def_match.group(4) or "nonpayable"
-                    facts.interface_params[current_interface][method_name] = _parse_params(def_match.group(2))
-                    if def_match.group(3):
-                        facts.interface_returns[current_interface][method_name] = def_match.group(3).strip()
-                    pending_interface_method = method_name if def_match.group(4) is None else None
-                pending_interface_header = []
-            offset += len(raw_line)
-            continue
+                    if def_match:
+                        method_name = def_match.group(1)
+                        facts.interfaces[current_interface][method_name] = def_match.group(4) or "nonpayable"
+                        facts.interface_params[current_interface][method_name] = _parse_params(def_match.group(2))
+                        if def_match.group(3):
+                            facts.interface_returns[current_interface][method_name] = def_match.group(3).strip()
+                        pending_interface_method = method_name if def_match.group(4) is None else None
+                    pending_interface_header = []
+                offset += len(raw_line)
+                continue
             def_match = DEF_RE.match(stripped)
             if def_match:
                 method_name = def_match.group(1)
