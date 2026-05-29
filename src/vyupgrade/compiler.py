@@ -264,18 +264,7 @@ def _canonical_storage_layout(layout: object) -> dict[str, tuple[int, str]] | No
     storage = layout.get("storage_layout")
     if isinstance(storage, dict):
         layout = storage
-    normalized: dict[str, tuple[int, str]] = {}
-    for name, value in layout.items():
-        if not isinstance(name, str) or not isinstance(value, dict):
-            continue
-        if value.get("location", "storage") != "storage":
-            continue
-        slot = value.get("slot")
-        type_name = value.get("type")
-        if not isinstance(slot, int) or not isinstance(type_name, str):
-            continue
-        normalized[name] = (slot, _canonical_storage_type(type_name))
-    return normalized
+    return _normalize_layout_entries(layout, location_filter="storage")
 
 
 def _canonical_transient_storage_layout(layout: object) -> dict[str, tuple[int, str]]:
@@ -284,9 +273,20 @@ def _canonical_transient_storage_layout(layout: object) -> dict[str, tuple[int, 
     transient = layout.get("transient_storage_layout")
     if not isinstance(transient, dict):
         return {}
+    return _normalize_layout_entries(transient)
+
+
+def _normalize_layout_entries(
+    layout: dict[object, object], *, location_filter: str | None = None
+) -> dict[str, tuple[int, str]]:
     normalized: dict[str, tuple[int, str]] = {}
-    for name, value in transient.items():
+    for name, value in layout.items():
         if not isinstance(name, str) or not isinstance(value, dict):
+            continue
+        if (
+            location_filter is not None
+            and value.get("location", location_filter) != location_filter
+        ):
             continue
         slot = value.get("slot")
         type_name = value.get("type")
