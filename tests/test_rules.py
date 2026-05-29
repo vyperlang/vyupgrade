@@ -663,6 +663,62 @@ def x() -> uint256:
     assert "return self.x()" in result.source
 
 
+def test_constant_accessor_collision_renames_backing_variable() -> None:
+    source = """# @version 0.3.10
+token: constant(address) = 0x0000000000000000000000000000000000000001
+coins: constant(address[2]) = [
+    0x0000000000000000000000000000000000000010,
+    0x0000000000000000000000000000000000000011,
+]
+
+@external
+@view
+def token() -> address:
+    return token
+
+@external
+@view
+def coins(i: uint256) -> address:
+    _coins: address[2] = coins
+    return _coins[i]
+
+@external
+def use_token(receiver: address):
+    extcall CurveToken(token).mint(receiver, 1)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "_token: constant(address)" in result.source
+    assert "__coins: constant(address[2])" in result.source
+    assert "def token() -> address:\n    return _token" in result.source
+    assert "def coins(i: uint256) -> address:\n    _coins: address[2] = __coins" in result.source
+    assert "CurveToken(_token).mint" in result.source
+    assert any(fix.rule == "VY016" for fix in result.fixes)
+
+
+def test_constant_accessor_collision_handles_uppercase_names() -> None:
+    source = """# @version 0.3.10
+DAY: constant(uint256) = 86400
+GRACE_PERIOD: constant(uint256) = 14 * DAY
+
+@external
+@view
+def GRACE_PERIOD() -> uint256:
+    return GRACE_PERIOD
+
+@external
+def f(eta: uint256):
+    assert block.timestamp <= eta + GRACE_PERIOD
+"""
+
+    result = apply_rules(source, config())
+
+    assert "_GRACE_PERIOD: constant(uint256) = 14 * DAY" in result.source
+    assert "def GRACE_PERIOD() -> uint256:\n    return _GRACE_PERIOD" in result.source
+    assert "eta + _GRACE_PERIOD" in result.source
+
+
 def test_local_interface_nonpayable_matches_view_function() -> None:
     source = """# @version 0.3.10
 interface Bucket:
@@ -959,18 +1015,30 @@ MAX_A: constant(uint256) = N_COINS**N_COINS * 1000
 
 def test_dynamic_uint_exponent_rewrites_to_pow_mod256() -> None:
     source = """# @version 0.3.10
-N_COINS: constant(int128) = 3
-A_MULTIPLIER: constant(uint256) = 100
-
 @external
-def f(ann: uint256) -> bool:
-    return ann > N_COINS**N_COINS * A_MULTIPLIER
+def f(base: int128, exponent: int128) -> uint256:
+    return convert(base, uint256) ** convert(exponent, uint256)
 """
 
     result = apply_rules(source, config())
 
-    assert "pow_mod256(convert(N_COINS, uint256), convert(N_COINS, uint256)) * A_MULTIPLIER" in result.source
+    assert "pow_mod256(convert(base, uint256), convert(exponent, uint256))" in result.source
     assert any(fix.rule == "VY055" for fix in result.fixes)
+
+
+def test_runtime_exponent_uses_folded_integer_constants() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 2
+
+@external
+def f(x: uint256) -> uint256:
+    return (10**18 * N_COINS**N_COINS) * x
+"""
+
+    result = apply_rules(source, config())
+
+    assert "(10**18 * 2**2) * x" in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
 def test_unsigned_range_bound_converts_signed_constant() -> None:
@@ -1025,6 +1093,22 @@ def f() -> uint256:
     result = apply_rules(source, config())
 
     assert "n_coins: uint256 = convert(MAX_COINS, uint256)" in result.source
+
+
+def test_unsigned_assignment_keeps_unsigned_numerator_when_signed_denominator_converts() -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(int128) = 3
+values: uint256[3]
+
+@external
+def f(D: uint256):
+    self.values[0] = D / N_COINS
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.values[0] = D // convert(N_COINS, uint256)" in result.source
+    assert "convert(D, int128)" not in result.source
 
 
 def test_signed_loop_variable_converted_in_uint_assignment() -> None:
@@ -1953,6 +2037,19 @@ def f(x: uint256, i: uint256) -> uint256:
     result = apply_rules(source, config(target_version="0.4.2"))
 
     assert "return (x >> (8 * i))" in result.source
+
+
+def test_shift_builtin_rewrites_negative_signed_convert_amount_to_unsigned() -> None:
+    source = """# @version 0.4.1
+@external
+def f(x: uint256, i: uint256) -> uint256:
+    return shift(x, -128 * convert(i - 1, int256))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "return (x >> (128 * i - 1))" not in result.source
+    assert "return (x >> (128 * (i - 1)))" in result.source
 
 
 def test_shift_builtin_rewrites_signed_constant_amounts() -> None:

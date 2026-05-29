@@ -63,6 +63,7 @@ RULE_CHANGES = {
     "VY013": RuleChange(VyperVersion(0, 4, 0)),
     "VY014": RuleChange(VyperVersion(0, 4, 0)),
     "VY015": RuleChange(VyperVersion(0, 4, 0)),
+    "VY016": RuleChange(VyperVersion(0, 4, 0)),
     "VY020": RuleChange(VyperVersion(0, 4, 0)),
     "VY030": RuleChange(VyperVersion(0, 4, 0)),
     "VY040": RuleChange(VyperVersion(0, 4, 0)),
@@ -141,6 +142,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _abi_builtins,
         _legacy_constants,
         _immutable_accessor_collisions,
+        _constant_accessor_collisions,
         _interface_view_mutability,
         _pure_immutable_reads,
         _interface_imports,
@@ -612,6 +614,65 @@ def _immutable_accessor_collisions(source: str, config: Config, context: Migrati
     return apply_edits(source, edits), fixes, []
 
 
+def _constant_accessor_collisions(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY016", config, context):
+        return source, [], []
+    constant_names = {
+        match.group(1)
+        for match in re.finditer(
+            r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\(",
+            source,
+            re.MULTILINE,
+        )
+    }
+    if not constant_names:
+        return source, [], []
+    function_names = {
+        match.group(1)
+        for match in re.finditer(
+            r"^[ \t]*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            source,
+            re.MULTILINE,
+        )
+    }
+    collisions = sorted(constant_names & function_names)
+    if not collisions:
+        return source, [], []
+
+    mask = code_mask(source)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    taken = _code_identifiers(source)
+    for name in collisions:
+        replacement = _private_backing_name(name, taken)
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        name_edits: list[TextEdit] = []
+        for match in pattern.finditer(source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            if _is_function_definition_name(source, match.start()):
+                continue
+            if _is_attribute_name(source, match.start()):
+                continue
+            if _is_type_declaration_name(source, match.start(), match.end()) and not _is_constant_declaration_name(source, match.start()):
+                continue
+            if _is_keyword_argument_name(source, match.start(), match.end()):
+                continue
+            name_edits.append(TextEdit(match.start(), match.end(), replacement))
+        edits.extend(name_edits)
+        fixes.extend(
+            Fix(
+                "VY016",
+                line_number(source, edit.start),
+                "renamed constant backing variable that collides with accessor",
+                name,
+                replacement,
+            )
+            for edit in name_edits
+        )
+    return apply_edits(source, edits), fixes, []
+
+
 def _private_backing_name(name: str, taken: set[str]) -> str:
     candidate = f"_{name}"
     while candidate in taken:
@@ -660,6 +721,13 @@ def _is_immutable_declaration_name(source: str, start: int) -> bool:
     if line_end == -1:
         line_end = len(source)
     return bool(re.search(r":\s*immutable\s*\(", source[start:line_end]))
+
+
+def _is_constant_declaration_name(source: str, start: int) -> bool:
+    line_end = source.find("\n", start)
+    if line_end == -1:
+        line_end = len(source)
+    return bool(re.search(r":\s*constant\s*\(", source[start:line_end]))
 
 
 def _interface_view_mutability(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -1275,35 +1343,26 @@ def _constant_exponent_literals(source: str, config: Config, context: MigrationC
     mask = code_mask(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    constant_re = re.compile(
-        r"^[ \t]*[A-Za-z_][A-Za-z0-9_]*\s*:\s*constant\s*\(\s*uint(?:\d+)?\s*\)\s*=\s*(?P<expr>[^\n#]+)",
-        re.MULTILINE,
-    )
-    for constant_match in constant_re.finditer(source):
-        expr = constant_match.group("expr")
-        if "**" not in expr:
+    for name, value in constant_values.items():
+        if value < 0:
             continue
-        expr_start = constant_match.start("expr")
-        for name, value in constant_values.items():
-            if value < 0:
+        name_re = re.compile(rf"\b{re.escape(name)}\b")
+        for name_match in name_re.finditer(source):
+            start = name_match.start()
+            end = name_match.end()
+            if not span_is_code(mask, start, end) or not _inside_exponent(source, start, end):
                 continue
-            name_re = re.compile(rf"\b{re.escape(name)}\b")
-            for name_match in name_re.finditer(expr):
-                start = expr_start + name_match.start()
-                end = expr_start + name_match.end()
-                if not span_is_code(mask, start, end) or not _inside_exponent(source, start, end):
-                    continue
-                replacement = str(value)
-                edits.append(TextEdit(start, end, replacement))
-                fixes.append(
-                    Fix(
-                        "VY054",
-                        line_number(source, start),
-                        "folded integer constant in unsigned exponent expression",
-                        name,
-                        replacement,
-                    )
+            replacement = str(value)
+            edits.append(TextEdit(start, end, replacement))
+            fixes.append(
+                Fix(
+                    "VY054",
+                    line_number(source, start),
+                    "folded integer constant in unsigned exponent expression",
+                    name,
+                    replacement,
                 )
+            )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
 
@@ -1512,7 +1571,12 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
         for name in unsigned_constant_names:
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
-                if _inside_convert_call(source, start) or _inside_range_header(source, start) or _inside_type_subscript(source, start):
+                if (
+                    _inside_convert_call(source, start)
+                    or _inside_range_header(source, start)
+                    or _inside_type_subscript(source, start)
+                    or _is_unsigned_integer_type(lhs_type)
+                ):
                     continue
                 target_type = _unsigned_name_signed_division_target_type(
                     _local_expression(source, start), name, vars_for_line, facts
@@ -2991,6 +3055,7 @@ def _replace_shift_builtin(
     while True:
         mask = code_mask(current)
         constant_values = _integer_constant_values(current)
+        facts = parse_source_facts(current)
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []
         edits: list[TextEdit] = []
@@ -3022,7 +3087,8 @@ def _replace_shift_builtin(
                 operator = "<<" if amount >= 0 else ">>"
                 replacement = f"({value} {operator} {abs(amount)})"
             elif negative_expr is not None:
-                replacement = f"({value} >> ({negative_expr.group(1).strip()}))"
+                vars_for_line = facts.vars_at_line(line_number(current, match.start()))
+                replacement = f"({value} >> ({_unsigned_shift_amount_expr(negative_expr.group(1).strip(), vars_for_line)}))"
             elif positive is not None:
                 replacement = f"({value} << {positive.group(1)})"
             elif positive_constant is not None and positive_constant.group(1) in constant_values:
@@ -3063,6 +3129,27 @@ def _replace_shift_builtin(
         selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
         all_fixes.extend(selected_fixes)
         current = apply_edits(current, selected_edits)
+
+
+def _unsigned_shift_amount_expr(expr: str, vars_for_line: dict[str, str]) -> str:
+    return re.sub(
+        r"\bconvert\s*\(([^,\n]+),\s*int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)",
+        lambda match: _unsigned_shift_convert_replacement(match.group(1).strip(), vars_for_line),
+        expr,
+    )
+
+
+def _unsigned_shift_convert_replacement(expr: str, vars_for_line: dict[str, str]) -> str:
+    if _unsigned_integer_expression(expr, vars_for_line):
+        return f"({expr})" if re.search(r"[-+*/%<>=|&]", expr) else expr
+    return f"convert({expr}, uint256)"
+
+
+def _unsigned_integer_expression(expr: str, vars_for_line: dict[str, str]) -> bool:
+    identifiers = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr)
+    if not identifiers:
+        return _integerish_expression(expr, vars_for_line)
+    return all(_is_unsigned_integer_type(infer_expr_type(identifier, vars_for_line)) for identifier in identifiers)
 
 
 def _integer_constant_values(source: str) -> dict[str, int]:

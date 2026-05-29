@@ -70,8 +70,8 @@ the supported range.
 - Dynamic `Bytes[N]` declarations initialized from hex byte literals: `VY053`
   rewrites the literal to a byte string form accepted by modern Vyper.
 - Exponentiation typing became stricter: `VY054` folds known integer constants
-  used as operands in unsigned constant exponent expressions, and `VY055`
-  rewrites dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`.
+  used as operands in unsigned exponent expressions, and `VY055` rewrites
+  dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`.
 - Range bounds are type-checked against annotated loop variables: `VY056`
   converts signed integer constants inside `range(...)` when the loop variable
   has an unsigned integer annotation, and adds a literal `bound=` when the
@@ -84,6 +84,8 @@ the supported range.
   constants, `ZERO_ADDRESS`, and `EMPTY_BYTES32`.
 - Immutable variables now collide with explicit same-name accessors: `VY013`
   renames the immutable backing variable and preserves the external getter name.
+- Constant variables now collide with explicit same-name accessors: `VY016`
+  renames the constant backing variable and preserves the external getter name.
 - Local interface mutability is checked more strictly: `VY014` changes
   `nonpayable` interface entries to `view` when the implementation is a view
   function or `public(...)` getter.
