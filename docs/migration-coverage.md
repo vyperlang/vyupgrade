@@ -8,9 +8,13 @@ syntax and does not imply a necessary migration from older source.
 
 Rules are version-gated. Unless noted as a target rule, a rule runs only when
 the inferred source version is older than the listed change and the target
-version is at or after it. Target rules cover the legacy `0.2.1` cleanup pass,
-where the tool normalizes pre-`0.2.1` syntax whenever the requested target is in
-the supported range.
+version is at or after it. Target rules cover the legacy cleanup pass for
+pre-`0.2.1` syntax whenever the requested target is in the supported range.
+
+`0.1.0b*` source compilers are validated through a `typed-ast` compatibility
+wrapper. This preserves source compilation for legacy compilers that expected
+pre-Python-3.8 AST node classes while still allowing `vyupgrade` to run under a
+modern Python interpreter.
 
 ## v0.4.x
 
@@ -288,12 +292,18 @@ the supported range.
   `VY202`.
 - Event declaration syntax changed: `VY203`.
 - `log` became a statement: `VY204`.
-- Mapping declarations changed to `HashMap`: `VY205`.
+- Mapping declarations changed to `HashMap`: `VY205` handles both
+  `map(key, value)` and older `value[key]` mapping syntax.
 - Interfaces use `interface`; legacy signature mutability keywords `constant`
-  and `modifying` become `view` and `nonpayable`: `VY206`.
+  and `modifying` become `view` and `nonpayable`: `VY206`. It also handles
+  legacy `contract Foo():` headers, `address(Interface)` annotations,
+  interface-typed storage variables lowered to `address` with call-site casts,
+  and interface methods that must become `payable` because calls pass `value=`.
 - Dynamic byte and string type names capitalized: `VY207`.
 - Byte and string literals are no longer interchangeable: `VYD210`.
 - `assert_modifiable()` and `as_unitless_number()` removed: `VY208`.
+- `create_with_code_of()` renamed: `VY208` rewrites it to
+  `create_copy_of()`.
 - Function input name `value` reserved: `VY212` renames legacy inputs and
   updates local references. `VYD211` remains for cases the fixer cannot handle.
 - `slice()` start and length must be `uint256`: `VYD212`.

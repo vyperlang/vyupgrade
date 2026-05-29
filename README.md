@@ -5,10 +5,11 @@ versions. It rewrites legacy syntax to a chosen target compiler, then proves the
 rewrite is safe by compiling the source and the result and comparing their ABI,
 method identifiers, and storage layout.
 
-It covers the syntax changes from Vyper `0.2.1` through `0.4.3`. Rules are
+It covers installable Vyper `0.1.0b*` prereleases through `0.4.3`. Rules are
 version-gated: a given rewrite only fires when the migration from the source
 version to the target version actually crosses the compiler release that
-introduced the change.
+introduced the change. The detailed syntax-history reference focuses on
+`0.2.1` onward; older beta-era forms are handled as legacy cleanup rules.
 
 ## Install
 
@@ -67,6 +68,13 @@ compiler it needs instead of inheriting an incompatible interpreter. When a file
 belongs to another project, the nearest `pyproject.toml` is read and any
 declared packages matching its Vyper imports (such as `snekmate`) are added to
 the compiler environment.
+
+For `0.1.0b*` source compilers, `vyupgrade` runs the compiler through a
+`typed-ast` compatibility wrapper so the legacy compiler sees pre-Python-3.8
+AST node classes without requiring a local Python 3.6 or 3.7 interpreter. When
+an old compiler cannot produce a modern validation output format, that format is
+dropped for source validation instead of blocking a compile check that the
+compiler never supported.
 
 Dependency inference is intentionally conservative. Exact requirements,
 ordinary version ranges, and Git dependencies are supported. Project-specific
