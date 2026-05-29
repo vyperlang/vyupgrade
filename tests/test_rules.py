@@ -1644,6 +1644,20 @@ def f() -> uint256:
     assert "(COEFF * 46 // 10 ** 6)" in result.source
 
 
+def test_redundant_convert_keeps_signed_integer_expression() -> None:
+    source = """# @version 0.3.10
+E18: constant(int256) = 10 ** 18
+
+@external
+def f(x: int256) -> uint256:
+    return convert(E18 * E18 / (E18 + 10 * x), uint256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return convert(E18 * E18 // (E18 + 10 * x), uint256)" in result.source
+
+
 def test_redundant_convert_to_same_integer_type() -> None:
     source = """# @version 0.3.10
 PRECISION: constant(uint256) = 10**18
@@ -2168,6 +2182,26 @@ def f(a: uint256, b: uint256) -> uint256:
     assert "import math" in result.source
     assert "math.sqrt((a & b))" in result.source
     assert {fix.rule for fix in result.fixes} >= {"VY100", "VY110"}
+
+
+def test_sqrt_rewrite_skips_function_definitions() -> None:
+    source = """# @version ^0.4.0
+@external
+@pure
+def sqrt(x: uint256) -> uint256:
+    return x
+
+@external
+@pure
+def f(x: uint256) -> uint256:
+    return sqrt(x)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "def sqrt(x: uint256)" in result.source
+    assert "def math.sqrt" not in result.source
+    assert "return math.sqrt(x)" in result.source
 
 
 def test_source_at_change_skips_already_current_patch_rewrites() -> None:

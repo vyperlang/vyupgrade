@@ -50,13 +50,24 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
 def compile_target_source(path: Path, source: str, config: Config) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        prefix=f".{path.stem}.vyupgrade.",
-        suffix=".vy",
-        delete=False,
-    ) as tmp:
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix=f".{path.stem}.vyupgrade.",
+            suffix=".vy",
+            dir=path.parent,
+            delete=False,
+        )
+    except OSError:
+        tmp = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix=f".{path.stem}.vyupgrade.",
+            suffix=".vy",
+            delete=False,
+        )
+    with tmp:
         tmp.write(source)
         tmp_path = Path(tmp.name)
     try:

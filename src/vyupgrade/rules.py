@@ -987,7 +987,7 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
             continue
         if target != "uint256" or expr.lstrip().startswith("-") or not re.search(r"[-+*/%]", expr):
             continue
-        if _integerish_expression(expr, vars_for_line):
+        if _integerish_expression(expr, vars_for_line) and not _expression_has_signed_integer(expr, vars_for_line):
             replacement = f"({expr})"
             edits.append(TextEdit(match.start(), close + 1, replacement))
             fixes.append(Fix("VY051", line_number(source, match.start()), "removed redundant uint256 convert around integer expression", source[match.start() : close + 1], replacement))
@@ -1000,6 +1000,13 @@ def _redundant_convert_replacement(expr: str) -> str:
 
 def _simple_nonliteral_expr(expr: str) -> bool:
     return bool(re.fullmatch(r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", expr))
+
+
+def _expression_has_signed_integer(expr: str, vars_for_line: dict[str, str]) -> bool:
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        if _is_signed_integer_type(vars_for_line.get(token)):
+            return True
+    return False
 
 
 def _dynamic_bytes_hex_literals(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -2644,9 +2651,13 @@ def _sqrt(source: str, config: Config, context: MigrationContext) -> tuple[str, 
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     for match in re.finditer(r"(?<!\.)\bsqrt\s*\(", source):
-        if span_is_code(mask, match.start(), match.end()):
-            edits.append(TextEdit(match.start(), match.start() + 4, "math.sqrt"))
-            fixes.append(Fix("VY100", line_number(source, match.start()), "moved sqrt to math module", "sqrt", "math.sqrt"))
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        if re.search(r"\bdef\s*$", source[line_start : match.start()]):
+            continue
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        edits.append(TextEdit(match.start(), match.start() + 4, "math.sqrt"))
+        fixes.append(Fix("VY100", line_number(source, match.start()), "moved sqrt to math module", "sqrt", "math.sqrt"))
     next_source = apply_edits(source, edits)
     if edits and not re.search(r"^\s*import\s+math\s*$", next_source, re.MULTILINE):
         next_source = _insert_import(next_source, "import math\n")

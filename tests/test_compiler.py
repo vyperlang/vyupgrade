@@ -235,6 +235,32 @@ def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tm
     assert calls["run"] == (["vyper"], True, (contract.parent,), True)
 
 
+def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contracts" / "contract.vy"
+    contract.parent.mkdir()
+    contract.write_text("# @version 0.4.0\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["target_parent"] = path.parent
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    result = compile_target_source(contract, "#pragma version 0.4.3\n", Config(paths=(contract,)))
+
+    assert result.status == "passed"
+    assert calls["target_parent"] == contract.parent
+
+
 def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")
