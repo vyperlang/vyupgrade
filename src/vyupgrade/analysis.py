@@ -251,6 +251,11 @@ class SourceFacts:
 def parse_source_facts(source: str) -> SourceFacts:
     facts = SourceFacts()
     lines = source.splitlines(keepends=True)
+    line_offsets: list[int] = []
+    cursor = 0
+    for raw_line in lines:
+        line_offsets.append(cursor)
+        cursor += len(raw_line)
     mask = code_mask(source)
     current_interface: str | None = None
     pending_interface_method: str | None = None
@@ -265,21 +270,18 @@ def parse_source_facts(source: str) -> SourceFacts:
     current_function_line: int | None = None
     current_function_indent = 0
 
-    offset = 0
     for line_no, raw_line in enumerate(lines, start=1):
+        offset = line_offsets[line_no - 1]
         line = raw_line.rstrip("\n")
         if _line_starts_inside_string(source, mask, offset):
-            offset += len(raw_line)
             continue
         stripped = line.strip()
         indent = len(line) - len(line.lstrip(" \t"))
         if not stripped or stripped.startswith("#"):
-            offset += len(raw_line)
             continue
 
         if current_event_indent is not None:
             if indent > current_event_indent:
-                offset += len(raw_line)
                 continue
             current_event_indent = None
 
@@ -288,7 +290,6 @@ def parse_source_facts(source: str) -> SourceFacts:
         event_match = EVENT_RE.match(header)
         if event_match:
             current_event_indent = indent
-            offset += len(raw_line)
             continue
 
         if current_struct and indent <= current_struct_indent:
@@ -322,7 +323,6 @@ def parse_source_facts(source: str) -> SourceFacts:
                         facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
                 pending_function_line = None
                 pending_function_header = []
-            offset += len(raw_line)
             continue
 
         import_match = re.match(r"from\s+vyper\.interfaces\s+import\s+(.+)$", stripped)
@@ -330,7 +330,6 @@ def parse_source_facts(source: str) -> SourceFacts:
             for name in [part.strip() for part in import_match.group(1).split(",")]:
                 if name in {"ERC20", "ERC20Detailed"}:
                     facts.imported_interfaces[name] = "I" + name
-            offset += len(raw_line)
             continue
 
         interface_match = INTERFACE_RE.match(header)
@@ -339,7 +338,6 @@ def parse_source_facts(source: str) -> SourceFacts:
             facts.interfaces.setdefault(current_interface, {})
             facts.interface_returns.setdefault(current_interface, {})
             facts.interface_params.setdefault(current_interface, {})
-            offset += len(raw_line)
             continue
         if current_interface and indent == 0:
             current_interface = None
@@ -352,7 +350,6 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_struct_indent = indent
             facts.structs.add(current_struct)
             facts.struct_fields.setdefault(current_struct, {})
-            offset += len(raw_line)
             continue
 
         if current_struct:
@@ -360,7 +357,6 @@ def parse_source_facts(source: str) -> SourceFacts:
             if decl is not None:
                 name, type_name = decl
                 facts.struct_fields[current_struct][name] = type_name
-            offset += len(raw_line)
             continue
 
         flag_match = FLAG_RE.match(header)
@@ -376,7 +372,6 @@ def parse_source_facts(source: str) -> SourceFacts:
             }:
                 facts.interfaces[current_interface][pending_interface_method] = stripped
                 pending_interface_method = None
-                offset += len(raw_line)
                 continue
             if pending_interface_header:
                 header_line = _strip_inline_comment(stripped).strip()
@@ -400,7 +395,6 @@ def parse_source_facts(source: str) -> SourceFacts:
                             method_name if def_match.group(4) is None else None
                         )
                     pending_interface_header = []
-                offset += len(raw_line)
                 continue
             def_match = DEF_RE.match(stripped)
             if def_match:
@@ -416,18 +410,15 @@ def parse_source_facts(source: str) -> SourceFacts:
                         3
                     ).strip()
                 pending_interface_method = method_name if def_match.group(4) is None else None
-                offset += len(raw_line)
                 continue
             multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
             if multiline_def:
                 pending_interface_header = [_strip_inline_comment(stripped).strip()]
-            offset += len(raw_line)
             continue
 
         decorator_match = re.match(r"@([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
         if decorator_match:
             pending_decorators.append((decorator_match.group(1), line_no))
-            offset += len(raw_line)
             continue
 
         function_header = _strip_inline_comment(stripped).strip()
@@ -452,13 +443,11 @@ def parse_source_facts(source: str) -> SourceFacts:
             if def_match.group(3):
                 facts.function_returns[current_function_line] = def_match.group(3).strip()
                 facts.function_return_names[def_match.group(1)] = def_match.group(3).strip()
-            offset += len(raw_line)
             continue
         if re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", function_header):
             pending_function_line = line_no
             pending_function_indent = indent
             pending_function_header = [function_header]
-            offset += len(raw_line)
             continue
 
         if current_function_line is not None and indent <= current_function_indent and stripped:
@@ -477,12 +466,10 @@ def parse_source_facts(source: str) -> SourceFacts:
                 facts.function_loop_vars.setdefault(current_function_line, set()).add(
                     loop_var.group(1)
                 )
-                offset += len(raw_line)
                 continue
 
         decl = _parse_var_decl(stripped)
         if decl is None:
-            offset += len(raw_line)
             continue
         name, type_name = decl
         if current_function_line is None:
@@ -492,7 +479,6 @@ def parse_source_facts(source: str) -> SourceFacts:
                 facts.storage_vars[name] = storage_type
         else:
             facts.function_vars[current_function_line][name] = type_name
-        offset += len(raw_line)
 
     if current_function_line is not None:
         facts.function_ends[current_function_line] = len(lines)
