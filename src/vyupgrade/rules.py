@@ -2575,8 +2575,13 @@ def _typed_external_call_arguments(source: str, config: Config, context: Migrati
 def _all_external_call_matches(
     source: str, facts: SourceFacts
 ) -> list[tuple[int, int, str, str, str | None]]:
+    target_expr = (
+        r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*"
+        r"(?:\[[^\]\n]+\])?"
+        r"(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?)*"
+    )
     variable_call_re = re.compile(
-        r"(?<![\w.])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+        rf"(?<![\w.])(?P<target>{target_expr})\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
     )
     matches: list[tuple[int, int, str, str, str | None]] = []
     matches.extend(_interface_cast_call_matches(source, facts.interfaces))
