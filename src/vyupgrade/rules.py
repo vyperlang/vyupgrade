@@ -779,11 +779,7 @@ def _reserved_parameter_names(
             start = args_start + name_match.start()
             edits.append(TextEdit(start, start + len("value"), replacement))
         function_line = line_number(source, match.start())
-        body_start = (
-            line_offsets[function_line] if function_line < len(line_offsets) else match.end()
-        )
-        end_line = facts.function_ends.get(function_line, len(line_offsets))
-        body_end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+        body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
         for name_match in re.finditer(r"\bvalue\b", source[body_start:body_end]):
             start = body_start + name_match.start()
             end = body_start + name_match.end()
@@ -1378,14 +1374,10 @@ def _pure_immutable_reads(
 def _function_contains_external_view_call(
     source: str, facts: SourceFacts, function_line: int
 ) -> bool:
-    function_start = _line_offsets(source)[function_line - 1]
-    function_end_line = facts.function_ends.get(function_line, len(source.splitlines()))
     line_offsets = _line_offsets(source)
-    function_end = (
-        line_offsets[function_end_line] if function_end_line < len(line_offsets) else len(source)
-    )
+    body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
     for start, _end, target, method, cast_type in _all_external_call_matches(source, facts):
-        if not (function_start <= start < function_end):
+        if not (body_start <= start < body_end):
             continue
         vars_for_line = facts.vars_at_line(line_number(source, start))
         if target.startswith("self."):
@@ -1419,9 +1411,7 @@ def _function_read_name(
     function_line: int,
     names: set[str],
 ) -> str | None:
-    body_start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
-    end_line = facts.function_ends.get(function_line, len(line_offsets))
-    body_end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+    body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
     local_names = set(facts.function_params.get(facts.function_names.get(function_line, ""), {}))
     for name in sorted(names):
         if name in local_names:
@@ -1443,14 +1433,24 @@ def _function_contains(
     function_line: int,
     name: str,
 ) -> bool:
-    body_start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
-    end_line = facts.function_ends.get(function_line, len(line_offsets))
-    body_end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+    body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
     pattern = re.compile(rf"\b{re.escape(name)}\b")
     return any(
         span_is_code(mask, match.start(), match.end())
         for match in pattern.finditer(source, body_start, body_end)
     )
+
+
+def _function_body_span(
+    source: str,
+    line_offsets: list[int],
+    facts: SourceFacts,
+    function_line: int,
+) -> tuple[int, int]:
+    start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
+    end_line = facts.function_ends.get(function_line, len(line_offsets))
+    end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+    return start, end
 
 
 def _line_offsets(source: str) -> list[int]:
