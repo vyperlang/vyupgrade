@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import StringIO
 
+from rich.console import Console
+
+from vyupgrade.models import Diagnostic
 from vyupgrade.models import FileReport, RunReport
-from vyupgrade.reporting import render_text
+from vyupgrade.reporting import THEME, render_rich, render_text, write_human_report
 
 
 def test_render_text_includes_compile_errors() -> None:
@@ -42,3 +46,52 @@ def test_render_text_hides_stderr_for_successful_compiles() -> None:
     assert "target error:" not in text
     assert "uv cache warning" not in text
     assert "warning output" not in text
+
+
+def test_write_human_report_uses_plain_text_for_non_tty_streams() -> None:
+    report = RunReport(
+        source_version=None,
+        target_version="0.4.3",
+        files=[FileReport(path=Path("ok.vy"), changed=True, source_compile="passed", target_compile="passed")],
+    )
+    stream = StringIO()
+
+    write_human_report(report, stream)
+
+    assert stream.getvalue() == render_text(report)
+
+
+def test_render_rich_marks_success_warning_and_error_output() -> None:
+    file_report = FileReport(
+        path=Path("mixed.vy"),
+        changed=True,
+        diagnostics=[
+            Diagnostic("VYD001", 1, "warning message", "warning"),
+            Diagnostic("VYD002", 2, "error message", "error"),
+        ],
+        source_compile="passed",
+        target_compile="failed",
+        target_error="compiler failed",
+        abi_equal=True,
+        storage_layout_equal=False,
+    )
+    report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
+    stream = StringIO()
+    console = Console(
+        file=stream,
+        force_terminal=True,
+        color_system="standard",
+        no_color=False,
+        theme=THEME,
+        width=120,
+    )
+
+    render_rich(report, console)
+
+    text = stream.getvalue()
+    assert "\x1b[" in text
+    assert "source compile: \x1b[32mpassed" in text
+    assert "target compile: \x1b[1;31mfailed" in text
+    assert "VYD001:1 warning message" in text
+    assert "VYD002:2 error message" in text
+    assert "storage layout unchanged: \x1b[33mFalse" in text

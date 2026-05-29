@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "banteg" }]
-dependencies = ["uv>=0.8.0"]
+dependencies = ["rich>=13.0.0", "uv>=0.8.0"]
 
 [project.scripts]
 vyupgrade = "vyupgrade.cli:main"

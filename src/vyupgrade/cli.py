@@ -11,7 +11,7 @@ from pathlib import Path
 from .compiler import compare_artifacts, compile_source_file, compile_target_source
 from .models import Config, Diagnostic, FileReport, RunReport
 from .project import discover_files
-from .reporting import render_text, write_json_report
+from .reporting import write_human_report, write_json_report
 from .rules import apply_rules
 from .versions import MigrationContext, infer_pragma
 
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         write_json_report(config.report_json, run_report)
 
     if not config.diff:
-        sys.stdout.write(render_text(run_report))
+        write_human_report(run_report, sys.stdout)
 
     if any_target_failed:
         return 2
