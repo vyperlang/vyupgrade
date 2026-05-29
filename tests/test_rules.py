@@ -1407,6 +1407,32 @@ def f(pool: address, amount: uint256, i: uint256) -> uint256:
     assert "staticcall CurveBase(pool).calc_withdraw_one_coin(amount, convert(i, int128))" in result.source
 
 
+def test_external_call_arg_uses_nearest_loop_type_for_reused_name() -> None:
+    source = """# @version 0.2.12
+interface Curve:
+    def balances(i: uint256) -> uint256: view
+    def price_scale(i: uint256) -> uint256: view
+
+N_COINS: constant(int128) = 3
+
+@external
+def f(pool: address) -> uint256:
+    total: uint256 = 0
+    for k in range(N_COINS):
+        total += Curve(pool).balances(k)
+    for k in range(N_COINS - 1):
+        total += Curve(pool).price_scale(k)
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for k: int128 in range(N_COINS):" in result.source
+    assert "staticcall Curve(pool).balances(convert(k, uint256))" in result.source
+    assert "for k: uint256 in range(convert(N_COINS, uint256) - 1, bound=2):" in result.source
+    assert "staticcall Curve(pool).price_scale(k)" in result.source
+
+
 def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name() -> None:
     source = """# @version 0.2.4
 N_COINS: constant(int128) = 2

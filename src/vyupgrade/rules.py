@@ -958,7 +958,12 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
         if args is None or len(args) != 2:
             continue
         expr, target = args[0].strip(), args[1].strip()
-        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        vars_for_line = _vars_for_argument(
+            source,
+            open_index + 1 + source[open_index + 1 : close].find(args[0]),
+            expr,
+            facts.vars_at_line(line_number(source, match.start())),
+        )
         expr_type = infer_expr_type(expr, vars_for_line, facts)
         if (
             is_integer_type(target)
@@ -1798,13 +1803,14 @@ def _typed_external_call_arguments(source: str, config: Config, context: Migrati
             if index >= len(params):
                 break
             expected = list(params.values())[index]
-            replacement = _cast_integer_arg_to_expected(arg, expected, vars_for_line, facts)
-            if replacement == arg:
-                cursor += len(arg) + 1
-                continue
             arg_start = source.find(arg, cursor, close)
             if arg_start == -1:
                 cursor += len(arg) + 1
+                continue
+            vars_for_arg = _vars_for_argument(source, arg_start, arg, vars_for_line)
+            replacement = _cast_integer_arg_to_expected(arg, expected, vars_for_arg, facts)
+            if replacement == arg:
+                cursor = arg_start + len(arg) + 1
                 continue
             edits.append(TextEdit(arg_start, arg_start + len(arg), replacement))
             fixes.append(
@@ -1834,6 +1840,20 @@ def _all_external_call_matches(
         for match in variable_call_re.finditer(source)
     )
     return sorted(matches)
+
+
+def _vars_for_argument(
+    source: str, arg_start: int, arg: str, vars_for_line: dict[str, str]
+) -> dict[str, str]:
+    name = arg.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return vars_for_line
+    loop_type = _nearest_loop_var_type(source, arg_start, name)
+    if loop_type is None:
+        return vars_for_line
+    scoped = dict(vars_for_line)
+    scoped[name] = loop_type
+    return scoped
 
 
 def _signed_name_has_unsigned_context(
