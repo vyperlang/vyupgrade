@@ -528,6 +528,8 @@ def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext
         current, new_fixes = _replace_assert_modifiable(current)
         fixes.extend(new_fixes)
     if _enabled("VY209", config, context):
+        current, new_fixes = _rewrite_method_id_bytes32_comparisons(current)
+        fixes.extend(new_fixes)
         current, new_fixes = _remove_call_keyword_arg(current, "method_id", "output_type", "bytes4", "VY209")
         fixes.extend(new_fixes)
     return current, fixes, []
@@ -982,7 +984,7 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
                 )
             )
             continue
-        if target != "uint256" or not re.search(r"[-+*/%]", expr):
+        if target != "uint256" or expr.lstrip().startswith("-") or not re.search(r"[-+*/%]", expr):
             continue
         if _integerish_expression(expr, vars_for_line):
             replacement = f"({expr})"
@@ -1583,6 +1585,23 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
         rhs_offset = _expression_start_offset(code_line)
         rhs_start = offset + rhs_offset
         rhs = code_line[rhs_offset:]
+        negative_assignment = re.fullmatch(r"(?P<prefix>\s*)\(?\s*-\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)?(?P<suffix>\s*)", rhs)
+        if negative_assignment is not None and _is_unsigned_integer_type(lhs_type):
+            name = negative_assignment.group("name")
+            if _is_signed_integer_type(vars_for_line.get(name)):
+                replacement = f"{negative_assignment.group('prefix')}convert(-{name}, {normalize_type(lhs_type or 'uint256')}){negative_assignment.group('suffix')}"
+                edits.append(TextEdit(rhs_start, rhs_start + len(rhs), replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted signed negation assigned to unsigned integer",
+                        rhs,
+                        replacement,
+                    )
+                )
+                offset += len(raw_line)
+                continue
         loop_vars = facts.loop_vars_at_line(line_no)
         signed_names = sorted(
             (
@@ -3285,6 +3304,84 @@ def _remove_call_keyword_arg(
         edits.append(TextEdit(match.start(), close + 1, replacement))
         fixes.append(Fix(rule, line_number(source, match.start()), f"removed redundant {call_name} {keyword} keyword", source[match.start() : close + 1], replacement))
     return apply_edits(source, edits), fixes
+
+
+def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\bmethod_id\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        open_index = source.find("(", match.start())
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        raw_args = source[open_index + 1 : close]
+        arg_spans = _split_top_level_arg_spans(raw_args)
+        if arg_spans is None:
+            continue
+        output_value_span: tuple[int, int] | None = None
+        for arg_start, arg_end, arg in arg_spans:
+            name, sep, raw_value = arg.partition("=")
+            if not sep or name.strip() != "output_type" or raw_value.strip() != "bytes32":
+                continue
+            value_start = arg_start + arg.index(raw_value) + len(raw_value) - len(raw_value.lstrip())
+            value_end = value_start + len(raw_value.strip())
+            output_value_span = (open_index + 1 + value_start, open_index + 1 + value_end)
+            break
+        if output_value_span is None:
+            continue
+        comparison = _method_id_comparison_operand(source, match.start(), close)
+        if comparison is None:
+            continue
+        expr_start, expr_end, expr = comparison
+        replacement = f"convert({expr}, bytes4)"
+        edits.append(TextEdit(expr_start, expr_end, replacement))
+        edits.append(TextEdit(output_value_span[0], output_value_span[1], "bytes4"))
+        fixes.append(
+            Fix(
+                "VY209",
+                line_number(source, match.start()),
+                "converted bytes32 method_id comparison to bytes4",
+                source[expr_start : close + 1],
+                f"{replacement} == {source[match.start() : close + 1].replace('output_type=bytes32', 'output_type=bytes4')}",
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _method_id_comparison_operand(source: str, call_start: int, call_end: int) -> tuple[int, int, str] | None:
+    line_start = source.rfind("\n", 0, call_start) + 1
+    line_end = source.find("\n", call_end)
+    if line_end == -1:
+        line_end = len(source)
+    eq_left = source.rfind("==", line_start, call_start)
+    if eq_left != -1:
+        expr_start = line_start
+        prefix_match = re.match(r"\s*(?:assert|return)\s+", source[line_start:eq_left])
+        if prefix_match is not None:
+            expr_start = line_start + prefix_match.end()
+        while expr_start < eq_left and source[expr_start].isspace():
+            expr_start += 1
+        expr_end = eq_left
+        while expr_end > expr_start and source[expr_end - 1].isspace():
+            expr_end -= 1
+        expr = source[expr_start:expr_end]
+        if expr and not expr.startswith("convert("):
+            return expr_start, expr_end, expr
+    eq_right = source.find("==", call_end, line_end)
+    if eq_right != -1:
+        expr_start = eq_right + 2
+        while expr_start < line_end and source[expr_start].isspace():
+            expr_start += 1
+        expr_end = line_end
+        while expr_end > expr_start and source[expr_end - 1].isspace():
+            expr_end -= 1
+        expr = source[expr_start:expr_end]
+        if expr and not expr.startswith("convert("):
+            return expr_start, expr_end, expr
+    return None
 
 
 def _replace_builtin_call(source: str, name: str, operator: str, unary: bool, rule: str) -> tuple[str, list[Fix]]:

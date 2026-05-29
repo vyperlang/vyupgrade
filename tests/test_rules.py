@@ -1526,6 +1526,21 @@ def f(addr: address, gauge_type: int128):
     assert "convert(gauge_type, uint256)" not in result.source
 
 
+def test_signed_negation_assigned_to_uint_is_converted() -> None:
+    source = """# @version 0.2.16
+@external
+def f(position: int256) -> uint256:
+    if position < 0:
+        _pos: uint256 = (-position)
+        return _pos
+    return 0
+"""
+
+    result = apply_rules(source, config())
+
+    assert "_pos: uint256 = convert(-position, uint256)" in result.source
+
+
 def test_external_call_arg_uses_nearest_loop_type_for_reused_name() -> None:
     source = """# @version 0.2.12
 interface Curve:
@@ -2317,6 +2332,22 @@ SIG: constant(bytes4) = method_id("transfer(address,uint256)", output_type=bytes
     assert 'method_id("transfer(address,uint256)")' in result.source
     assert "output_type=bytes4" not in result.source
     assert any(fix.rule == "VY209" for fix in result.fixes)
+
+
+def test_legacy_method_id_bytes32_comparison_converts_to_bytes4() -> None:
+    source = """# @version 0.2.1
+@external
+def f(return_value: bytes32):
+    assert return_value == method_id("onERC721Received(address,address,uint256,bytes)", output_type=bytes32)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert (
+        'assert convert(return_value, bytes4) == method_id("onERC721Received(address,address,uint256,bytes)")'
+        in result.source
+    )
+    assert "output_type=" not in result.source
 
 
 def test_constructor_nonreentrant_is_removed_before_deploy_rewrite() -> None:
