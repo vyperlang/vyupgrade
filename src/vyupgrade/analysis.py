@@ -371,7 +371,9 @@ def parse_source_facts(source: str) -> SourceFacts:
                 continue
             current_event_indent = None
 
-        event_match = EVENT_RE.match(stripped)
+        header = _strip_inline_comment(stripped).strip()
+
+        event_match = EVENT_RE.match(header)
         if event_match:
             current_event_indent = indent
             offset += len(raw_line)
@@ -417,7 +419,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             offset += len(raw_line)
             continue
 
-        interface_match = INTERFACE_RE.match(stripped)
+        interface_match = INTERFACE_RE.match(header)
         if interface_match:
             current_interface = interface_match.group(1)
             facts.interfaces.setdefault(current_interface, {})
@@ -430,7 +432,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             pending_interface_method = None
             pending_interface_header = []
 
-        struct_match = STRUCT_RE.match(stripped)
+        struct_match = STRUCT_RE.match(header)
         if struct_match:
             current_struct = struct_match.group(1)
             current_struct_indent = indent
@@ -447,7 +449,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             offset += len(raw_line)
             continue
 
-        flag_match = FLAG_RE.match(stripped)
+        flag_match = FLAG_RE.match(header)
         if flag_match:
             facts.flags_or_enums.add(flag_match.group(1))
 
@@ -652,7 +654,7 @@ def infer_expr_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts
         return normalize_type(vars_for_line[expr])
     if expr.startswith("self.") and expr[5:] in vars_for_line:
         return normalize_type(vars_for_line[expr[5:]])
-    indexed_type = _infer_indexed_type(expr, vars_for_line)
+    indexed_type = _infer_indexed_type(expr, vars_for_line, facts)
     if indexed_type is not None:
         return indexed_type
     return None
@@ -721,7 +723,24 @@ def _infer_attribute_type(expr: str, vars_for_line: dict[str, str], facts: Sourc
     return facts.struct_fields.get(normalize_type(base_type), {}).get(field_name)
 
 
-def _infer_indexed_type(expr: str, vars_for_line: dict[str, str]) -> str | None:
+def _infer_indexed_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None) -> str | None:
+    open_index = _first_top_level_index(expr)
+    if open_index is not None:
+        base = expr[:open_index].strip()
+        base_type = _raw_index_base_type(base, vars_for_line, facts) or infer_expr_type(base, vars_for_line, facts)
+        if base_type is None:
+            return None
+        rest = expr[open_index:]
+        while rest.startswith("["):
+            close = _matching_local_bracket(rest, 0)
+            if close is None:
+                return None
+            base_type = indexed_value_type(base_type)
+            if base_type is None:
+                return None
+            rest = rest[close + 1 :]
+        return normalize_type(base_type) if rest == "" else None
+
     expr = expr.removeprefix("self.")
     root_match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", expr)
     if root_match is None:
@@ -739,6 +758,39 @@ def _infer_indexed_type(expr: str, vars_for_line: dict[str, str]) -> str | None:
             return None
         rest = rest[close + 1 :]
     return normalize_type(type_name) if rest == "" else None
+
+
+def _raw_index_base_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None) -> str | None:
+    if expr.startswith("self.") and facts is not None:
+        return facts.storage_vars.get(expr[5:]) or vars_for_line.get(expr[5:])
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        return vars_for_line.get(expr)
+    return None
+
+
+def _first_top_level_index(expr: str) -> int | None:
+    depth = 0
+    for index, char in enumerate(expr):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "[" and depth == 0:
+            return index
+    return None
+
+
+def _matching_local_bracket(expr: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(expr)):
+        char = expr[index]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def iter_code_matches(source: str, pattern: re.Pattern[str]):
