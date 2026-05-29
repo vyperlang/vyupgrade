@@ -4,7 +4,6 @@ requires-python = ">=3.11"
 
 [options]
 exclude-newer = "2026-05-27T14:26:03.814034Z"
-exclude-newer-span = "PT24H"
 
 [[package]]
 name = "colorama"
