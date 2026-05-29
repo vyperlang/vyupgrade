@@ -189,11 +189,10 @@ def build_corpus(roots: tuple[Path, ...], output: Path, max_per_repo: int = 0) -
                 continue
             repo_seen[str(repo_root)] += 1
             relpath = path.relative_to(repo_root)
-            digest = hashlib.sha256(source.encode()).hexdigest()
+            digest = _source_hash(source)
             corpus_repo = f"{repo_root.parent.name}__{repo_root.name}"
             corpus_path = contracts_dir / corpus_repo / relpath
-            corpus_path.parent.mkdir(parents=True, exist_ok=True)
-            corpus_path.write_text(source, encoding="utf-8")
+            corpus_path = _write_corpus_source(source, corpus_path, digest, counts)
 
             compiler = compiler_version_for_spec(pragma)
             item = {
@@ -205,7 +204,7 @@ def build_corpus(roots: tuple[Path, ...], output: Path, max_per_repo: int = 0) -
                 "corpus_repo_root": str(contracts_dir / corpus_repo),
                 "pragma": pragma,
                 "source_compiler": compiler,
-                "sha256": digest,
+                    "sha256": digest,
             }
             items.append(item)
             counts["applicable"] += 1
@@ -270,9 +269,9 @@ def import_old_vyper_bug(source: Path, output: Path) -> dict[str, Any]:
                 compiler = compiler_version_for_spec(csv_version) or compiler_version_for_spec(source_spec)
                 corpus_repo = "old_vyper_bug"
                 relpath = Path(chain) / source_path.name
+                digest = _source_hash(source_text)
                 corpus_path = contracts_dir / corpus_repo / relpath
-                corpus_path.parent.mkdir(parents=True, exist_ok=True)
-                corpus_path.write_text(source_text, encoding="utf-8")
+                corpus_path = _write_corpus_source(source_text, corpus_path, digest, counts)
                 item = {
                     "source_path": str(source_path),
                     "repo_root": str(root),
@@ -284,7 +283,7 @@ def import_old_vyper_bug(source: Path, output: Path) -> dict[str, Any]:
                     "source_pragma": pragma,
                     "source_compiler": compiler,
                     "csv_version": csv_version,
-                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "sha256": digest,
                     "chain": chain,
                     "address": address,
                     "archive": str(archive_path) if archive_path.exists() else None,
@@ -350,12 +349,11 @@ def import_smart_contract_fiesta(source: Path, output: Path) -> dict[str, Any]:
         bytecode_hash = str(metadata.get("BytecodeHash") or metadata_path.parent.name)
         for filename, source_text, source_path in source_files:
             pragma = infer_pragma(source_text)
-            digest = hashlib.sha256(source_text.encode()).hexdigest()
+            digest = _source_hash(source_text)
             corpus_repo = "smart_contract_fiesta"
             relpath = Path(bytecode_hash[:2]) / bytecode_hash / _safe_filename(filename)
             corpus_path = contracts_dir / corpus_repo / relpath
-            corpus_path.parent.mkdir(parents=True, exist_ok=True)
-            corpus_path.write_text(source_text, encoding="utf-8")
+            corpus_path = _write_corpus_source(source_text, corpus_path, digest, counts)
 
             item = {
                 "source_path": str(source_path),
@@ -481,12 +479,11 @@ def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
                 counts[f"{parquet_name}:read_error"] += 1
                 continue
 
-            digest = hashlib.sha256(source_text.encode()).hexdigest()
+            digest = _source_hash(source_text)
             corpus_repo = "vyper_2026"
             relpath = Path(row.get("chain") or "unknown") / f"{row.get('address') or digest}.vy"
             corpus_path = contracts_dir / corpus_repo / relpath
-            corpus_path.parent.mkdir(parents=True, exist_ok=True)
-            corpus_path.write_text(source_text, encoding="utf-8")
+            corpus_path = _write_corpus_source(source_text, corpus_path, digest, counts)
             item = {
                 **record,
                 "source_path": str(local_source_path),
@@ -553,15 +550,18 @@ def dedupe_manifests(manifest_paths: list[Path] | None, output_path: Path) -> di
             if not digest:
                 counts["missing_sha256"] += 1
                 continue
+            repaired = _repair_manifest_item_path(item, digest, counts)
+            if repaired is None:
+                continue
             existing = by_sha.get(digest)
             if existing is not None:
                 counts["duplicates"] += 1
                 existing["duplicate_count"] = existing.get("duplicate_count", 0) + 1
                 sources = existing.setdefault("duplicate_sources", [])
                 if len(sources) < 20:
-                    sources.append(_duplicate_source(item, manifest_path))
+                    sources.append(_duplicate_source(repaired, manifest_path))
                 continue
-            kept = dict(item)
+            kept = dict(repaired)
             kept["source_manifest"] = str(manifest_path)
             by_sha[digest] = kept
             counts["deduped"] += 1
@@ -709,11 +709,11 @@ def _collect_codeslaw_matches(
                 if not is_supported_source_version(pragma):
                     counts["unsupported_pragma"] += 1
                     continue
+                digest = _source_hash(code)
                 corpus_repo = f"codeslaw__{match_chain}"
                 relpath = Path(address) / _safe_filename(filename)
                 corpus_path = contracts_dir / corpus_repo / relpath
-                corpus_path.parent.mkdir(parents=True, exist_ok=True)
-                corpus_path.write_text(code, encoding="utf-8")
+                corpus_path = _write_corpus_source(code, corpus_path, digest, counts)
                 compiler = compiler_version_for_spec(pragma)
                 items.append(
                     {
@@ -725,7 +725,7 @@ def _collect_codeslaw_matches(
                         "corpus_repo_root": str(contracts_dir / corpus_repo),
                         "pragma": pragma,
                         "source_compiler": compiler,
-                        "sha256": hashlib.sha256(code.encode()).hexdigest(),
+                        "sha256": digest,
                         "address": address,
                         "chain": match_chain,
                         "contract_name": contract_detail.get("name"),
@@ -841,6 +841,72 @@ def _summary_path(results_path: Path) -> Path:
     if results_path.name.endswith("-results.json"):
         return results_path.with_name(f"{results_path.name[:-len('-results.json')]}-summary.json")
     return results_path.with_name(f"{results_path.stem}-summary.json")
+
+
+def _source_hash(source: str) -> str:
+    return hashlib.sha256(source.encode()).hexdigest()
+
+
+def _file_hash(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _write_corpus_source(source: str, preferred_path: Path, digest: str, counts: Counter[str]) -> Path:
+    target = _collision_safe_path(preferred_path, digest)
+    if target != preferred_path:
+        counts["corpus_path_collisions"] += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+    return target
+
+
+def _collision_safe_path(preferred_path: Path, digest: str) -> Path:
+    existing_hash = _file_hash(preferred_path)
+    if existing_hash is None or existing_hash == digest:
+        return preferred_path
+
+    stem = preferred_path.stem
+    suffix = preferred_path.suffix
+    parent = preferred_path.parent
+    short = digest[:8]
+    candidate = parent / f"{stem}.{short}{suffix}"
+    index = 2
+    while True:
+        candidate_hash = _file_hash(candidate)
+        if candidate_hash is None or candidate_hash == digest:
+            return candidate
+        candidate = parent / f"{stem}.{short}.{index}{suffix}"
+        index += 1
+
+
+def _repair_manifest_item_path(item: dict[str, Any], digest: str, counts: Counter[str]) -> dict[str, Any] | None:
+    corpus_path = Path(str(item["corpus_path"]))
+    if _file_hash(corpus_path) == digest:
+        return item
+
+    counts["corpus_path_hash_mismatch"] += 1
+    source_path_raw = item.get("source_path")
+    if not isinstance(source_path_raw, str) or "://" in source_path_raw:
+        counts["unrepairable_corpus_path"] += 1
+        return None
+
+    source_path = Path(source_path_raw).expanduser()
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        counts["unrepairable_corpus_path"] += 1
+        return None
+    if _source_hash(source) != digest:
+        counts["unrepairable_corpus_path"] += 1
+        return None
+
+    repaired_path = _write_corpus_source(source, corpus_path, digest, counts)
+    repaired = dict(item)
+    repaired["corpus_path"] = str(repaired_path)
+    return repaired
 
 
 def _error_excerpt(text: str | None) -> str | None:

@@ -67,16 +67,19 @@ def test_dedupe_manifests_keeps_one_item_per_source_hash(tmp_path: Path) -> None
     first_source = tmp_path / "corpus" / "a.vy"
     second_source = tmp_path / "corpus" / "b.vy"
     first_source.parent.mkdir()
-    first_source.write_text("x: uint256\n", encoding="utf-8")
-    second_source.write_text("x: uint256\n", encoding="utf-8")
+    source = "x: uint256\n"
+    digest = corpus._source_hash(source)
+    first_source.write_text(source, encoding="utf-8")
+    second_source.write_text(source, encoding="utf-8")
     base_item = {
+        "source_path": str(first_source),
         "repo": "first",
         "relpath": "a.vy",
         "corpus_path": str(first_source),
         "corpus_repo_root": str(first_source.parent),
         "pragma": "0.3.7",
         "source_compiler": "0.3.7",
-        "sha256": "abc",
+        "sha256": digest,
     }
     first.write_text(
         '{"items": [%s]}' % json_dumps(base_item),
@@ -87,6 +90,7 @@ def test_dedupe_manifests_keeps_one_item_per_source_hash(tmp_path: Path) -> None
         % json_dumps(
             {
                 **base_item,
+                "source_path": str(second_source),
                 "repo": "second",
                 "relpath": "b.vy",
                 "corpus_path": str(second_source),
@@ -108,6 +112,81 @@ def test_dedupe_manifests_keeps_one_item_per_source_hash(tmp_path: Path) -> None
     assert len(manifest["items"]) == 1
     assert manifest["items"][0]["duplicate_count"] == 1
     assert manifest["items"][0]["duplicate_sources"][0]["repo"] == "second"
+
+
+def test_build_corpus_uses_hash_suffixed_path_for_path_collisions(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    first = tmp_path / "dev" / "yearn" / "yearn-token"
+    second = tmp_path / "yearn" / "yearn-token"
+    for root in (first, second):
+        (root / ".git").mkdir(parents=True)
+        (root / "contracts").mkdir()
+    first_source = "# @version 0.2.15\nx: uint256\n"
+    second_source = "# @version 0.2.8\nx: uint256\n"
+    (first / "contracts" / "Token.vy").write_text(first_source, encoding="utf-8")
+    (second / "contracts" / "Token.vy").write_text(second_source, encoding="utf-8")
+
+    manifest = corpus.build_corpus((tmp_path / "dev", tmp_path / "yearn"), tmp_path / "corpus" / "vyper")
+
+    paths = [Path(item["corpus_path"]) for item in manifest["items"]]
+    assert len(paths) == 2
+    assert len(set(paths)) == 2
+    assert manifest["counts"]["corpus_path_collisions"] == 1
+    assert sorted(path.read_text(encoding="utf-8") for path in paths) == sorted([first_source, second_source])
+
+
+def test_dedupe_repairs_manifest_path_collisions_from_source_path(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    first_source = tmp_path / "first" / "Token.vy"
+    second_source = tmp_path / "second" / "Token.vy"
+    stale_corpus_path = tmp_path / "corpus" / "contracts" / "yearn__token" / "Token.vy"
+    first_source.parent.mkdir()
+    second_source.parent.mkdir()
+    stale_corpus_path.parent.mkdir(parents=True)
+    first_text = "# @version 0.2.15\nx: uint256\n"
+    second_text = "# @version 0.2.8\nx: uint256\n"
+    first_source.write_text(first_text, encoding="utf-8")
+    second_source.write_text(second_text, encoding="utf-8")
+    stale_corpus_path.write_text(second_text, encoding="utf-8")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json_dumps(
+            {
+                "items": [
+                    {
+                        "source_path": str(first_source),
+                        "repo": "yearn__token",
+                        "relpath": "Token.vy",
+                        "corpus_path": str(stale_corpus_path),
+                        "corpus_repo_root": str(stale_corpus_path.parent),
+                        "pragma": "0.2.15",
+                        "source_compiler": "0.2.15",
+                        "sha256": corpus._source_hash(first_text),
+                    },
+                    {
+                        "source_path": str(second_source),
+                        "repo": "yearn__token",
+                        "relpath": "Token.vy",
+                        "corpus_path": str(stale_corpus_path),
+                        "corpus_repo_root": str(stale_corpus_path.parent),
+                        "pragma": "0.2.8",
+                        "source_compiler": "0.2.8",
+                        "sha256": corpus._source_hash(second_text),
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = corpus.dedupe_manifests([manifest_path], tmp_path / "deduped.json")
+
+    paths = [Path(item["corpus_path"]) for item in manifest["items"]]
+    assert len(set(paths)) == 2
+    assert manifest["counts"]["corpus_path_hash_mismatch"] == 1
+    assert manifest["counts"]["corpus_path_collisions"] == 1
+    for item in manifest["items"]:
+        assert corpus._file_hash(Path(item["corpus_path"])) == item["sha256"]
 
 
 def test_import_vyper_2026_keeps_metadata_when_source_is_not_local(tmp_path: Path) -> None:
