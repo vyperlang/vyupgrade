@@ -1467,6 +1467,24 @@ def f(p: uint256, debt: uint256) -> int256:
     assert "convert(COLLATERAL_PRECISION, int256)" not in result.source
 
 
+def test_unsigned_array_literal_expression_keeps_unsigned_constants() -> None:
+    source = """# @version 0.2.16
+N_COINS: constant(int128) = 2
+PRECISION: constant(uint256) = 10**18
+
+@external
+def f(d: uint256, price_scale: uint256) -> uint256[N_COINS]:
+    xp: uint256[N_COINS] = [d / N_COINS, d * PRECISION / (N_COINS * price_scale)]
+    return xp
+"""
+
+    result = apply_rules(source, config())
+
+    assert "d * PRECISION // (convert(N_COINS, uint256) * price_scale)" in result.source
+    assert "convert(PRECISION, int128)" not in result.source
+    assert "convert(price_scale, int128)" not in result.source
+
+
 def test_boolean_comparison_prefers_casting_unsigned_constant_peer() -> None:
     source = """# @version 0.2.16
 N_COINS: constant(int128) = 2
@@ -1484,6 +1502,44 @@ def f(use_eth: bool) -> bool:
 
     assert "if use_eth and i == convert(ETH_INDEX, int128):" in result.source
     assert "convert(i, uint256) == convert(ETH_INDEX, int128)" not in result.source
+
+
+def test_redundant_convert_uses_nearest_local_decl() -> None:
+    source = """# @version 0.2.16
+MAX_COINS: constant(int128) = 4
+
+@external
+def f(coins: address[MAX_COINS], base_coin_offset: uint256) -> address:
+    coin: address = empty(address)
+    for i in range(MAX_COINS):
+        if i >= base_coin_offset:
+            x: uint256 = convert(i, uint256) - base_coin_offset
+            coin = coins[convert(x, uint256)]
+    return coin
+"""
+
+    result = apply_rules(source, config())
+
+    assert "coin = coins[x]" in result.source
+    assert "coins[convert(x, uint256)]" not in result.source
+
+
+def test_loop_type_uses_nearest_loop_after_same_name_local_decl() -> None:
+    source = """# @version 0.2.16
+MAX_COINS: constant(int128) = 4
+
+@external
+def f(base_n_coins: uint256) -> bool:
+    x: uint256 = 0
+    for x in range(MAX_COINS):
+        if x == base_n_coins:
+            return True
+    return False
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if convert(x, uint256) == base_n_coins:" in result.source
 
 
 def test_array_literal_elements_cast_to_exact_integer_type() -> None:
@@ -2158,6 +2214,26 @@ def f():
 
     assert '@nonreentrant("lock")' not in result.source
     assert "@nonreentrant\n@external" in result.source
+
+
+def test_internal_nonreentrant_removed_after_global_lock_migration() -> None:
+    source = """# @version 0.3.7
+@internal
+@nonreentrant("lock")
+def _reentrant():
+    pass
+
+@external
+@nonreentrant("lock")
+def f():
+    self._reentrant()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@internal\n@nonreentrant\ndef _reentrant" not in result.source
+    assert "@internal\ndef _reentrant" in result.source
+    assert "@external\n@nonreentrant\ndef f" in result.source
 
 
 def test_pr_2937_integer_division_to_floordiv_and_decimal_diagnostic() -> None:

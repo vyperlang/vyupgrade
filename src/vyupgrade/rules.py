@@ -1147,6 +1147,38 @@ def _enum_to_flag(source: str, config: Config, context: MigrationContext) -> tup
     return pattern.sub(repl, source), fixes, diagnostics
 
 
+def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
+    lines = source.splitlines(keepends=True)
+    fixes: list[Fix] = []
+    out = list(lines)
+    offset = 0
+    for index, line in enumerate(lines):
+        if not re.match(r"\s*def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line):
+            continue
+        start = index
+        while start > 0 and re.match(r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$", lines[start - 1]):
+            start -= 1
+        decorators = [decor.strip().split("(", 1)[0].split("#", 1)[0] for decor in lines[start:index]]
+        if "@internal" not in decorators or "@nonreentrant" not in decorators:
+            continue
+        for original_index in range(index - 1, start - 1, -1):
+            if re.match(r"\s*@nonreentrant\b", lines[original_index]):
+                before = out[original_index + offset].rstrip("\n")
+                del out[original_index + offset]
+                offset -= 1
+                fixes.append(
+                    Fix(
+                        "VY090",
+                        original_index + 1,
+                        "removed internal nonreentrant decorator to avoid global-lock self-call violation",
+                        before,
+                        "",
+                    )
+                )
+                break
+    return "".join(out), fixes
+
+
 def _external_call_keywords(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _any_enabled({"VY040", "VY041", "VYD003"}, config, context):
         return source, [], []
@@ -1671,7 +1703,10 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
             (
                 name
                 for name, type_name in vars_for_line.items()
-                if _is_signed_integer_type(type_name) and (name in facts.global_vars or name in loop_vars)
+                if _is_signed_integer_type(
+                    _nearest_loop_var_type(source, rhs_start, name) if name in loop_vars else type_name
+                )
+                and (name in facts.global_vars or name in loop_vars)
             ),
             key=len,
             reverse=True,
@@ -2063,12 +2098,38 @@ def _vars_for_argument(
     name = arg.strip()
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         return vars_for_line
+    declared_type = _nearest_declared_var_type(source, arg_start, name)
+    if declared_type is not None:
+        scoped = dict(vars_for_line)
+        scoped[name] = declared_type
+        return scoped
     loop_type = _nearest_loop_var_type(source, arg_start, name)
     if loop_type is None:
         return vars_for_line
     scoped = dict(vars_for_line)
     scoped[name] = loop_type
     return scoped
+
+
+def _nearest_declared_var_type(source: str, index: int, name: str) -> str | None:
+    line_start = source.rfind("\n", 0, index) + 1
+    current_line = source[line_start : source.find("\n", line_start) if source.find("\n", line_start) != -1 else len(source)]
+    current_indent = len(current_line) - len(current_line.lstrip(" "))
+    for line in reversed(source[:line_start].splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > current_indent:
+            continue
+        if re.match(rf"for\s+{re.escape(name)}(?::[^:]+)?\s+in\b", stripped):
+            return None
+        decl = re.match(rf"{re.escape(name)}\s*:\s*([^=]+?)\s*=", stripped)
+        if decl:
+            return decl.group(1).strip()
+        if re.match(r"(?:@|\s*def\s+)", stripped) and indent < current_indent:
+            return None
+    return None
 
 
 def _signed_name_has_unsigned_context(
@@ -2172,15 +2233,36 @@ def _unsigned_name_signed_arithmetic_target_type(
         return None
     if _is_signed_integer_type(lhs_type):
         return normalize_type(lhs_type)
-    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
-        if token == name:
-            continue
-        token_type = vars_for_line.get(token)
-        if token_type is None:
-            token_type = facts.storage_vars.get(token)
-        if _is_signed_integer_type(token_type):
-            return normalize_type(token_type)
+    comparison_type = _unsigned_name_signed_comparison_expression_type(expr, name, vars_for_line, facts)
+    if comparison_type is not None:
+        return comparison_type
     return None
+
+
+def _unsigned_name_signed_comparison_expression_type(
+    expr: str, name: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
+    expr = expr.strip().removesuffix(":").strip()
+    expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    for separator in (" and ", " or "):
+        if separator in expr:
+            for part in expr.split(separator):
+                if re.search(rf"\b{re.escape(name)}\b", part):
+                    target_type = _unsigned_name_signed_comparison_expression_type(part, name, vars_for_line, facts)
+                    if target_type is not None:
+                        return target_type
+    match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
+    if match is None:
+        return None
+    left, _op, right = (part.strip() for part in match.groups())
+    if re.search(rf"\b{re.escape(name)}\b", left):
+        candidate = right
+    elif re.search(rf"\b{re.escape(name)}\b", right):
+        candidate = left
+    else:
+        return None
+    candidate_type = infer_expr_type(candidate, vars_for_line, facts)
+    return normalize_type(candidate_type) if _is_signed_integer_type(candidate_type) else None
 
 
 def _signed_comparison_target_type_at(source: str, index: int, name: str, vars_for_line: dict[str, str]) -> str | None:
@@ -2768,7 +2850,10 @@ def _nonreentrant(source: str, config: Config, context: MigrationContext) -> tup
         fixes.append(Fix("VY090", line_number(source, match.start()), "removed named nonreentrant lock", match.group(0), "@nonreentrant"))
         return "@nonreentrant"
 
-    return pattern.sub(repl, source), fixes, diagnostics
+    current = pattern.sub(repl, source)
+    current, internal_fixes = _remove_internal_nonreentrant(current)
+    fixes.extend(internal_fixes)
+    return current, fixes, diagnostics
 
 
 def _sqrt(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
