@@ -1216,6 +1216,21 @@ def f() -> bool:
     assert "self.base_cache_updated + convert(BASE_CACHE_EXPIRES, uint256)" in result.source
 
 
+def test_signed_constant_converted_in_unsigned_index_comparison() -> None:
+    source = """# @version 0.2.8
+PRECISION: constant(int128) = 10 ** 18
+
+@external
+def f(rate_multipliers: uint256[4]):
+    for i in range(4):
+        assert rate_multipliers[i] == PRECISION
+"""
+
+    result = apply_rules(source, config())
+
+    assert "assert rate_multipliers[i] == convert(PRECISION, uint256)" in result.source
+
+
 def test_signed_constant_not_converted_in_signed_loop_comparison() -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 2
@@ -1274,6 +1289,20 @@ def f(old_locked: LockedBalance):
     result = apply_rules(source, config())
 
     assert "u_old.slope = old_locked.amount // convert(MAXTIME, int128)" in result.source
+
+
+def test_unsigned_constant_converted_in_signed_param_comparison() -> None:
+    source = """# @version 0.2.8
+MAX_PCT: constant(uint256) = 10_000
+
+@external
+def f(percentage: int256):
+    assert percentage <= MAX_PCT
+"""
+
+    result = apply_rules(source, config())
+
+    assert "assert percentage <= convert(MAX_PCT, int256)" in result.source
 
 
 def test_unsigned_range_loop_converted_in_signed_comparison() -> None:

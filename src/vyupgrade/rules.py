@@ -1597,6 +1597,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
                 end = start + len(name)
+                comparison_target = _unsigned_comparison_target_type_at(source, start, name, vars_for_line, facts)
                 if (
                     _inside_attribute_access(source, start, end)
                     or _inside_convert_call(source, start)
@@ -1606,10 +1607,10 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
                     or _signed_external_call_arg_target_type(source, start, name, facts, vars_for_line) is not None
                     or _signed_subscript_key_target_type(source, start, name, vars_for_line) is not None
-                    or not _signed_name_has_unsigned_context(source, start, lhs_type, vars_for_line)
+                    or (comparison_target is None and not _signed_name_has_unsigned_context(source, start, lhs_type, vars_for_line))
                 ):
                     continue
-                replacement = f"convert({name}, uint256)"
+                replacement = f"convert({name}, {comparison_target or 'uint256'})"
                 edits.append(TextEdit(start, end, replacement))
                 fixes.append(
                     Fix(
@@ -1680,7 +1681,9 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     or _is_unsigned_integer_type(lhs_type)
                 ):
                     continue
-                target_type = _unsigned_name_signed_division_target_type(
+                target_type = _signed_comparison_target_type_at(
+                    source, start, name, vars_for_line
+                ) or _unsigned_name_signed_division_target_type(
                     _local_expression(source, start), name, vars_for_line, facts
                 )
                 if target_type is None:
@@ -1697,7 +1700,8 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     )
                 )
         offset += len(raw_line)
-    return apply_edits(source, edits), fixes, []
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes, []
 
 
 def _unsigned_range_bound_signed_constants(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -1920,6 +1924,17 @@ def _signed_comparison_target_type_at(source: str, index: int, name: str, vars_f
     loop_type = _nearest_loop_var_type(source, index, other) if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", other) else None
     other_type = loop_type or infer_expr_type(other, vars_for_line)
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _unsigned_comparison_target_type_at(
+    source: str, index: int, name: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
+    other = _comparison_peer(_local_expression(source, index), name)
+    if other is None:
+        return None
+    loop_type = _nearest_loop_var_type(source, index, other) if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", other) else None
+    other_type = loop_type or infer_expr_type(other, vars_for_line, facts)
+    return normalize_type(other_type) if _is_unsigned_integer_type(other_type) else None
 
 
 def _comparison_peer(expr: str, name: str) -> str | None:
