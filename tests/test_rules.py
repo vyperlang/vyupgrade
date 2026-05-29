@@ -2617,6 +2617,23 @@ def _g():
     }
 
 
+def test_legacy_event_after_blank_line_does_not_add_blank_field_lines() -> None:
+    source = """# @version 0.2.1
+
+Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert (
+        "event Transfer:\n"
+        "    _from: indexed(address)\n"
+        "    _to: indexed(address)\n"
+        "    _value: uint256\n"
+    ) in result.source
+    assert "event Transfer:\n\n" not in result.source
+
+
 def test_legacy_map_rewrite_handles_nested_map_type() -> None:
     source = """allowances: map(address, map(address, uint256))
 """

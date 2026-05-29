@@ -3782,7 +3782,7 @@ def _rewrite_legacy_event_declarations(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
-    pattern = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*event\s*\(\s*\{", re.MULTILINE)
+    pattern = re.compile(r"^([ \t]*)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*event\s*\(\s*\{", re.MULTILINE)
     for match in pattern.finditer(source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
