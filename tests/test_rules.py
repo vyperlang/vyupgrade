@@ -1198,7 +1198,10 @@ def f(amounts: uint256[4]) -> uint256[3]:
 
     result = apply_rules(source, config())
 
-    assert "base_amounts[i] = amounts[convert(i, uint256) + convert(MAX_COIN, uint256)]" in result.source
+    assert (
+        "base_amounts[convert(i, uint256)] = "
+        "amounts[convert(i, uint256) + convert(MAX_COIN, uint256)]"
+    ) in result.source
 
 
 def test_signed_constant_converted_in_nested_uint_call_argument() -> None:
@@ -1451,6 +1454,76 @@ def f(pool: address, amount: uint256, i: uint256) -> uint256:
     result = apply_rules(source, config())
 
     assert "staticcall CurveBase(pool).calc_withdraw_one_coin(amount, convert(i, int128))" in result.source
+
+
+def test_signed_cast_argument_preserves_uint_arithmetic_inside_convert() -> None:
+    source = """# @version 0.2.16
+interface StableSwap:
+    def calc_withdraw_one_coin(_token_amount: uint256, i: int128) -> uint256: view
+
+N_COINS: constant(int128) = 2
+
+@external
+def f(pool: address, amount: uint256, i: uint256) -> uint256:
+    return StableSwap(pool).calc_withdraw_one_coin(amount, convert(i - (N_COINS - 1), int128))
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "staticcall StableSwap(pool).calc_withdraw_one_coin("
+        "amount, convert(i - (convert(N_COINS, uint256) - 1), int128)"
+        ")"
+    ) in result.source
+
+
+def test_signed_constant_casted_in_unsigned_subscript_arithmetic() -> None:
+    source = """# @version 0.2.16
+N_COINS: constant(int128) = 2
+N_STABLECOINS: constant(int128) = 3
+
+@external
+def f(i: uint256, dx: uint256) -> uint256[N_STABLECOINS]:
+    amounts: uint256[N_STABLECOINS] = empty(uint256[N_STABLECOINS])
+    amounts[i - (N_COINS - 1)] = dx
+    return amounts
+"""
+
+    result = apply_rules(source, config())
+
+    assert "amounts[i - (convert(N_COINS, uint256) - 1)] = dx" in result.source
+
+
+def test_signed_loop_index_casted_in_unsigned_subscript_arithmetic() -> None:
+    source = """# @version 0.2.16
+N_COINS: constant(int128) = 2
+
+@external
+def f(dx: uint256) -> uint256[N_COINS]:
+    amounts: uint256[N_COINS] = empty(uint256[N_COINS])
+    for i in range(N_COINS):
+        amounts[i - (N_COINS - 1)] = dx
+    return amounts
+"""
+
+    result = apply_rules(source, config())
+
+    assert "amounts[convert(i, uint256) - (convert(N_COINS, uint256) - 1)] = dx" in result.source
+
+
+def test_signed_assignment_after_subscript_is_not_treated_as_index_context() -> None:
+    source = """# @version 0.2.16
+gauge_types_: HashMap[address, int128]
+
+@external
+def f(addr: address, gauge_type: int128):
+    self.gauge_types_[addr] = gauge_type + 1
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.gauge_types_[addr] = gauge_type + 1" in result.source
+    assert "convert(gauge_type, uint256)" not in result.source
 
 
 def test_external_call_arg_uses_nearest_loop_type_for_reused_name() -> None:

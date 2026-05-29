@@ -1700,6 +1700,84 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     )
                 )
         offset += len(raw_line)
+    for match in re.finditer(r"\bconvert\s*\(", source):
+        close = find_matching(source, match.end() - 1)
+        if close is None:
+            continue
+        arg_spans = _split_top_level_arg_spans(source[match.end() : close])
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        expr_start, _expr_end, expr = arg_spans[0]
+        _target_start, _target_end, target_type = arg_spans[1]
+        if not _is_signed_integer_type(target_type):
+            continue
+        line_no = line_number(source, match.start())
+        vars_for_line = facts.vars_at_line(line_no)
+        if not _has_unsigned_context(expr, vars_for_line):
+            continue
+        absolute_expr_start = match.end() + expr_start
+        for name, type_name in sorted(vars_for_line.items(), key=lambda item: len(item[0]), reverse=True):
+            if not (_is_signed_integer_type(type_name) and name in facts.global_vars):
+                continue
+            for name_match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+                start = absolute_expr_start + name_match.start()
+                end = absolute_expr_start + name_match.end()
+                if (
+                    _inside_attribute_access(source, start, end)
+                    or _inside_nested_convert_call(source, start, match.end() - 1)
+                    or _inside_type_subscript(source, start)
+                ):
+                    continue
+                replacement = f"convert({name}, uint256)"
+                edits.append(TextEdit(start, end, replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted signed integer constant inside uint arithmetic before signed cast",
+                        name,
+                        replacement,
+                    )
+                )
+    mask = code_mask(source)
+    for bracket in re.finditer(r"\[", source):
+        if not span_is_code(mask, bracket.start(), bracket.end()):
+            continue
+        close = find_matching(source, bracket.start(), "[", "]")
+        if close is None:
+            continue
+        expr = source[bracket.end() : close]
+        line_no = line_number(source, bracket.start())
+        vars_for_line = facts.vars_at_line(line_no)
+        index_expects_unsigned = _subscript_index_expects_unsigned(source, bracket.start(), vars_for_line)
+        if not (_has_unsigned_context(expr, vars_for_line) or index_expects_unsigned):
+            continue
+        loop_vars = facts.loop_vars_at_line(line_no)
+        for name, type_name in sorted(vars_for_line.items(), key=lambda item: len(item[0]), reverse=True):
+            name_type = _nearest_loop_var_type(source, bracket.start(), name) if name in loop_vars else type_name
+            if not _is_signed_integer_type(name_type):
+                continue
+            for name_match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+                start = bracket.end() + name_match.start()
+                end = bracket.end() + name_match.end()
+                if (
+                    _inside_attribute_access(source, start, end)
+                    or _inside_convert_call(source, start)
+                    or _inside_type_subscript(source, start)
+                    or not _inside_array_subscript(source, start, vars_for_line)
+                ):
+                    continue
+                replacement = f"convert({name}, uint256)"
+                edits.append(TextEdit(start, end, replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted signed integer inside uint array index",
+                        name,
+                        replacement,
+                    )
+                )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
 
@@ -2069,8 +2147,8 @@ def _signed_subscript_key_target_type(
     open_index = source.rfind("[", line_start, index)
     if open_index == -1:
         return None
-    close_index = source.find("]", index)
-    if close_index == -1:
+    close_index = find_matching(source, open_index, "[", "]")
+    if close_index is None or not (open_index < index < close_index):
         return None
     if source[open_index + 1 : close_index].strip() != name:
         return None
@@ -2148,14 +2226,30 @@ def _inside_array_subscript(source: str, index: int, vars_for_line: dict[str, st
     open_index = source.rfind("[", line_start, index)
     if open_index == -1:
         return False
-    close_index = source.find("]", index)
-    if close_index == -1:
+    close_index = find_matching(source, open_index, "[", "]")
+    if close_index is None or not (open_index < index < close_index):
         return False
     root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
     if root_match is None:
         return False
     root = root_match.group(1)
-    return indexed_value_type(infer_expr_type(root, vars_for_line)) is not None
+    root_name = root[5:] if root.startswith("self.") else root
+    root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
+    return indexed_value_type(root_type) is not None
+
+
+def _subscript_index_expects_unsigned(source: str, open_index: int, vars_for_line: dict[str, str]) -> bool:
+    line_start = source.rfind("\n", 0, open_index) + 1
+    root_match = re.search(r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index])
+    if root_match is None:
+        return False
+    root = root_match.group(1)
+    root_name = root[5:] if root.startswith("self.") else root
+    root_type = vars_for_line.get(root_name) or infer_expr_type(root, vars_for_line)
+    key_type = indexed_key_type(root_type)
+    if key_type is not None:
+        return _is_unsigned_integer_type(key_type)
+    return indexed_value_type(root_type) is not None
 
 
 def _inside_type_subscript(source: str, index: int) -> bool:
@@ -2163,8 +2257,8 @@ def _inside_type_subscript(source: str, index: int) -> bool:
     open_index = source.rfind("[", line_start, index)
     if open_index == -1:
         return False
-    close_index = source.find("]", index)
-    if close_index == -1:
+    close_index = find_matching(source, open_index, "[", "]")
+    if close_index is None or not (open_index < index < close_index):
         return False
     return bool(
         re.search(
@@ -2663,6 +2757,17 @@ def _is_signed_integer_type(type_name: str | None) -> bool:
 def _inside_convert_call(source: str, index: int) -> bool:
     prefix = source[max(0, index - 24) : index]
     return bool(re.search(r"\bconvert\s*\([^,\n]*$", prefix))
+
+
+def _inside_nested_convert_call(source: str, index: int, outer_open: int) -> bool:
+    for match in re.finditer(r"\bconvert\s*\(", source[:index]):
+        open_index = match.end() - 1
+        if open_index == outer_open:
+            continue
+        close = find_matching(source, open_index)
+        if close is not None and open_index < index < close:
+            return True
+    return False
 
 
 def _inside_range_header(source: str, index: int) -> bool:
