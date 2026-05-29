@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
 
@@ -60,10 +61,11 @@ def compile_target_source(path: Path, source: str, config: Config) -> CompileRes
     try:
         normalized = _normalize_version(config.target_version)
         command = _compiler_command(config.target_vyper, normalized, config.target_python)
+        compile_config = _target_compile_config(source, config)
         return _run_compile(
             command,
             tmp_path,
-            config,
+            compile_config,
             extra_paths=(path.parent,),
             suppress_warnings=_supports_warning_policy(normalized),
         )
@@ -138,6 +140,16 @@ def _default_python(version: str) -> str:
 def _supports_warning_policy(version: str | None) -> bool:
     parsed = parse_version(version)
     return parsed is not None and parsed >= VyperVersion(0, 4, 0)
+
+
+def _target_compile_config(source: str, config: Config) -> Config:
+    if config.enable_decimals or not _uses_decimal(source):
+        return config
+    return replace(config, enable_decimals=True)
+
+
+def _uses_decimal(source: str) -> bool:
+    return bool(re.search(r"\bdecimal\b", source))
 
 
 def _run_compile(

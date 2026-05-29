@@ -13,6 +13,7 @@ from vyupgrade.compiler import (
     _uv_bin,
     compile_source_ast,
     compile_source_file,
+    compile_target_source,
 )
 from vyupgrade.models import Config
 
@@ -186,6 +187,68 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
     assert result.status == "passed"
     assert calls["compiler"] == (None, "0.4.3", None)
     assert calls["run"] == (["vyper"], contract, ("abi", "method_identifiers", "layout", "ast"), (), True)
+
+
+def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# @version 0.3.10\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    def fake_compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
+        calls["compiler"] = (explicit, version, python)
+        return ["vyper"]
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["run"] = (command, config.enable_decimals, extra_paths, suppress_warnings)
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", fake_compiler_command)
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    result = compile_target_source(
+        contract,
+        "#pragma version 0.4.3\n@external\ndef f(x: decimal) -> decimal:\n    return x / 2.0\n",
+        Config(paths=(contract,)),
+    )
+
+    assert result.status == "passed"
+    assert calls["compiler"] == (None, "0.4.3", None)
+    assert calls["run"] == (["vyper"], True, (contract.parent,), True)
+
+
+def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# @version 0.3.10\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["enable_decimals"] = config.enable_decimals
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    result = compile_target_source(
+        contract,
+        "#pragma version 0.4.3\n@external\ndef f(x: uint256) -> uint256:\n    return x // 2\n",
+        Config(paths=(contract,)),
+    )
+
+    assert result.status == "passed"
+    assert calls["enable_decimals"] is False
 
 
 def test_warning_policy_is_only_used_for_modern_vyper() -> None:

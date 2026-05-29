@@ -1021,6 +1021,18 @@ def claimable(user: address, amount: uint256) -> uint256:
     assert "return amount * self.votes_used[user] // self.voted" in result.source
 
 
+def test_tab_indented_return_integer_division_uses_function_return_type() -> None:
+    source = """# @version 0.3.7
+@external
+def f(x: int128) -> int128:
+\treturn 1 / x
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return 1 // x" in result.source
+
+
 def test_multiline_reassignment_integer_division_uses_target_type() -> None:
     source = """# @version 0.3.10
 @external

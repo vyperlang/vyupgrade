@@ -194,7 +194,7 @@ def parse_source_facts(source: str) -> SourceFacts:
 
     for line_no, line in enumerate(lines, start=1):
         stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" "))
+        indent = len(line) - len(line.lstrip(" \t"))
         if not stripped or stripped.startswith("#"):
             continue
 
