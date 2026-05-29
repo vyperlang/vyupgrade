@@ -47,10 +47,9 @@ class TargetOverlay:
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    normalized = _normalize_version(source_version or infer_pragma(path.read_text()))
-    command = _compiler_command(
+    command, suppress_warnings = _prepare_command(
         config.source_vyper,
-        normalized,
+        source_version or infer_pragma(path.read_text()),
         config.source_python,
     )
     return _run_compile_with_formats(
@@ -59,26 +58,29 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         config,
         SOURCE_FORMATS,
         (),
-        _supports_warning_policy(normalized),
+        suppress_warnings,
     )
 
 
-def compile_target_source(path: Path, source: str, config: Config, overlay: TargetOverlay | None = None) -> CompileResult:
+def compile_target_source(
+    path: Path, source: str, config: Config, overlay: TargetOverlay | None = None
+) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
     compile_source = _target_validation_source(source, config.target_version)
     if overlay is not None:
         tmp_path = overlay.paths.get(path.resolve())
         if tmp_path is not None:
-            normalized = _normalize_version(config.target_version)
-            command = _compiler_command(config.target_vyper, normalized, config.target_python)
+            command, suppress_warnings = _prepare_command(
+                config.target_vyper, config.target_version, config.target_python
+            )
             compile_config = _target_compile_config(compile_source, config)
             return _run_compile(
                 command,
                 tmp_path,
                 compile_config,
                 extra_paths=(),
-                suppress_warnings=_supports_warning_policy(normalized),
+                suppress_warnings=suppress_warnings,
             )
     try:
         tmp = tempfile.NamedTemporaryFile(
@@ -101,22 +103,25 @@ def compile_target_source(path: Path, source: str, config: Config, overlay: Targ
         tmp.write(compile_source)
         tmp_path = Path(tmp.name)
     try:
-        normalized = _normalize_version(config.target_version)
-        command = _compiler_command(config.target_vyper, normalized, config.target_python)
+        command, suppress_warnings = _prepare_command(
+            config.target_vyper, config.target_version, config.target_python
+        )
         compile_config = _target_compile_config(compile_source, config)
         return _run_compile(
             command,
             tmp_path,
             compile_config,
             extra_paths=(path.parent,),
-            suppress_warnings=_supports_warning_policy(normalized),
+            suppress_warnings=suppress_warnings,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
 
 
 @contextmanager
-def target_overlay(sources: Mapping[Path, str], target_version: str) -> Iterator[TargetOverlay | None]:
+def target_overlay(
+    sources: Mapping[Path, str], target_version: str
+) -> Iterator[TargetOverlay | None]:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
         yield None
@@ -155,10 +160,9 @@ def _copy_project_configs(source_root: Path, target_root: Path) -> None:
 def compile_source_ast(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    normalized = _normalize_version(source_version or infer_pragma(path.read_text()))
-    command = _compiler_command(
+    command, suppress_warnings = _prepare_command(
         config.source_vyper,
-        normalized,
+        source_version or infer_pragma(path.read_text()),
         config.source_python,
     )
     return _run_compile_with_formats(
@@ -167,11 +171,13 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         config,
         ("ast",),
         (),
-        _supports_warning_policy(normalized),
+        suppress_warnings,
     )
 
 
-def compare_artifacts(source: CompileResult, target: CompileResult) -> tuple[bool | None, bool | None, bool | None]:
+def compare_artifacts(
+    source: CompileResult, target: CompileResult
+) -> tuple[bool | None, bool | None, bool | None]:
     if source.artifacts is None or target.artifacts is None:
         return None, None, None
     source_layout = _canonical_storage_layout(source.artifacts.get("layout"))
@@ -181,7 +187,9 @@ def compare_artifacts(source: CompileResult, target: CompileResult) -> tuple[boo
     source_methods = source.artifacts.get("method_identifiers")
     target_methods = target.artifacts.get("method_identifiers")
     return (
-        None if source_abi is None or target_abi is None else _canonical_abi(source_abi) == _canonical_abi(target_abi),
+        None
+        if source_abi is None or target_abi is None
+        else _canonical_abi(source_abi) == _canonical_abi(target_abi),
         None
         if source_methods is None or target_methods is None
         else _canonical_method_identifiers(source_methods)
@@ -212,7 +220,9 @@ def compare_artifact_details(
 
 def _target_validation_source(source: str, target_version: str) -> str:
     pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
-    return pattern.sub(lambda match: f"{match.group(1)}#pragma version {target_version}", source, count=1)
+    return pattern.sub(
+        lambda match: f"{match.group(1)}#pragma version {target_version}", source, count=1
+    )
 
 
 def _canonical_abi(abi: object) -> object:
@@ -238,10 +248,7 @@ def _abi_sort_key(entry: dict[str, object]) -> tuple[object, ...]:
     inputs = entry.get("inputs")
     input_types: tuple[object, ...] = ()
     if isinstance(inputs, list):
-        input_types = tuple(
-            item.get("type") if isinstance(item, dict) else None
-            for item in inputs
-        )
+        input_types = tuple(item.get("type") if isinstance(item, dict) else None for item in inputs)
     return (entry.get("type"), entry.get("name", ""), input_types, entry.get("stateMutability", ""))
 
 
@@ -422,9 +429,7 @@ def _moved_nonreentrant_locks(
     target_transient: dict[str, tuple[int, str]],
 ) -> dict[str, str]:
     transient_locks = [
-        name
-        for name, value in sorted(target_transient.items())
-        if value[1] == "nonreentrant lock"
+        name for name, value in sorted(target_transient.items()) if value[1] == "nonreentrant lock"
     ]
     if not transient_locks:
         return {}
@@ -457,8 +462,7 @@ def _abi_input_types(entry: dict[str, object]) -> str:
     if not isinstance(inputs, list):
         return ""
     return ", ".join(
-        str(item.get("type", "?")) if isinstance(item, dict) else "?"
-        for item in inputs
+        str(item.get("type", "?")) if isinstance(item, dict) else "?" for item in inputs
     )
 
 
@@ -467,14 +471,35 @@ def _slot_type(value: tuple[int, str]) -> str:
     return f"{slot} {type_name}"
 
 
+def _prepare_command(
+    explicit: str | None, version: str | None, python: str | None
+) -> tuple[list[str], bool]:
+    normalized = _normalize_version(version)
+    return _compiler_command(explicit, normalized, python), _supports_warning_policy(normalized)
+
+
 def _compiler_command(explicit: str | None, version: str | None, python: str | None) -> list[str]:
     if explicit:
         return [explicit]
     normalized = _normalize_version(version) or "0.4.3"
     python = python or _default_python(normalized)
-    command = [_uv_bin(), "run", "--no-project", "--python", python, "--with", f"vyper=={normalized}"]
+    command = [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        python,
+        "--with",
+        f"vyper=={normalized}",
+    ]
     if legacy_prerelease_version(normalized) is not None:
-        return [*command, "--with", "typed-ast", "python", str(Path(__file__).with_name("legacy_vyper.py"))]
+        return [
+            *command,
+            "--with",
+            "typed-ast",
+            "python",
+            str(Path(__file__).with_name("legacy_vyper.py")),
+        ]
     return [*command, "vyper"]
 
 
@@ -558,22 +583,36 @@ def _run_compile_with_formats(
     try:
         proc = subprocess.run(full, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        return CompileResult("failed", stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds", command=full)
+        return CompileResult(
+            "failed",
+            stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
+            command=full,
+        )
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or proc.stdout.strip()
         unsupported = _unsupported_output_format(stderr, formats)
         if unsupported is not None:
             fallback_formats = tuple(name for name in formats if name != unsupported)
-            return _run_compile_with_formats(command, path, config, fallback_formats, extra_paths, suppress_warnings)
+            return _run_compile_with_formats(
+                command, path, config, fallback_formats, extra_paths, suppress_warnings
+            )
         retry_command = _command_with_missing_module_dependency(command, path, stderr)
         if retry_command is not None:
-            return _run_compile_with_formats(retry_command, path, config, formats, extra_paths, suppress_warnings)
-        return CompileResult("failed", stderr=proc.stderr.strip() or proc.stdout.strip(), command=full)
+            return _run_compile_with_formats(
+                retry_command, path, config, formats, extra_paths, suppress_warnings
+            )
+        return CompileResult(
+            "failed", stderr=proc.stderr.strip() or proc.stdout.strip(), command=full
+        )
     try:
         artifacts = _parse_outputs(proc.stdout, formats)
     except json.JSONDecodeError as exc:
-        return CompileResult("failed", stderr=f"could not parse compiler output: {exc}", command=full)
-    return CompileResult("passed", artifacts=artifacts, stderr=proc.stderr.strip() or None, command=full)
+        return CompileResult(
+            "failed", stderr=f"could not parse compiler output: {exc}", command=full
+        )
+    return CompileResult(
+        "passed", artifacts=artifacts, stderr=proc.stderr.strip() or None, command=full
+    )
 
 
 def _unsupported_output_format(stderr: str, formats: tuple[str, ...]) -> str | None:
@@ -605,7 +644,9 @@ def _with_project_import_dependencies(command: list[str], path: Path) -> list[st
     return _uv_command_with_packages(command, packages)
 
 
-def _command_with_missing_module_dependency(command: list[str], path: Path, stderr: str) -> list[str] | None:
+def _command_with_missing_module_dependency(
+    command: list[str], path: Path, stderr: str
+) -> list[str] | None:
     if not _is_uv_run_command(command):
         return None
     missing = _missing_module_name(stderr)
@@ -621,7 +662,9 @@ def _command_with_missing_module_dependency(command: list[str], path: Path, stde
 
 
 def _missing_module_name(stderr: str) -> str | None:
-    match = re.search(r"\bModuleNotFound:\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)", stderr)
+    match = re.search(
+        r"\bModuleNotFound:\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)", stderr
+    )
     return match.group(1) if match else None
 
 
@@ -638,7 +681,13 @@ def _uv_command_with_packages(command: list[str], packages: tuple[str, ...]) -> 
 
 def _uv_run_command_index(command: list[str]) -> int:
     index = 2
-    options_with_value = {"--python", "--with", "--with-editable", "--with-requirements", "--env-file"}
+    options_with_value = {
+        "--python",
+        "--with",
+        "--with-editable",
+        "--with-requirements",
+        "--env-file",
+    }
     while index < len(command):
         arg = command[index]
         if arg == "--":
@@ -680,9 +729,13 @@ def _project_import_packages(path: Path) -> tuple[str, ...]:
 def _vyper_import_roots(source: str) -> tuple[str, ...]:
     roots: set[str] = set()
     for line in source.splitlines():
-        match = re.match(r"\s*from\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s+import\b", line)
+        match = re.match(
+            r"\s*from\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s+import\b", line
+        )
         if match is None:
-            match = re.match(r"\s*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b", line)
+            match = re.match(
+                r"\s*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b", line
+            )
         if match is None:
             continue
         root = match.group(1).split(".", 1)[0]
