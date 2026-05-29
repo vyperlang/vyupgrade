@@ -15,6 +15,7 @@ DEF_RE = re.compile(
 INTERFACE_RE = re.compile(r"^interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*$")
 STRUCT_RE = re.compile(r"^struct\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
 FLAG_RE = re.compile(r"^(?:enum|flag)\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
+EVENT_RE = re.compile(r"^event\s+[A-Za-z_][A-Za-z0-9_]*:\s*$")
 
 
 BUILTIN_INTERFACES = {
@@ -183,6 +184,7 @@ def parse_source_facts(source: str) -> SourceFacts:
     current_interface: str | None = None
     pending_interface_method: str | None = None
     pending_interface_header: list[str] = []
+    current_event_indent: int | None = None
     current_struct: str | None = None
     current_struct_indent = 0
     pending_function_line: int | None = None
@@ -196,6 +198,16 @@ def parse_source_facts(source: str) -> SourceFacts:
         stripped = line.strip()
         indent = len(line) - len(line.lstrip(" \t"))
         if not stripped or stripped.startswith("#"):
+            continue
+
+        if current_event_indent is not None:
+            if indent > current_event_indent:
+                continue
+            current_event_indent = None
+
+        event_match = EVENT_RE.match(stripped)
+        if event_match:
+            current_event_indent = indent
             continue
 
         if current_struct and indent <= current_struct_indent:
@@ -429,6 +441,9 @@ def infer_expr_type(expr: str, vars_for_line: dict[str, str], facts: SourceFacts
     convert_match = re.fullmatch(r"convert\s*\(.+,\s*([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\s*\)", expr)
     if convert_match:
         return convert_match.group(1)
+    bounds_match = re.fullmatch(r"(?:max_value|min_value)\s*\(\s*(u?int(?:\d+)?)\s*\)", expr)
+    if bounds_match:
+        return bounds_match.group(1)
     empty_match = re.fullmatch(r"empty\s*\(\s*(.+?)\s*\)", expr)
     if empty_match:
         return empty_match.group(1).strip()

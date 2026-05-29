@@ -159,6 +159,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _integer_division,
         _constant_exponent_literals,
         _mixed_signed_unsigned_arithmetic,
+        _typed_array_literal_arguments,
         _unsigned_range_bound_signed_constants,
         _typed_external_call_arguments,
         _dynamic_pow_mod256,
@@ -869,9 +870,6 @@ def _pure_immutable_reads(source: str, config: Config, context: MigrationContext
         return source, [], []
     facts = parse_source_facts(source)
     immutable_names = _immutable_names(facts)
-    if not immutable_names:
-        return source, [], []
-
     mask = code_mask(source)
     line_offsets = _line_offsets(source)
     lines = source.splitlines(keepends=True)
@@ -881,7 +879,8 @@ def _pure_immutable_reads(source: str, config: Config, context: MigrationContext
         if "pure" not in decorators:
             continue
         read_name = _function_read_name(source, mask, line_offsets, facts, function_line, immutable_names)
-        if read_name is None:
+        has_static_raw_call = _function_contains(source, mask, line_offsets, facts, function_line, "raw_call")
+        if read_name is None and not has_static_raw_call:
             continue
         decorator_line = facts.function_decorator_lines.get(function_line, {}).get("pure")
         if decorator_line is None or decorator_line > len(lines):
@@ -891,11 +890,16 @@ def _pure_immutable_reads(source: str, config: Config, context: MigrationContext
         if decorator_match is None:
             continue
         edits.append(TextEdit(line_start + decorator_match.start() + 1, line_start + decorator_match.end(), "view"))
+        message = (
+            f"relaxed pure function that reads immutable {read_name}"
+            if read_name is not None
+            else "relaxed pure function that performs static raw_call"
+        )
         fixes.append(
             Fix(
                 "VY015",
                 decorator_line,
-                f"relaxed pure function that reads immutable {read_name}",
+                message,
                 "@pure",
                 "@view",
             )
@@ -934,6 +938,21 @@ def _function_read_name(
             if span_is_code(mask, match.start(), match.end()) and not _is_attribute_name(source, match.start()):
                 return name
     return None
+
+
+def _function_contains(
+    source: str,
+    mask: list[bool],
+    line_offsets: list[int],
+    facts: SourceFacts,
+    function_line: int,
+    name: str,
+) -> bool:
+    body_start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
+    end_line = facts.function_ends.get(function_line, len(line_offsets))
+    body_end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+    pattern = re.compile(rf"\b{re.escape(name)}\b")
+    return any(span_is_code(mask, match.start(), match.end()) for match in pattern.finditer(source, body_start, body_end))
 
 
 def _line_offsets(source: str) -> list[int]:
@@ -1672,7 +1691,10 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
                     or _signed_external_call_arg_target_type(source, start, name, facts, vars_for_line) is not None
                     or _signed_subscript_key_target_type(source, start, name, vars_for_line) is not None
-                    or (comparison_target is None and not _signed_name_has_unsigned_context(source, start, lhs_type, vars_for_line))
+                    or (
+                        comparison_target is None
+                        and not _signed_name_has_unsigned_context(source, start, name, lhs_type, vars_for_line, facts)
+                    )
                 ):
                     continue
                 replacement = f"convert({name}, {comparison_target or 'uint256'})"
@@ -1741,6 +1763,7 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 if (
                     _inside_attribute_access(source, start, end)
                     or _inside_convert_call(source, start)
+                    or _inside_any_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
                     or _is_unsigned_integer_type(lhs_type)
@@ -1750,6 +1773,8 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                     source, start, name, vars_for_line
                 ) or _unsigned_name_signed_division_target_type(
                     _local_expression(source, start), name, vars_for_line, facts
+                ) or _unsigned_name_signed_arithmetic_target_type(
+                    _local_expression(source, start), name, lhs_type, vars_for_line, facts
                 )
                 if target_type is None:
                     continue
@@ -1843,6 +1868,49 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                         replacement,
                     )
                 )
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _typed_array_literal_arguments(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY052", config, context):
+        return source, [], []
+    facts = parse_source_facts(source)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    mask = code_mask(source)
+    pattern = re.compile(
+        r"(?P<decl>\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>[^=\n]+?)\s*=\s*)\[",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        expected_type = iterable_element_type(match.group("type").strip())
+        if not is_integer_type(expected_type):
+            continue
+        open_index = match.end() - 1
+        close = find_matching(source, open_index, "[", "]")
+        if close is None:
+            continue
+        arg_spans = _split_top_level_arg_spans(source[open_index + 1 : close])
+        if arg_spans is None:
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        for start, end, arg in arg_spans:
+            replacement = _cast_integer_arg_to_exact_expected(arg, expected_type, vars_for_line, facts)
+            if replacement == arg:
+                continue
+            edits.append(TextEdit(open_index + 1 + start, open_index + 1 + end, replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_number(source, open_index + 1 + start),
+                    "converted array literal element to declared integer type",
+                    arg,
+                    replacement,
+                )
+            )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
 
@@ -2004,8 +2072,18 @@ def _vars_for_argument(
 
 
 def _signed_name_has_unsigned_context(
-    source: str, index: int, lhs_type: str | None, vars_for_line: dict[str, str]
+    source: str, index: int, name: str, lhs_type: str | None, vars_for_line: dict[str, str], facts: SourceFacts
 ) -> bool:
+    if _is_signed_integer_type(lhs_type):
+        return False
+    peer = _comparison_peer(_local_expression(source, index), name)
+    if (
+        peer is not None
+        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", peer)
+        and peer in facts.global_vars
+        and _is_unsigned_integer_type(vars_for_line.get(peer))
+    ):
+        return False
     if _is_unsigned_integer_type(lhs_type):
         return True
     if _inside_array_subscript(source, index, vars_for_line):
@@ -2086,6 +2164,25 @@ def _unsigned_name_signed_division_target_type(
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
 
 
+def _unsigned_name_signed_arithmetic_target_type(
+    expr: str, name: str, lhs_type: str | None, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
+    expr = expr.strip()
+    if not re.search(rf"\b{re.escape(name)}\b", expr):
+        return None
+    if _is_signed_integer_type(lhs_type):
+        return normalize_type(lhs_type)
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        if token == name:
+            continue
+        token_type = vars_for_line.get(token)
+        if token_type is None:
+            token_type = facts.storage_vars.get(token)
+        if _is_signed_integer_type(token_type):
+            return normalize_type(token_type)
+    return None
+
+
 def _signed_comparison_target_type_at(source: str, index: int, name: str, vars_for_line: dict[str, str]) -> str | None:
     other = _comparison_peer(_local_expression(source, index), name)
     if other is None:
@@ -2102,6 +2199,8 @@ def _unsigned_comparison_target_type_at(
     if other is None:
         return None
     loop_type = _nearest_loop_var_type(source, index, other) if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", other) else None
+    if loop_type is None and other in facts.global_vars and _is_unsigned_integer_type(vars_for_line.get(other)):
+        return None
     other_type = loop_type or infer_expr_type(other, vars_for_line, facts)
     return normalize_type(other_type) if _is_unsigned_integer_type(other_type) else None
 
@@ -2109,6 +2208,13 @@ def _unsigned_comparison_target_type_at(
 def _comparison_peer(expr: str, name: str) -> str | None:
     expr = expr.strip().removesuffix(":").strip()
     expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    for separator in (" and ", " or "):
+        if separator in expr:
+            for part in expr.split(separator):
+                if re.search(rf"\b{re.escape(name)}\b", part):
+                    peer = _comparison_peer(part, name)
+                    if peer is not None:
+                        return peer
     match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
     if match is None:
         return None
@@ -2452,6 +2558,18 @@ def _cast_integer_arg_to_expected(
         return value
     actual_type = infer_expr_type(value, vars_for_line, facts)
     if not is_integer_type(actual_type) or _same_integer_signedness(actual_type, expected_type):
+        return value
+    return f"convert({value}, {normalize_type(expected_type or '')})"
+
+
+def _cast_integer_arg_to_exact_expected(
+    value: str, expected_type: str | None, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str:
+    stripped = value.strip()
+    if not is_integer_type(expected_type) or stripped.startswith("convert(") or _literal_integer(stripped):
+        return value
+    actual_type = infer_expr_type(stripped, vars_for_line, facts)
+    if not is_integer_type(actual_type) or normalize_type(actual_type or "") == normalize_type(expected_type or ""):
         return value
     return f"convert({value}, {normalize_type(expected_type or '')})"
 
@@ -2826,6 +2944,15 @@ def _is_signed_integer_type(type_name: str | None) -> bool:
 def _inside_convert_call(source: str, index: int) -> bool:
     prefix = source[max(0, index - 24) : index]
     return bool(re.search(r"\bconvert\s*\([^,\n]*$", prefix))
+
+
+def _inside_any_convert_call(source: str, index: int) -> bool:
+    for match in re.finditer(r"\bconvert\s*\(", source[:index]):
+        open_index = match.end() - 1
+        close = find_matching(source, open_index)
+        if close is not None and open_index < index < close:
+            return True
+    return False
 
 
 def _inside_nested_convert_call(source: str, index: int, outer_open: int) -> bool:

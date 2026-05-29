@@ -1398,6 +1398,111 @@ def f(percentage: int256):
     assert "assert percentage <= convert(MAX_PCT, int256)" in result.source
 
 
+def test_event_field_name_does_not_force_signed_param_to_uint() -> None:
+    source = """# @version 0.2.8
+event DelegateBoost:
+    _expire_time: uint256
+
+MIN_DELEGATION_TIME: constant(uint256) = 86400
+
+@external
+def f(_expire_time: int256) -> bool:
+    time: int256 = convert(block.timestamp, int256)
+    return _expire_time > time + MIN_DELEGATION_TIME
+"""
+
+    result = apply_rules(source, config())
+
+    assert "convert(_expire_time, uint256)" not in result.source
+    assert "time + convert(MIN_DELEGATION_TIME, int256)" in result.source
+
+
+def test_pure_static_raw_call_relaxes_to_view() -> None:
+    source = """# @version 0.3.10
+IDENTITY_PRECOMPILE: constant(address) = 0x0000000000000000000000000000000000000004
+
+@pure
+@internal
+def f(value: Bytes[1]) -> Bytes[1]:
+    return raw_call(IDENTITY_PRECOMPILE, value, max_outsize=1, is_static_call=True)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view\n@internal\ndef f" in result.source
+
+
+def test_signed_lhs_keeps_signed_operand_in_mixed_arithmetic() -> None:
+    source = """# @version 0.3.10
+@external
+def f(n1: int256, n: uint256) -> int256:
+    n2: int256 = n1 + convert(n - 1, int256)
+    return n2
+"""
+
+    result = apply_rules(source, config())
+
+    assert "n2: int256 = n1 + convert(n - 1, int256)" in result.source
+    assert "convert(n1, uint256)" not in result.source
+
+
+def test_unsigned_constant_inside_final_signed_convert_stays_unsigned() -> None:
+    source = """# @version 0.3.10
+COLLATERAL_PRECISION: immutable(uint256)
+
+@external
+def __init__():
+    COLLATERAL_PRECISION = 10**18
+
+@external
+def f(p: uint256, debt: uint256) -> int256:
+    health: int256 = 0
+    health += convert(p * COLLATERAL_PRECISION // debt, int256)
+    return health
+"""
+
+    result = apply_rules(source, config())
+
+    assert "p * COLLATERAL_PRECISION // debt" in result.source
+    assert "convert(COLLATERAL_PRECISION, int256)" not in result.source
+
+
+def test_boolean_comparison_prefers_casting_unsigned_constant_peer() -> None:
+    source = """# @version 0.2.16
+N_COINS: constant(int128) = 2
+ETH_INDEX: constant(uint256) = 0
+
+@external
+def f(use_eth: bool) -> bool:
+    for i in range(N_COINS):
+        if use_eth and i == ETH_INDEX:
+            return True
+    return False
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if use_eth and i == convert(ETH_INDEX, int128):" in result.source
+    assert "convert(i, uint256) == convert(ETH_INDEX, int128)" not in result.source
+
+
+def test_array_literal_elements_cast_to_exact_integer_type() -> None:
+    source = """# @version 0.3.3
+@external
+def f(amount: uint256) -> DynArray[int256, 3]:
+    limits: DynArray[int256, 3] = [
+        convert(amount, int256),
+        MAX_INT128,
+        MAX_INT128,
+    ]
+    return limits
+"""
+
+    result = apply_rules(source, config())
+
+    assert "convert(max_value(int128), int256)" in result.source
+
+
 def test_unsigned_range_loop_converted_in_signed_comparison() -> None:
     source = """# @version 0.2.4
 n_gauge_types: int128

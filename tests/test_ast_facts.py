@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from vyupgrade.ast_facts import calls, integer_constants, node_span, root_ast, source_segment
+from vyupgrade.analysis import infer_expr_type, parse_source_facts
 
 
 def test_ast_facts_extract_integer_constants() -> None:
@@ -57,3 +58,26 @@ def test_ast_facts_extract_call_spans() -> None:
     assert len(shift.args) == 2
     assert source_segment(source, shift.span) == "shift(x, -BAL_SHIFT)"
     assert node_span(shift.args[1]) is not None
+
+
+def test_source_facts_skip_event_fields() -> None:
+    source = """event DelegateBoost:
+    _expire_time: uint256
+
+MIN_DELEGATION_TIME: constant(uint256) = 86400
+
+@external
+def f(_expire_time: int256):
+    time: int256 = convert(block.timestamp, int256)
+    assert _expire_time > time + MIN_DELEGATION_TIME
+"""
+
+    facts = parse_source_facts(source)
+
+    assert facts.global_vars == {"MIN_DELEGATION_TIME": "constant(uint256)"}
+    assert facts.vars_at_line(8)["_expire_time"] == "int256"
+
+
+def test_expr_type_extracts_min_max_value_type() -> None:
+    assert infer_expr_type("max_value(int128)", {}, None) == "int128"
+    assert infer_expr_type("min_value(int256)", {}, None) == "int256"
