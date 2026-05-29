@@ -92,42 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     if human_reporter:
         human_reporter.start(config.source_version, config.target_version)
 
-    rewrites: list[RewriteWork] = []
-    for path in files:
-        original = path.read_text(encoding="utf-8")
-        source_version = config.source_version or infer_pragma(original)
-        source_compile = compile_source_file(path, config, source_version)
-        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
-        file_config = replace(
-            config, source_ast=source_ast if isinstance(source_ast, dict) else None
-        )
-        rewrite = apply_rules(original, file_config, path)
-        generated_interfaces: tuple[GeneratedInterface, ...] = ()
-        if config.split_interfaces and path.suffix == ".vy":
-            split = split_interfaces_to_vyi(rewrite.source, path)
-            rewrite.source = split.source
-            rewrite.fixes.extend(split.fixes)
-            generated_interfaces = split.generated
-        changed = original != rewrite.source
-        file_report = FileReport(
-            path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics
-        )
-        file_report.source_compile = source_compile.status
-        file_report.source_error = (
-            source_compile.stderr if source_compile.status == "failed" else None
-        )
-        any_source_failed = any_source_failed or source_compile.status == "failed"
-        rewrites.append(
-            RewriteWork(
-                path,
-                original,
-                rewrite,
-                file_report,
-                source_compile,
-                source_version,
-                generated_interfaces,
-            )
-        )
+    rewrites = _prepare_rewrites(files, config)
+    any_source_failed = any(work.source_compile.status == "failed" for work in rewrites)
 
     target_sources = {work.path: work.rewrite.source for work in rewrites}
     for work in rewrites:
@@ -220,6 +186,45 @@ def main(argv: list[str] | None = None) -> int:
     if any(diag.severity == "error" for file in reports for diag in file.diagnostics):
         return 5
     return 0
+
+
+def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
+    rewrites: list[RewriteWork] = []
+    for path in files:
+        original = path.read_text(encoding="utf-8")
+        source_version = config.source_version or infer_pragma(original)
+        source_compile = compile_source_file(path, config, source_version)
+        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
+        file_config = replace(
+            config, source_ast=source_ast if isinstance(source_ast, dict) else None
+        )
+        rewrite = apply_rules(original, file_config, path)
+        generated_interfaces: tuple[GeneratedInterface, ...] = ()
+        if config.split_interfaces and path.suffix == ".vy":
+            split = split_interfaces_to_vyi(rewrite.source, path)
+            rewrite.source = split.source
+            rewrite.fixes.extend(split.fixes)
+            generated_interfaces = split.generated
+        changed = original != rewrite.source
+        file_report = FileReport(
+            path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics
+        )
+        file_report.source_compile = source_compile.status
+        file_report.source_error = (
+            source_compile.stderr if source_compile.status == "failed" else None
+        )
+        rewrites.append(
+            RewriteWork(
+                path,
+                original,
+                rewrite,
+                file_report,
+                source_compile,
+                source_version,
+                generated_interfaces,
+            )
+        )
+    return rewrites
 
 
 def _parser() -> argparse.ArgumentParser:
