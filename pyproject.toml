@@ -21,6 +21,9 @@ vyupgrade = "vyupgrade.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.uv]
+exclude-newer = "2026-05-27T14:26:03.814034Z"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
