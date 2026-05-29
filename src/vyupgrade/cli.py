@@ -51,7 +51,6 @@ def main(argv: list[str] | None = None) -> int:
         target_python=args.target_python or _string_or_none(pyproject.get("target-python")),
         compiler_search_paths=tuple(Path(path) for path in (args.compiler_search_paths or pyproject.get("compiler-search-paths", []))),
         enable_decimals=args.enable_decimals,
-        bump_pragma=args.bump_pragma,
         format=args.format or pyproject.get("format", "none"),
     )
 
@@ -175,7 +174,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-python")
     parser.add_argument("--compiler-search-paths", nargs="*", default=[])
     parser.add_argument("--enable-decimals", action="store_true")
-    parser.add_argument("--bump-pragma", action="store_true")
     parser.add_argument("--format", choices=["none", "mamushi"])
     parser.add_argument("--config", help="path to a pyproject.toml file")
     return parser

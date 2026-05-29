@@ -89,7 +89,6 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--diff` — print a unified diff instead of the report.
 - `--write` — apply changes in place (only when every file compiles).
 - `--check` — exit non-zero if any file would change; write nothing.
-- `--bump-pragma` — rewrite the pragma to the target so output compiles against the target compiler instead of preserving the original range.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
 - `--select` / `--ignore` — comma-separated rule codes to include or exclude.
 - `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.

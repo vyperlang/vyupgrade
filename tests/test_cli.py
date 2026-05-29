@@ -34,7 +34,7 @@ def test_write_mode_is_idempotent_with_target_compile(tmp_path: Path) -> None:
     shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)
 
     report = tmp_path / "report.json"
-    code = main([str(contract), "--write", "--bump-pragma", "--report-json", str(report)])
+    code = main([str(contract), "--write", "--report-json", str(report)])
 
     assert code in {0, 3}
     rewritten = contract.read_text()
@@ -47,7 +47,7 @@ def test_write_mode_is_idempotent_with_target_compile(tmp_path: Path) -> None:
     assert data["files"][0]["validation"]["target_compile"] == "passed"
 
     second_report = tmp_path / "second.json"
-    second = main([str(contract), "--check", "--bump-pragma", "--report-json", str(second_report)])
+    second = main([str(contract), "--check", "--report-json", str(second_report)])
     assert second in {0, 3}
     assert json.loads(second_report.read_text())["files"][0]["changed"] is False
 
@@ -61,7 +61,7 @@ def f(target: address):
 """
     contract.write_text(original, encoding="utf-8")
 
-    code = main([str(contract), "--write", "--bump-pragma"])
+    code = main([str(contract), "--write"])
 
     assert code == 2
     assert contract.read_text(encoding="utf-8") == original
@@ -81,7 +81,7 @@ report-json = "{report}"
     )
     monkeypatch.chdir(tmp_path)
 
-    code = main(["--check", "--bump-pragma"])
+    code = main(["--check"])
 
     assert code in {1, 3}
     assert report.exists()

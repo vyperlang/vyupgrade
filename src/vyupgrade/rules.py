@@ -224,15 +224,22 @@ def _pragma(source: str, config: Config, context: MigrationContext) -> tuple[str
         return source, [], []
     fixes: list[Fix] = []
     pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
+    matched = False
 
     def repl(match: re.Match[str]) -> str:
+        nonlocal matched
+        matched = True
         before = match.group(0)
-        version = config.target_version if config.bump_pragma else match.group(2)
-        after = f"{match.group(1)}#pragma version {version}"
+        after = f"{match.group(1)}#pragma version {config.target_version}"
         fixes.append(Fix("VY001", line_number(source, match.start()), "modernized version pragma", before, after))
         return after
 
-    return pattern.sub(repl, source), fixes, []
+    rewritten = pattern.sub(repl, source)
+    if matched:
+        return rewritten, fixes, []
+    pragma = f"#pragma version {config.target_version}\n"
+    fixes.append(Fix("VY001", 1, "added version pragma", "", pragma.rstrip()))
+    return pragma + rewritten, fixes, []
 
 
 def _legacy_decorators(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -3274,7 +3281,7 @@ def _prevrandao_diagnostic(source: str, config: Config, context: MigrationContex
 def _missing_pragma_diagnostic(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VYD005", config, context):
         return source, [], []
-    if infer_pragma(source) is None and config.source_version is None:
+    if context.source_spec is None and config.source_version is None:
         return source, [], [Diagnostic("VYD005", 1, "source has no version pragma and no --source-version")]
     return source, [], []
 

@@ -118,7 +118,7 @@ modern Python interpreter.
 ### v0.3.10
 
 - `#pragma` directives added and version pragma parsing relaxed: `VY001`
-  rewrites `# @version` to `#pragma version`.
+  rewrites or adds `#pragma version` with the target version.
 - Dynamic single-argument `range` bounds: `VYD014` flags `range(stop)` when
   `stop` is not literal and the target crosses `0.3.10`.
 

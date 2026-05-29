@@ -770,7 +770,6 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             target_version=target_version,
             source_version=item["pragma"],
             compiler_search_paths=(Path(item["corpus_repo_root"]),),
-            bump_pragma=True,
         )
         source_compile = compile_source_file(path, config, item["pragma"])
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None

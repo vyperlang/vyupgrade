@@ -3,7 +3,7 @@ set -eu
 
 run_smoke() {
   set +e
-  uv run python -m vyupgrade.cli "$1" --bump-pragma --report-json "$2"
+  uv run python -m vyupgrade.cli "$1" --report-json "$2"
   status="$?"
   set -e
   if [ "$status" != "0" ] && [ "$status" != "3" ]; then

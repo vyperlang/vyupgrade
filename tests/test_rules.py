@@ -24,7 +24,7 @@ def __init__():
 
     result = apply_rules(source, config())
 
-    assert "#pragma version ^0.3.10" in result.source
+    assert "#pragma version 0.4.3" in result.source
     assert "@deploy\ndef __init__" in result.source
     assert "@external\ndef __init__" not in result.source
     assert "abi_encode(1)" in result.source
@@ -2504,7 +2504,7 @@ def f(a: uint256, b: uint256) -> uint256:
     assert not [fix for fix in result.fixes if fix.rule in {"VY100", "VY110"}]
 
 
-def test_pragma_rewrite_is_gated_by_target_version() -> None:
+def test_pragma_rewrite_bumps_to_enabled_target_version() -> None:
     source = """# @version 0.3.8
 @external
 def f():
@@ -2515,19 +2515,42 @@ def f():
     after = apply_rules(source, config(target_version="0.3.10"))
 
     assert "# @version 0.3.8" in before.source
-    assert "#pragma version 0.3.8" in after.source
+    assert "#pragma version 0.3.10" in after.source
 
 
-def test_bump_pragma_updates_existing_pragma_version() -> None:
+def test_pragma_updates_existing_pragma_version() -> None:
     source = """# pragma version 0.3.10
 @external
 def f():
     pass
 """
 
-    result = apply_rules(source, config(target_version="0.4.3", bump_pragma=True))
+    result = apply_rules(source, config(target_version="0.4.3"))
 
     assert "#pragma version 0.4.3" in result.source
+
+
+def test_pragma_is_added_when_missing() -> None:
+    source = """@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3", source_version="0.3.10"))
+
+    assert result.source.startswith("#pragma version 0.4.3\n")
+
+
+def test_missing_source_pragma_still_reports_unknown_source_version() -> None:
+    source = """@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert result.source.startswith("#pragma version 0.4.3\n")
+    assert [diagnostic.rule for diagnostic in result.diagnostics] == ["VYD005"]
 
 
 def test_0_4_rules_apply_from_0_2_1_source() -> None:
