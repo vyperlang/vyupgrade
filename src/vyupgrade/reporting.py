@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
 
+from . import __version__
 from .models import Diagnostic, FileReport, Fix, RunReport
 
 
@@ -100,7 +101,7 @@ def _text_header(source_version: str | None, target_version: str) -> str:
     source, target = _header_values(source_version, target_version)
     return "\n".join(
         [
-            "vyupgrade 0.1.0",
+            f"vyupgrade {__version__}",
             f"source: {source}",
             f"target: {target}",
             "",
@@ -110,7 +111,7 @@ def _text_header(source_version: str | None, target_version: str) -> str:
 
 def _render_header(console: Console, source_version: str | None, target_version: str) -> None:
     source, target = _header_values(source_version, target_version)
-    console.print(Text("vyupgrade 0.1.0", style="vy.header"))
+    console.print(Text(f"vyupgrade {__version__}", style="vy.header"))
     console.print(_label_value("source", source))
     console.print(_label_value("target", target))
 

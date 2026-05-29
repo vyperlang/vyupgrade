@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from vyupgrade import __version__
 from vyupgrade.models import Diagnostic, FileReport, Fix, RunReport
 from vyupgrade.reporting import (
     THEME,
@@ -164,7 +165,7 @@ def test_human_reporter_flushes_incremental_plain_text_output() -> None:
     reporter.start(report.source_version, report.target_version)
 
     assert stream.getvalue() == (
-        "vyupgrade 0.1.0\nsource: inferred per file\ntarget: 0.4.3\n"
+        f"vyupgrade {__version__}\nsource: inferred per file\ntarget: 0.4.3\n"
     )
     assert stream.flush_count == 1
 

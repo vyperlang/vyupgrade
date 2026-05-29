@@ -16,6 +16,8 @@ wheel=(dist/vyupgrade-*.whl)
 
 contract="$tmpdir/Noop.vy"
 cat > "$contract" <<'EOF'
+#pragma version 0.4.3
+
 @external
 def f(x: uint256) -> uint256:
     return x
