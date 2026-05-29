@@ -2060,6 +2060,19 @@ def g():
     assert result.source.count("@nonreentrant") == 2
 
 
+def test_create_from_blueprint_adds_code_offset_by_default() -> None:
+    source = """# @version 0.3.10
+@external
+def f(target: address):
+    create_from_blueprint(target)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "create_from_blueprint(target, code_offset=0)" in result.source
+    assert any(fix.rule == "VY080" for fix in result.fixes)
+
+
 def test_idempotent() -> None:
     source = '''# @version 0.3.10
 @external

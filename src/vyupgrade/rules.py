@@ -3335,9 +3335,16 @@ def _create_from_blueprint(source: str, config: Config, context: MigrationContex
         if "code_offset" in args:
             continue
         diagnostics.append(Diagnostic("VY080", line_number(source, match.start()), "create_from_blueprint default code_offset changed from 0 to 3"))
-        if config.aggressive:
-            edits.append(TextEdit(close, close, ", code_offset=0"))
-            fixes.append(Fix("VY080", line_number(source, match.start()), "added code_offset=0 to preserve 0.3.x behavior", "", "code_offset=0"))
+        edits.append(TextEdit(close, close, ", code_offset=0"))
+        fixes.append(
+            Fix(
+                "VY080",
+                line_number(source, match.start()),
+                "added code_offset=0 to preserve 0.3.x behavior",
+                "",
+                "code_offset=0",
+            )
+        )
     return apply_edits(source, edits), fixes, diagnostics
 
 
