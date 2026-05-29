@@ -47,9 +47,7 @@ class HumanReporter:
 
     def start(self, source_version: str | None, target_version: str) -> None:
         if self.console:
-            self.console.print(Text("vyupgrade 0.1.0", style="vy.header"))
-            self.console.print(_label_value("source", source_version or "inferred per file"))
-            self.console.print(_label_value("target", target_version))
+            _render_header(self.console, source_version, target_version)
         else:
             self.stream.write(_text_header(source_version, target_version))
         self._flush()
@@ -91,9 +89,7 @@ def write_human_report(report: RunReport, stream: TextIO) -> None:
 
 
 def render_rich(report: RunReport, console: Console) -> None:
-    console.print(Text("vyupgrade 0.1.0", style="vy.header"))
-    console.print(_label_value("source", report.source_version or "inferred per file"))
-    console.print(_label_value("target", report.target_version))
+    _render_header(console, report.source_version, report.target_version)
     for file in report.files:
         if _should_render_file(file):
             _render_file(console, file)
@@ -101,14 +97,26 @@ def render_rich(report: RunReport, console: Console) -> None:
 
 
 def _text_header(source_version: str | None, target_version: str) -> str:
+    source, target = _header_values(source_version, target_version)
     return "\n".join(
         [
             "vyupgrade 0.1.0",
-            f"source: {source_version or 'inferred per file'}",
-            f"target: {target_version}",
+            f"source: {source}",
+            f"target: {target}",
             "",
         ]
     )
+
+
+def _render_header(console: Console, source_version: str | None, target_version: str) -> None:
+    source, target = _header_values(source_version, target_version)
+    console.print(Text("vyupgrade 0.1.0", style="vy.header"))
+    console.print(_label_value("source", source))
+    console.print(_label_value("target", target))
+
+
+def _header_values(source_version: str | None, target_version: str) -> tuple[str, str]:
+    return source_version or "inferred per file", target_version
 
 
 def _render_text_file(file: FileReport) -> str:
@@ -117,33 +125,22 @@ def _render_text_file(file: FileReport) -> str:
         lines.append(f"  {_group_text(group)}")
     for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
         lines.append(f"  {_group_text(group)}")
-    lines.append(f"  source compile: {file.source_compile}")
-    if file.source_compile == "failed" and file.source_error:
-        lines.append("  source error:")
-        lines.extend(f"    {line}" for line in file.source_error.splitlines())
-    lines.append(f"  target compile: {file.target_compile}")
-    if file.target_compile == "failed" and file.target_error:
-        lines.append("  target error:")
-        lines.extend(f"    {line}" for line in file.target_error.splitlines())
-    if file.abi_equal is not None:
-        lines.append(f"  ABI unchanged: {file.abi_equal}")
-        lines.extend(f"    {line}" for line in file.abi_diff)
-    if file.method_ids_equal is not None:
-        lines.append(f"  method IDs unchanged: {file.method_ids_equal}")
-        lines.extend(f"    {line}" for line in file.method_id_diff)
-    if file.storage_layout_equal is not None:
-        lines.append(f"  storage layout unchanged: {file.storage_layout_equal}")
-        lines.extend(f"    {line}" for line in file.storage_layout_diff)
+    for label, status, error_label, error in _compile_outputs(file):
+        lines.append(f"  {label}: {status}")
+        if status == "failed" and error:
+            lines.append(f"  {error_label}:")
+            lines.extend(f"    {line}" for line in error.splitlines())
+    for label, equal, diff in _artifact_checks(file):
+        if equal is not None:
+            lines.append(f"  {label}: {equal}")
+            lines.extend(f"    {line}" for line in diff)
     return "\n".join(lines) + "\n"
 
 
 def _render_text_summary(report: RunReport) -> str:
-    change_verb = "changed" if report.wrote_changes else "would change"
-    fix_verb = "applied" if report.wrote_changes else "would apply"
     lines = [
         "",
-        f"{change_verb} {report.changed_count} files",
-        f"{fix_verb} {report.fix_count} fixes",
+        *(f"{verb} {count} {label}" for verb, count, label in _summary_items(report)),
         f"left {report.diagnostic_count} review diagnostics",
     ]
     if not report.write_requested and report.changed_count:
@@ -156,16 +153,23 @@ def _render_text_summary(report: RunReport) -> str:
 
 
 def _render_summary(console: Console, report: RunReport) -> None:
-    change_verb = "changed" if report.wrote_changes else "would change"
-    fix_verb = "applied" if report.wrote_changes else "would apply"
     console.print()
-    console.print(_summary_line(change_verb, report.changed_count, "files", _count_style(report.changed_count)))
-    console.print(_summary_line(fix_verb, report.fix_count, "fixes", _count_style(report.fix_count)))
-    console.print(_summary_line("left", report.diagnostic_count, "review diagnostics", _count_style(report.diagnostic_count)))
+    for verb, count, label in _summary_items(report):
+        console.print(_summary_line(verb, count, label, _count_style(count)))
+    console.print(
+        _summary_line(
+            "left",
+            report.diagnostic_count,
+            "review diagnostics",
+            _count_style(report.diagnostic_count),
+        )
+    )
     if not report.write_requested and report.changed_count:
         console.print(Text("run with --write to apply these changes", style="vy.muted"))
     if report.test_command:
-        console.print(_label_value("test command", report.test_status, _status_style(report.test_status)))
+        console.print(
+            _label_value("test command", report.test_status, _status_style(report.test_status))
+        )
         if report.test_output:
             console.print(report.test_output.rstrip())
 
@@ -177,25 +181,38 @@ def _render_file(console: Console, file: FileReport) -> None:
         console.print(_group_rich_text(group))
     for group in _group_items(file.diagnostics, lambda diag: _severity_style(diag.severity)):
         console.print(_group_rich_text(group))
-    console.print(_compile_line("source compile", file.source_compile))
-    if file.source_compile == "failed" and file.source_error:
-        console.print(_indented("source error:", "vy.error"))
-        for line in file.source_error.splitlines():
-            console.print(_indented(f"  {line}", "vy.error"))
-    console.print(_compile_line("target compile", file.target_compile))
-    if file.target_compile == "failed" and file.target_error:
-        console.print(_indented("target error:", "vy.error"))
-        for line in file.target_error.splitlines():
-            console.print(_indented(f"  {line}", "vy.error"))
-    if file.abi_equal is not None:
-        console.print(_bool_line("ABI unchanged", file.abi_equal))
-        _render_detail_lines(console, file.abi_diff)
-    if file.method_ids_equal is not None:
-        console.print(_bool_line("method IDs unchanged", file.method_ids_equal))
-        _render_detail_lines(console, file.method_id_diff)
-    if file.storage_layout_equal is not None:
-        console.print(_bool_line("storage layout unchanged", file.storage_layout_equal))
-        _render_detail_lines(console, file.storage_layout_diff)
+    for label, status, error_label, error in _compile_outputs(file):
+        console.print(_compile_line(label, status))
+        if status == "failed" and error:
+            console.print(_indented(f"{error_label}:", "vy.error"))
+            for line in error.splitlines():
+                console.print(_indented(f"  {line}", "vy.error"))
+    for label, equal, diff in _artifact_checks(file):
+        if equal is not None:
+            console.print(_bool_line(label, equal))
+            _render_detail_lines(console, diff)
+
+
+def _compile_outputs(file: FileReport) -> tuple[tuple[str, str, str, str | None], ...]:
+    return (
+        ("source compile", file.source_compile, "source error", file.source_error),
+        ("target compile", file.target_compile, "target error", file.target_error),
+    )
+
+
+def _artifact_checks(file: FileReport) -> tuple[tuple[str, bool | None, list[str]], ...]:
+    return (
+        ("ABI unchanged", file.abi_equal, file.abi_diff),
+        ("method IDs unchanged", file.method_ids_equal, file.method_id_diff),
+        ("storage layout unchanged", file.storage_layout_equal, file.storage_layout_diff),
+    )
+
+
+def _summary_items(report: RunReport) -> tuple[tuple[str, int, str], ...]:
+    return (
+        ("changed" if report.wrote_changes else "would change", report.changed_count, "files"),
+        ("applied" if report.wrote_changes else "would apply", report.fix_count, "fixes"),
+    )
 
 
 def _should_render_file(file: FileReport) -> bool:
