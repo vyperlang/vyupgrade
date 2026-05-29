@@ -63,7 +63,8 @@ the supported range.
   `VYD004` flags ambiguous `/` expressions.
 - Redundant integer `convert(...)` calls rejected by modern Vyper: `VY051`
   removes converts when source facts prove the value already has the target
-  integer type, and also handles legacy `uint256` converts after division.
+  integer type, and also handles legacy `uint256` converts after division and
+  in constant initializers.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
   arithmetic expressions.
@@ -283,15 +284,18 @@ the supported range.
 
 - `@public` and `@private` renamed: `VY201`.
 - `@constant` renamed: `VY201`.
-- Type units removed: `VY202`.
+- Type units removed, and the legacy `timestamp` type became `uint256`:
+  `VY202`.
 - Event declaration syntax changed: `VY203`.
 - `log` became a statement: `VY204`.
 - Mapping declarations changed to `HashMap`: `VY205`.
-- Interfaces use `interface`: `VY206`.
+- Interfaces use `interface`; legacy signature mutability keywords `constant`
+  and `modifying` become `view` and `nonpayable`: `VY206`.
 - Dynamic byte and string type names capitalized: `VY207`.
 - Byte and string literals are no longer interchangeable: `VYD210`.
-- `assert_modifiable()` removed: `VY208`.
-- Function input name `value` reserved: `VYD211`.
+- `assert_modifiable()` and `as_unitless_number()` removed: `VY208`.
+- Function input name `value` reserved: `VY212` renames legacy inputs and
+  updates local references. `VYD211` remains for cases the fixer cannot handle.
 - `slice()` start and length must be `uint256`: `VYD212`.
 - `len()` returns `uint256`: `VYD213`.
 - External-call `value=` and `gas=` kwargs must be `uint256`: `VYD214`.

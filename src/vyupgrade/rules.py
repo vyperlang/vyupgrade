@@ -102,6 +102,7 @@ RULE_CHANGES = {
     "VY220": RuleChange(VyperVersion(0, 3, 7)),
     "VY230": RuleChange(VyperVersion(0, 3, 8)),
     "VY231": RuleChange(VyperVersion(0, 3, 8)),
+    "VY212": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VYD001": RuleChange(VyperVersion(0, 4, 0)),
     "VYD002": RuleChange(VyperVersion(0, 4, 0)),
     "VYD003": RuleChange(VyperVersion(0, 4, 0)),
@@ -135,6 +136,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _event_kwargs,
         _legacy_maps_and_interfaces,
         _legacy_dynamic_types,
+        _reserved_parameter_names,
         _legacy_diagnostics,
         _natspec_strictness,
         _legacy_builtin_calls,
@@ -262,7 +264,40 @@ def _legacy_type_units(source: str, config: Config, context: MigrationContext) -
         after = match.group(1)
         edits.append(TextEdit(match.start(), match.end(), after))
         fixes.append(Fix("VY202", line_number(source, match.start()), "removed legacy type unit", before, after))
+    for edit in _legacy_timestamp_type_edits(source, mask):
+        edits.append(edit)
+        fixes.append(Fix("VY202", line_number(source, edit.start), "replaced legacy timestamp type", "timestamp", "uint256"))
     return apply_edits(source, edits), fixes, []
+
+
+def _legacy_timestamp_type_edits(source: str, mask: list[bool]) -> list[TextEdit]:
+    edits: list[TextEdit] = []
+    offset = 0
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line.rstrip("\n")
+        code = line.split("#", 1)[0]
+        if "timestamp" not in code:
+            offset += len(raw_line)
+            continue
+        spans: list[tuple[int, int]] = []
+        if re.match(r"\s*def\b", code):
+            spans.append((0, len(code)))
+        else:
+            colon = code.find(":")
+            if colon != -1:
+                assignment = code.find("=", colon + 1)
+                end = assignment if assignment != -1 else len(code)
+                spans.append((colon + 1, end))
+        for start, end in spans:
+            for match in re.finditer(r"\btimestamp\b", code[start:end]):
+                absolute_start = offset + start + match.start()
+                absolute_end = offset + start + match.end()
+                if absolute_start > 0 and source[absolute_start - 1] == ".":
+                    continue
+                if span_is_code(mask, absolute_start, absolute_end):
+                    edits.append(TextEdit(absolute_start, absolute_end, "uint256"))
+        offset += len(raw_line)
+    return edits
 
 
 def _legacy_events(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -404,6 +439,19 @@ def _legacy_maps_and_interfaces(source: str, config: Config, context: MigrationC
             return after
 
         current = pattern.sub(repl, current)
+        pattern = re.compile(
+            r"^([ \t]*def[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*\([^#\n]*\)[ \t]*(?:->[ \t]*[^:#\n]+)?[ \t]*:[ \t]*)(constant|modifying)([ \t]*(?:#.*)?$)",
+            re.MULTILINE,
+        )
+
+        def mutability_repl(match: re.Match[str]) -> str:
+            before = match.group(0)
+            after_keyword = "view" if match.group(2) == "constant" else "nonpayable"
+            after = f"{match.group(1)}{after_keyword}{match.group(3)}"
+            fixes.append(Fix("VY206", line_number(current, match.start()), "changed legacy interface mutability", before, after))
+            return after
+
+        current = pattern.sub(mutability_repl, current)
     return current, fixes, []
 
 
@@ -422,11 +470,51 @@ def _legacy_dynamic_types(source: str, config: Config, context: MigrationContext
     return apply_edits(source, edits), fixes, []
 
 
+def _reserved_parameter_names(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY212", config, context):
+        return source, [], []
+    if context.source_floor is not None and context.source_floor > VyperVersion(0, 2, 1):
+        return source, [], []
+    facts = parse_source_facts(source)
+    line_offsets = _line_offsets(source)
+    mask = code_mask(source)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    pattern = re.compile(r"^\s*def\s+[A-Za-z_][A-Za-z0-9_]*\s*\((?P<args>[^)]*)\)", re.MULTILINE)
+    for match in pattern.finditer(source):
+        args = split_top_level_args(match.group("args"))
+        if args is None:
+            continue
+        names = {arg.split(":", 1)[0].split("=", 1)[0].strip() for arg in args}
+        if "value" not in names:
+            continue
+        replacement = "_value" if "_value" not in names else "value_"
+        args_start = match.start("args")
+        args_text = match.group("args")
+        for name_match in re.finditer(r"\bvalue\b(?=\s*(?::|=|,|$))", args_text):
+            start = args_start + name_match.start()
+            edits.append(TextEdit(start, start + len("value"), replacement))
+        function_line = line_number(source, match.start())
+        body_start = line_offsets[function_line] if function_line < len(line_offsets) else match.end()
+        end_line = facts.function_ends.get(function_line, len(line_offsets))
+        body_end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+        for name_match in re.finditer(r"\bvalue\b", source[body_start:body_end]):
+            start = body_start + name_match.start()
+            end = body_start + name_match.end()
+            if not span_is_code(mask, start, end):
+                continue
+            if _is_attribute_name(source, start) or _is_keyword_argument_name(source, start, end):
+                continue
+            edits.append(TextEdit(start, end, replacement))
+        fixes.append(Fix("VY212", function_line, "renamed reserved function parameter value", "value", replacement))
+    return apply_edits(source, edits), fixes, []
+
+
 def _legacy_diagnostics(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     diagnostics: list[Diagnostic] = []
     if _enabled("VYD210", config, context):
         diagnostics.extend(_byte_string_literal_diagnostics(source))
-    if _enabled("VYD211", config, context):
+    if _enabled("VYD211", config, context) and (context.source_floor is None or context.source_floor <= VyperVersion(0, 2, 1)):
         diagnostics.extend(_reserved_value_parameter_diagnostics(source))
     if _enabled("VYD212", config, context):
         diagnostics.extend(_slice_uint256_diagnostics(source))
@@ -528,6 +616,8 @@ def _legacy_builtin_calls(source: str, config: Config, context: MigrationContext
         current, new_fixes = _replace_call_keyword(current, "extract32", "type", "output_type", "VY208")
         fixes.extend(new_fixes)
         current, new_fixes = _replace_assert_modifiable(current)
+        fixes.extend(new_fixes)
+        current, new_fixes = _unwrap_legacy_builtin(current, "as_unitless_number", "VY208")
         fixes.extend(new_fixes)
     if _enabled("VY209", config, context):
         current, new_fixes = _rewrite_method_id_bytes32_comparisons(current)
@@ -986,6 +1076,23 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
             expr,
             facts.vars_at_line(line_number(source, match.start())),
         )
+        if (
+            is_integer_type(target)
+            and _inside_constant_declaration_line(source, match.start())
+            and _integerish_expression(expr, vars_for_line)
+            and not _expression_has_signed_integer(expr, vars_for_line)
+        ):
+            edits.append(TextEdit(match.start(), close + 1, expr))
+            fixes.append(
+                Fix(
+                    "VY051",
+                    line_number(source, match.start()),
+                    "removed convert from constant initializer",
+                    source[match.start() : close + 1],
+                    expr,
+                )
+            )
+            continue
         expr_type = infer_expr_type(expr, vars_for_line, facts)
         if (
             is_integer_type(target)
@@ -1015,6 +1122,11 @@ def _redundant_integer_convert(source: str, config: Config, context: MigrationCo
 
 def _redundant_convert_replacement(expr: str) -> str:
     return f"({expr})" if re.search(r"[-+*/%<>=|&]", expr) else expr
+
+
+def _inside_constant_declaration_line(source: str, start: int) -> bool:
+    line_start = source.rfind("\n", 0, start) + 1
+    return bool(re.search(r":\s*constant\s*\(", source[line_start:start]))
 
 
 def _simple_nonliteral_expr(expr: str) -> bool:
@@ -3494,11 +3606,32 @@ def _rewrite_map_types(source: str) -> tuple[str, list[Fix]]:
         args = split_top_level_args(source[match.end() : close])
         if args is None or len(args) != 2:
             continue
-        replacement = f"HashMap[{args[0].strip()}, {args[1].strip()}]"
+        replacement = _rewrite_legacy_map_type(source[match.start() : close + 1])
         edits.append(TextEdit(match.start(), close + 1, replacement))
         fixes.append(Fix("VY205", line_number(source, match.start()), "changed legacy map type to HashMap", source[match.start() : close + 1], replacement))
         last_end = close + 1
     return apply_edits(source, edits), fixes
+
+
+def _rewrite_legacy_map_type(text: str) -> str:
+    pieces: list[str] = []
+    index = 0
+    while match := re.search(r"\bmap\s*\(", text[index:]):
+        start = index + match.start()
+        open_paren = index + match.end() - 1
+        close = find_matching(text, open_paren)
+        if close is None:
+            break
+        args = split_top_level_args(text[open_paren + 1 : close])
+        if args is None or len(args) != 2:
+            break
+        pieces.append(text[index:start])
+        key = _rewrite_legacy_map_type(args[0].strip())
+        value = _rewrite_legacy_map_type(args[1].strip())
+        pieces.append(f"HashMap[{key}, {value}]")
+        index = close + 1
+    pieces.append(text[index:])
+    return "".join(pieces)
 
 
 def _replace_call_keyword(
@@ -3544,6 +3677,25 @@ def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
         replacement = f"assert {args[0].strip()}"
         edits.append(TextEdit(match.start(), close + 1, replacement))
         fixes.append(Fix("VY208", line_number(source, match.start()), "replaced assert_modifiable builtin", source[match.start() : close + 1], replacement))
+    return apply_edits(source, edits), fixes
+
+
+def _unwrap_legacy_builtin(source: str, call_name: str, rule: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        close = find_matching(source, source.find("(", match.start()))
+        if close is None:
+            continue
+        args = split_top_level_args(source[match.end() : close])
+        if args is None or len(args) != 1:
+            continue
+        replacement = args[0].strip()
+        edits.append(TextEdit(match.start(), close + 1, replacement))
+        fixes.append(Fix(rule, line_number(source, match.start()), f"removed legacy {call_name} builtin", source[match.start() : close + 1], replacement))
     return apply_edits(source, edits), fixes
 
 

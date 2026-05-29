@@ -1889,6 +1889,18 @@ def f() -> Bytes[96]:
     assert "abi_encode(convert(0, uint256), method_id=" in result.source
 
 
+def test_redundant_convert_removed_from_constant_initializers() -> None:
+    source = """# @version 0.3.10
+ZERO: constant(uint256) = convert(0, uint256)
+PRECISION_MUL: constant(uint256[2]) = [convert(1, uint256), convert(10 ** 6, uint256)]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "ZERO: constant(uint256) = 0" in result.source
+    assert "PRECISION_MUL: constant(uint256[2]) = [1, 10 ** 6]" in result.source
+
+
 def test_self_storage_interface_not_shadowed_by_later_parameter() -> None:
     source = """# @version 0.3.10
 interface Token:
@@ -2532,6 +2544,92 @@ def _g():
     }
 
 
+def test_legacy_map_rewrite_handles_nested_map_type() -> None:
+    source = """allowances: map(address, map(address, uint256))
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "allowances: HashMap[address, HashMap[address, uint256]]" in result.source
+
+
+def test_legacy_interface_signature_mutability_rewrites() -> None:
+    source = """contract Controller:
+    def gauges(gauge_id: int128) -> address: constant
+
+contract Token:
+    def mint(_to: address, _value: uint256): modifying
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "interface Controller:" in result.source
+    assert "def gauges(gauge_id: int128) -> address: view" in result.source
+    assert "def mint(_to: address, _value: uint256): nonpayable" in result.source
+
+
+def test_legacy_timestamp_type_rewrites_in_type_positions() -> None:
+    source = """event CommitNewAdmin:
+    deadline: indexed(timestamp)
+
+event Start:
+    timestamp: uint256
+
+struct Ramp:
+    initial_time: timestamp
+
+period_timestamp: public(HashMap[int128, timestamp])
+last_epoch_time: public(timestamp)
+
+@external
+def f() -> timestamp:
+    log Start(timestamp=block.timestamp)
+    self.point_history[0] = Point({ts: block.timestamp})
+    return block.timestamp
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "deadline: indexed(uint256)" in result.source
+    assert "timestamp: uint256" in result.source
+    assert "log Start(timestamp=block.timestamp)" in result.source
+    assert "Point({ts: block.timestamp})" in result.source
+    assert "initial_time: uint256" in result.source
+    assert "period_timestamp: public(HashMap[int128, uint256])" in result.source
+    assert "last_epoch_time: public(uint256)" in result.source
+    assert "def f() -> uint256:" in result.source
+    assert "return block.timestamp" in result.source
+
+
+def test_legacy_as_unitless_number_is_unwrapped() -> None:
+    source = """# @version 0.2.1
+@external
+def f(start: uint256) -> uint256:
+    return as_unitless_number(block.timestamp - start)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "return block.timestamp - start" in result.source
+    assert "as_unitless_number" not in result.source
+
+
+def test_reserved_value_parameter_is_renamed_with_function_references() -> None:
+    source = """# @version 0.2.1
+@internal
+def _deposit_for(addr: address, value: uint256):
+    self.balance += value
+    log Deposit(addr, value=value)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "def _deposit_for(addr: address, _value: uint256):" in result.source
+    assert "self.balance += _value" in result.source
+    assert "log Deposit(addr, value=_value)" in result.source
+    assert any(fix.rule == "VY212" for fix in result.fixes)
+
+
 def test_shift_builtin_rewrites_literals_and_flags_dynamic_amounts() -> None:
     source = """# @version 0.4.1
 @external
@@ -2804,7 +2902,9 @@ def g(items: RLPList(uint256)):
     result = apply_rules(source, config(target_version="0.2.1"))
     rules = {diag.rule for diag in result.diagnostics}
 
-    assert {"VYD210", "VYD211", "VYD212", "VYD213", "VYD214", "VYD215"} <= rules
+    assert {"VYD210", "VYD212", "VYD213", "VYD214", "VYD215"} <= rules
+    assert "VYD211" not in rules
+    assert "def f(_value: int128" in result.source
 
 
 def test_nested_bare_import_is_diagnostic_when_crossing_0_4_1() -> None:
