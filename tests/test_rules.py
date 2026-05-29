@@ -2367,6 +2367,21 @@ def f(amount: uint256, scale: decimal):
     assert any(diag.rule == "VYD001" for diag in result.diagnostics)
 
 
+def test_decimal_division_inside_integer_convert_is_not_rewritten() -> None:
+    source = """# @version 0.3.10
+@external
+def f(x: decimal, y: decimal) -> uint256:
+    z: uint256 = convert(x / y, uint256)
+    return z
+"""
+
+    result = apply_rules(source, config())
+
+    assert "convert(x / y, uint256)" in result.source
+    assert "convert(x // y, uint256)" not in result.source
+    assert any(diag.rule == "VYD004" for diag in result.diagnostics)
+
+
 def test_dynamic_bytes_hex_literal_becomes_byte_string_literal() -> None:
     source = """# @version 0.3.10
 @external

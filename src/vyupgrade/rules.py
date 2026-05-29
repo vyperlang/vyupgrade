@@ -1807,18 +1807,11 @@ def _integer_division(source: str, config: Config, context: MigrationContext) ->
         vars_for_line = facts.vars_at_line(line_number(source, match.start()))
         left_type = infer_expr_type(left, vars_for_line, facts)
         right_type = infer_expr_type(right, vars_for_line, facts)
-        lhs_type = _lhs_declared_type(line)
-        assigned_type = _lhs_assigned_type(line, vars_for_line)
-        return_type = facts.return_type_at_line(line_number(source, match.start()))
         slash_col = match.start() - line_start
+        left_is_integer = is_integer_type(left_type) or _integerish_expression(left, vars_for_line, facts)
+        right_is_integer = is_integer_type(right_type) or _integerish_expression(right, vars_for_line, facts)
         if (
-            (is_integer_type(left_type) and is_integer_type(right_type))
-            or (_integerish_expression(left, vars_for_line, facts) and is_integer_type(right_type))
-            or (is_integer_type(left_type) and _integerish_expression(right, vars_for_line, facts))
-            or (_integerish_expression(left, vars_for_line, facts) and _integerish_expression(right, vars_for_line, facts))
-            or is_integer_type(lhs_type)
-            or is_integer_type(assigned_type)
-            or (line.lstrip().startswith("return ") and is_integer_type(return_type))
+            (left_is_integer and right_is_integer)
             or (
                 _integerish_expression(line[:slash_col], vars_for_line, facts)
                 and _integerish_expression(line[slash_col + 1 :], vars_for_line, facts)
