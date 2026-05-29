@@ -661,7 +661,7 @@ def _immutable_accessor_collisions(source: str, config: Config, context: Migrati
     mask = code_mask(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    taken = immutable_names | function_names
+    taken = _code_identifiers(source)
     for name in collisions:
         replacement = _private_backing_name(name, taken)
         pattern = re.compile(rf"\b{re.escape(name)}\b")
@@ -1050,6 +1050,7 @@ def _interface_imports(source: str, config: Config, context: MigrationContext) -
     lines = source.splitlines(keepends=True)
     changed = False
     requested_rewrites: dict[str, str] = {}
+    taken = _code_identifiers(source)
 
     for i, line in enumerate(lines):
         match = re.match(r"(\s*)from\s+vyper\.interfaces\s+import\s+(.+?)(\s*(?:#.*)?)(\n?)$", line)
@@ -1058,8 +1059,16 @@ def _interface_imports(source: str, config: Config, context: MigrationContext) -
         imports = [part.strip() for part in match.group(2).split(",")]
         mapped = [IMPORT_RENAMES.get(name, name) for name in imports]
         if mapped != imports and _enabled("VY020", config, context):
-            requested_rewrites.update({old: new for old, new in zip(imports, mapped, strict=True) if old != new})
-            lines[i] = f"{match.group(1)}from ethereum.ercs import {', '.join(mapped)}{match.group(3)}{match.group(4)}"
+            import_entries: list[str] = []
+            for old, new in zip(imports, mapped, strict=True):
+                if old == new:
+                    import_entries.append(new)
+                elif new in taken:
+                    import_entries.append(f"{new} as {old}")
+                else:
+                    import_entries.append(new)
+                    requested_rewrites[old] = new
+            lines[i] = f"{match.group(1)}from ethereum.ercs import {', '.join(import_entries)}{match.group(3)}{match.group(4)}"
             fixes.append(Fix("VY020", i + 1, "updated built-in interface import path", line.rstrip("\n"), lines[i].rstrip("\n")))
             changed = True
         elif "vyper.interfaces" in line:

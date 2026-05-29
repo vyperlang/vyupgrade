@@ -84,6 +84,26 @@ asset: public(ERC4626)
     assert "asset: public(IERC4626)" in result.source
 
 
+def test_modern_erc_interface_imports_alias_when_new_name_exists() -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC20
+
+interface IERC20:
+    def decimals() -> uint256: view
+
+@external
+def f(token: address) -> uint256:
+    return ERC20(token).balanceOf(msg.sender) + IERC20(token).decimals()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC20 as ERC20" in result.source
+    assert "interface IERC20:" in result.source
+    assert "ERC20(token).balanceOf" in result.source
+    assert "IERC20(token).decimals" in result.source
+
+
 def test_erc4626_builtin_calls() -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC4626
@@ -683,6 +703,29 @@ def x() -> uint256:
     assert "log Changed(x=_x)" in result.source
     assert "x: uint256" in result.source
     assert "return self.x()" in result.source
+
+
+def test_immutable_accessor_collision_avoids_existing_local_names() -> None:
+    source = """# @version 0.3.10
+coins: immutable(address[2])
+
+@external
+def __init__(_coins: address[2]):
+    coins = _coins
+
+@view
+@external
+def coins(i: uint256) -> address:
+    _coins: address[2] = coins
+    return _coins[i]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "__coins: immutable(address[2])" in result.source
+    assert "\n    coins = _coins" not in result.source
+    assert "__coins = _coins" in result.source
+    assert "_coins: address[2] = __coins" in result.source
 
 
 def test_constant_accessor_collision_renames_backing_variable() -> None:
