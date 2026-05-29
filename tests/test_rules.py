@@ -2786,6 +2786,24 @@ def f() -> uint256:
     assert "output_type=bytes32" not in result.source
 
 
+def test_chained_call_after_staticcall_gets_keyword() -> None:
+    source = """# pragma version 0.3.10
+interface Bridger:
+    def check(addr: address) -> bool: view
+
+interface Gauge:
+    def bridger() -> Bridger: view
+
+@external
+def f(gauge: Gauge) -> bool:
+    return gauge.bridger().check(msg.sender)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return staticcall (staticcall gauge.bridger()).check(msg.sender)" in result.source
+
+
 def test_struct_array_interface_call_gets_keyword() -> None:
     source = """# pragma version 0.3.10
 interface ERC20:

@@ -158,6 +158,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _integer_assignment_casts,
         _external_call_keywords,
         _external_call_subscripts,
+        _external_call_keywords,
         _ignored_external_call_results,
         _integer_division,
         _constant_exponent_literals,
@@ -2587,11 +2588,29 @@ def _all_external_call_matches(
     )
     matches: list[tuple[int, int, str, str, str | None]] = []
     matches.extend(_interface_cast_call_matches(source, facts.interfaces))
+    matches.extend(_parenthesized_external_call_matches(source))
     matches.extend(
         (match.start(), match.end(), match.group("target"), match.group("method"), None)
         for match in variable_call_re.finditer(source)
     )
     return sorted(matches)
+
+
+def _parenthesized_external_call_matches(source: str) -> list[tuple[int, int, str, str, str | None]]:
+    matches: list[tuple[int, int, str, str, str | None]] = []
+    mask = code_mask(source)
+    pattern = re.compile(r"\(\s*(?:staticcall|extcall)\s+")
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        close = find_matching(source, match.start())
+        if close is None:
+            continue
+        tail = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
+        if tail is None:
+            continue
+        matches.append((match.start(), close + 1 + tail.end(), source[match.start() : close + 1], tail.group(1), None))
+    return matches
 
 
 def _vars_for_argument(
