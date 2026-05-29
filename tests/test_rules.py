@@ -1485,6 +1485,38 @@ def f(d: uint256, price_scale: uint256) -> uint256[N_COINS]:
     assert "convert(price_scale, int128)" not in result.source
 
 
+def test_signed_array_constant_assigned_to_unsigned_array_becomes_unsigned() -> None:
+    source = """# @version 0.2.16
+N_COINS: constant(int128) = 2
+PRECISION_MUL: constant(int128[N_COINS]) = [1, 1]
+
+@external
+def f() -> uint256[N_COINS]:
+    result: uint256[N_COINS] = PRECISION_MUL
+    return result
+"""
+
+    result = apply_rules(source, config())
+
+    assert "PRECISION_MUL: constant(uint256[N_COINS]) = [1, 1]" in result.source
+
+
+def test_signed_array_constant_kept_when_used_as_signed_array() -> None:
+    source = """# @version 0.2.16
+N_COINS: constant(int128) = 2
+PRECISION_MUL: constant(int128[N_COINS]) = [1, 1]
+
+@external
+def f() -> int128[N_COINS]:
+    result: int128[N_COINS] = PRECISION_MUL
+    return result
+"""
+
+    result = apply_rules(source, config())
+
+    assert "PRECISION_MUL: constant(int128[N_COINS]) = [1, 1]" in result.source
+
+
 def test_boolean_comparison_prefers_casting_unsigned_constant_peer() -> None:
     source = """# @version 0.2.16
 N_COINS: constant(int128) = 2

@@ -161,6 +161,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _integer_division,
         _constant_exponent_literals,
         _mixed_signed_unsigned_arithmetic,
+        _signed_integer_array_constant_types,
         _typed_array_literal_arguments,
         _unsigned_range_bound_signed_constants,
         _typed_external_call_arguments,
@@ -2017,6 +2018,75 @@ def _mixed_signed_unsigned_arithmetic(source: str, config: Config, context: Migr
                 )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _signed_integer_array_constant_types(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _enabled("VY052", config, context):
+        return source, [], []
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    decl_pattern = re.compile(
+        r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\(\s*"
+        r"(?P<signed>int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)"
+        r"\s*\[\s*(?P<length>[^\]]+?)\s*\]\s*\)\s*=\s*\[",
+        re.MULTILINE,
+    )
+    for match in decl_pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        close = find_matching(source, match.end() - 1, "[", "]")
+        if close is None:
+            continue
+        elements = split_top_level_args(source[match.end() : close])
+        if elements is None or any(element.strip().startswith("-") for element in elements):
+            continue
+        target_element_type = _unsigned_array_assignment_element_type(source, match.group("name"), mask)
+        if target_element_type is None:
+            continue
+        start = match.start("signed")
+        end = match.end("length") + 1
+        replacement = f"{target_element_type}[{match.group('length').strip()}]"
+        edits.append(TextEdit(start, end, replacement))
+        fixes.append(
+            Fix(
+                "VY052",
+                line_number(source, match.start()),
+                "changed signed integer array constant to unsigned array type",
+                source[start:end],
+                replacement,
+            )
+        )
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _unsigned_array_assignment_element_type(source: str, name: str, mask: list[bool]) -> str | None:
+    unsigned_types: set[str] = set()
+    signed_assignment = False
+    assignment_pattern = re.compile(
+        rf"(?P<type>\b(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\[[^\]\n]+\]))\s*=\s*{re.escape(name)}\b"
+    )
+    for match in assignment_pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        element_type = iterable_element_type(match.group("type").replace(" ", ""))
+        if _is_unsigned_integer_type(element_type):
+            unsigned_types.add(normalize_type(element_type or "uint256"))
+        elif _is_signed_integer_type(element_type):
+            signed_assignment = True
+    if signed_assignment or not unsigned_types:
+        return None
+    return _widest_unsigned_integer_type(unsigned_types)
+
+
+def _widest_unsigned_integer_type(type_names: set[str]) -> str:
+    widths = [
+        int(match.group(1) or "256")
+        for type_name in type_names
+        if (match := re.fullmatch(r"uint(\d*)", type_name))
+    ]
+    return f"uint{max(widths) if widths else 256}"
 
 
 def _typed_array_literal_arguments(source: str, config: Config, context: MigrationContext) -> tuple[str, list[Fix], list[Diagnostic]]:
