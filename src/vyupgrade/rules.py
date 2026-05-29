@@ -236,7 +236,7 @@ def _pragma(source: str, config: Config, context: MigrationContext) -> tuple[str
         return source, [], []
     fixes: list[Fix] = []
     mask = code_mask(source)
-    pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
+    pattern = re.compile(r"^([ \t]*)#[ \t]*(?:@version|pragma[ \t]+version)[ \t]+(.+?)[ \t]*$", re.MULTILINE)
     matched = False
 
     def repl(match: re.Match[str]) -> str:
