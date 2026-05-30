@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
-import shutil
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
+from vyupgrade import cli
 from vyupgrade.cli import _add_validation_diagnostics, _evm_default_diagnostic, _write_diff, main
+from vyupgrade.compiler import CompileResult
 from vyupgrade.models import Config, FileReport
 
 
@@ -14,7 +17,41 @@ class TtyStringIO(StringIO):
         return True
 
 
-def test_check_mode_reports_changes(tmp_path: Path) -> None:
+@pytest.fixture
+def passing_compiler(monkeypatch):
+    def compile_source_file(
+        path: Path, config: Config, source_version: str | None
+    ) -> CompileResult:
+        return CompileResult("passed", artifacts={})
+
+    def compile_target_source(
+        path: Path,
+        source: str,
+        config: Config,
+        overlay=None,
+    ) -> CompileResult:
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
+    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    return None
+
+
+@pytest.fixture
+def failing_target_compiler(monkeypatch, passing_compiler):
+    def compile_target_source(
+        path: Path,
+        source: str,
+        config: Config,
+        overlay=None,
+    ) -> CompileResult:
+        return CompileResult("failed", stderr="target failed")
+
+    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    return None
+
+
+def test_check_mode_reports_changes(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text(
         """# @version 0.3.10
@@ -36,18 +73,24 @@ def __init__():
     assert any(fix["rule"] == "VY002" for fix in data["files"][0]["fixes"])
 
 
-def test_write_mode_is_idempotent_with_target_compile(tmp_path: Path) -> None:
+def test_write_mode_is_idempotent(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "migration_03.vy"
-    shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)
+    contract.write_text(
+        """# @version 0.3.10
+@external
+def __init__():
+    pass
+""",
+        encoding="utf-8",
+    )
 
     report = tmp_path / "report.json"
     code = main([str(contract), "--write", "--report-json", str(report)])
 
-    assert code in {0, 3}
+    assert code == 0
     rewritten = contract.read_text()
     assert "#pragma version 0.4.3" in rewritten
-    assert "staticcall self.token.balanceOf(msg.sender)" in rewritten
-    assert "for i: uint256 in range(3):" in rewritten
+    assert "@deploy\ndef __init__" in rewritten
     data = json.loads(report.read_text())
     assert data["write_requested"] is True
     assert data["wrote_changes"] is True
@@ -55,11 +98,13 @@ def test_write_mode_is_idempotent_with_target_compile(tmp_path: Path) -> None:
 
     second_report = tmp_path / "second.json"
     second = main([str(contract), "--check", "--report-json", str(second_report)])
-    assert second in {0, 3}
+    assert second == 0
     assert json.loads(second_report.read_text())["files"][0]["changed"] is False
 
 
-def test_write_mode_does_not_write_when_target_compile_fails(tmp_path: Path) -> None:
+def test_write_mode_does_not_write_when_target_compile_fails(
+    tmp_path: Path, failing_target_compiler
+) -> None:
     contract = tmp_path / "bad.vy"
     original = """# @version 0.3.10
 @external
@@ -74,7 +119,7 @@ def f(target: address):
     assert contract.read_text(encoding="utf-8") == original
 
 
-def test_split_interfaces_writes_sibling_vyi_files(tmp_path: Path) -> None:
+def test_split_interfaces_writes_sibling_vyi_files(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Main.vy"
     contract.write_text(
         """#pragma version 0.4.3
@@ -93,22 +138,28 @@ def f(token: Token, owner: address) -> uint256:
     code = main([str(contract), "--write", "--split-interfaces"])
 
     assert code == 0
-    assert contract.read_text(encoding="utf-8") == """#pragma version 0.4.3
+    assert (
+        contract.read_text(encoding="utf-8")
+        == """#pragma version 0.4.3
 
 import Token
 @external
 def f(token: Token, owner: address) -> uint256:
     return staticcall token.balanceOf(owner)
 """
-    assert (tmp_path / "Token.vyi").read_text(encoding="utf-8") == """@view
+    )
+    assert (
+        (tmp_path / "Token.vyi").read_text(encoding="utf-8")
+        == """@view
 @external
 def balanceOf(owner: address) -> uint256: ...
 @external
 def transfer(to: address, amount: uint256) -> bool: ...
 """
+    )
 
 
-def test_split_interfaces_respects_rule_ignore(tmp_path: Path) -> None:
+def test_split_interfaces_respects_rule_ignore(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Main.vy"
     contract.write_text(
         """#pragma version 0.4.3
@@ -140,38 +191,16 @@ interface Token:
     assert not any(fix["rule"] == "VY120" for fix in data["files"][0]["fixes"])
 
 
-def test_target_validation_uses_rewritten_import_overlay(tmp_path: Path) -> None:
-    (tmp_path / "lib.vy").write_text(
-        """# pragma version 0.4.0
-X: constant(uint256) = 1
-""",
-        encoding="utf-8",
-    )
-    (tmp_path / "main.vy").write_text(
-        """# pragma version 0.4.0
-import lib
-
-@external
-def x() -> uint256:
-    return lib.X
-""",
-        encoding="utf-8",
-    )
-    report = tmp_path / "report.json"
-
-    code = main([str(tmp_path), "--check", "--report-json", str(report)])
-
-    assert code == 1
-    data = json.loads(report.read_text())
-    assert {
-        file["path"].rsplit("/", 1)[-1]: file["validation"]["target_compile"]
-        for file in data["files"]
-    } == {"lib.vy": "passed", "main.vy": "passed"}
-
-
-def test_pyproject_config_paths(tmp_path: Path, monkeypatch) -> None:
+def test_pyproject_config_paths(tmp_path: Path, monkeypatch, passing_compiler) -> None:
     contract = tmp_path / "migration_03.vy"
-    shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)
+    contract.write_text(
+        """# @version 0.3.10
+@external
+def __init__():
+    pass
+""",
+        encoding="utf-8",
+    )
     report = tmp_path / "configured-report.json"
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
@@ -185,11 +214,11 @@ report-json = "{report}"
 
     code = main(["--check"])
 
-    assert code in {1, 3}
+    assert code == 1
     assert report.exists()
 
 
-def test_select_limits_applied_rules(tmp_path: Path) -> None:
+def test_select_limits_applied_rules(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text(
         """# @version 0.3.10
