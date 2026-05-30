@@ -35,6 +35,7 @@ class RuleContext:
     config: Config
     migration: MigrationContext
     path: Path | None = None
+    _is_enabled: Callable[[str], bool] | None = None
 
     @cached_property
     def code_mask(self) -> list[bool]:
@@ -55,7 +56,14 @@ class RuleContext:
     def with_source(self, source: str) -> RuleContext:
         if source == self.source:
             return self
-        return RuleContext(source, self.config, self.migration, self.path)
+        return RuleContext(
+            source, self.config, self.migration, self.path, self._is_enabled
+        )
+
+    def is_enabled(self, rule: str) -> bool:
+        if self._is_enabled is None:
+            return True
+        return self._is_enabled(rule)
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ from .analysis import (
 )
 from .ast_facts import integer_constants as ast_integer_constants
 from .models import Config, Diagnostic, Fix
+from .rule_groups.comparisons import not_in_comparator
 from .rule_registry import (
     ContextRuleRunner,
     Rule,
@@ -68,7 +69,9 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     )
 
     current = source
-    rule_context = RuleContext(current, config, context, path)
+    rule_context = RuleContext(
+        current, config, context, path, lambda rule: _enabled(rule, config, context)
+    )
     for rule in _runnable_rules():
         current, rule_fixes, rule_diagnostics = rule(rule_context)
         rule_context = rule_context.with_source(current)
@@ -1047,43 +1050,6 @@ def _replace_identifier_call(source: str, old: str, new: str, rule: str) -> tupl
             Fix(rule, line_number(source, match.start()), f"renamed legacy {old} builtin", old, new)
         )
     return apply_edits(source, edits), fixes
-
-
-def _not_in_comparator(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    return _not_in_comparator_context(RuleContext(source, config, context))
-
-
-def _not_in_comparator_context(
-    rule_context: RuleContext,
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    source = rule_context.source
-    config = rule_context.config
-    context = rule_context.migration
-    if not _enabled("VY211", config, context):
-        return source, [], []
-    fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    mask = rule_context.code_mask
-    pattern = re.compile(
-        r"\bnot\s*\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s+in\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\)"
-    )
-    for match in pattern.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        replacement = f"{match.group(1)} not in {match.group(2)}"
-        edits.append(TextEdit(match.start(), match.end(), replacement))
-        fixes.append(
-            Fix(
-                "VY211",
-                line_number(source, match.start()),
-                "changed negated membership test to not in",
-                match.group(0),
-                replacement,
-            )
-        )
-    return apply_edits(source, edits), fixes, []
 
 
 def _legacy_constructor_locks(
@@ -5386,7 +5352,7 @@ RULES = (
     ),
     Rule(
         "not_in_comparator",
-        context_runner=_not_in_comparator_context,
+        context_runner=not_in_comparator,
         changes=(crossing("VY211", (0, 2, 8)),),
     ),
     Rule("legacy_constructor_locks", runner=_legacy_constructor_locks, changes=(crossing("VY210", (0, 2, 16)),)),
