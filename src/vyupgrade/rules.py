@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterator
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from .analysis import (
     SourceFacts,
@@ -21,6 +20,14 @@ from .analysis import (
 )
 from .ast_facts import integer_constants as ast_integer_constants
 from .models import Config, Diagnostic, Fix
+from .rule_registry import (
+    Rule,
+    RuleRunner,
+    crossing,
+    rule_changes,
+    target_floor,
+    target_update,
+)
 from .source import (
     apply_edits,
     code_mask,
@@ -50,37 +57,6 @@ class RewriteResult:
     source: str
     fixes: list[Fix]
     diagnostics: list[Diagnostic]
-
-
-Activation = Literal["crossing", "target_floor", "target_update"]
-
-
-@dataclass(frozen=True)
-class RuleChange:
-    introduced: VyperVersion
-    activation: Activation = "crossing"
-
-
-CodeChange = tuple[str, RuleChange]
-RuleRunner = Callable[
-    [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
-]
-PathRuleFactory = Callable[[Path | None], RuleRunner]
-
-
-@dataclass(frozen=True)
-class Rule:
-    name: str
-    runner: RuleRunner | None = None
-    path_runner: PathRuleFactory | None = None
-    changes: tuple[CodeChange, ...] = ()
-
-    def bind(self, path: Path | None) -> RuleRunner | None:
-        if self.runner is not None:
-            return self.runner
-        if self.path_runner is not None:
-            return self.path_runner(path)
-        return None
 
 
 def apply_rules(source: str, config: Config, path: Path | None = None) -> RewriteResult:
@@ -5323,37 +5299,6 @@ def _integer_constant_values(
     return values
 
 
-def _change(
-    code: str,
-    version: str | tuple[int, int, int],
-    activation: Activation = "crossing",
-) -> CodeChange:
-    raw_version = ".".join(str(part) for part in version) if isinstance(version, tuple) else version
-    return code, RuleChange(VyperVersion(raw_version), activation)
-
-
-def crossing(code: str, version: str | tuple[int, int, int]) -> CodeChange:
-    return _change(code, version)
-
-
-def target_floor(code: str, version: str | tuple[int, int, int]) -> CodeChange:
-    return _change(code, version, "target_floor")
-
-
-def target_update(code: str, version: str | tuple[int, int, int]) -> CodeChange:
-    return _change(code, version, "target_update")
-
-
-def _rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
-    changes: dict[str, RuleChange] = {}
-    for rule in rules:
-        for code, change in rule.changes:
-            if code in changes:
-                raise ValueError(f"duplicate rule descriptor for {code}")
-            changes[code] = change
-    return changes
-
-
 RULES = (
     Rule("pragma", runner=_pragma, changes=(target_update("VY001", (0, 3, 10)),)),
     Rule("legacy_decorators", runner=_legacy_decorators, changes=(target_floor("VY201", (0, 2, 1)),)),
@@ -5524,4 +5469,4 @@ RULES = (
     ),
 )
 
-RULE_CHANGES = _rule_changes(RULES)
+RULE_CHANGES = rule_changes(RULES)
