@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .analysis import (
     SourceFacts,
@@ -51,10 +52,13 @@ class RewriteResult:
     diagnostics: list[Diagnostic]
 
 
+Activation = Literal["crossing", "target_floor", "target_update"]
+
+
 @dataclass(frozen=True)
 class RuleChange:
     introduced: VyperVersion
-    mode: str = "crossing"
+    activation: Activation = "crossing"
 
 
 RuleRunner = Callable[
@@ -104,7 +108,7 @@ def _enabled(rule: str, config: Config, context: MigrationContext) -> bool:
     change = RULE_CHANGES.get(rule)
     if change is None:
         return True
-    if change.mode == "target":
+    if change.activation in {"target_floor", "target_update"}:
         return context.target_at_least(change.introduced)
     return context.crosses(change.introduced)
 
@@ -131,7 +135,7 @@ def _line_match_starts_outside_string(source: str, mask: list[bool], start: int)
 
 
 def _pre_021_context(context: MigrationContext) -> bool:
-    return context.source_floor is None or context.source_floor < VyperVersion(0, 2, 1)
+    return context.source_floor is None or context.source_floor < VyperVersion("0.2.1")
 
 
 def _innermost_non_overlapping(
@@ -859,7 +863,7 @@ def _reserved_parameter_names(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     if not _enabled("VY212", config, context):
         return source, [], []
-    if context.source_floor is not None and context.source_floor > VyperVersion(0, 2, 1):
+    if context.source_floor is not None and context.source_floor > VyperVersion("0.2.1"):
         return source, [], []
     facts = parse_source_facts(source)
     line_offsets = _line_offsets(source)
@@ -909,7 +913,7 @@ def _legacy_diagnostics(
     if _enabled("VYD210", config, context):
         diagnostics.extend(_byte_string_literal_diagnostics(source))
     if _enabled("VYD211", config, context) and (
-        context.source_floor is None or context.source_floor <= VyperVersion(0, 2, 1)
+        context.source_floor is None or context.source_floor <= VyperVersion("0.2.1")
     ):
         diagnostics.extend(_reserved_value_parameter_diagnostics(source))
     if _enabled("VYD212", config, context):
@@ -5319,9 +5323,12 @@ def _integer_constant_values(
 
 
 def _rule_change(
-    code: str, version: tuple[int, int, int], mode: str = "crossing"
+    code: str,
+    version: str | tuple[int, int, int],
+    activation: Activation = "crossing",
 ) -> tuple[str, RuleChange]:
-    return code, RuleChange(VyperVersion(*version), mode)
+    raw_version = ".".join(str(part) for part in version) if isinstance(version, tuple) else version
+    return code, RuleChange(VyperVersion(raw_version), activation)
 
 
 def _rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
@@ -5335,15 +5342,15 @@ def _rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
 
 
 RULES = (
-    Rule("pragma", runner=_pragma, changes=(_rule_change("VY001", (0, 3, 10), "target"),)),
-    Rule("legacy_decorators", runner=_legacy_decorators, changes=(_rule_change("VY201", (0, 2, 1), "target"),)),
-    Rule("legacy_type_units", runner=_legacy_type_units, changes=(_rule_change("VY202", (0, 2, 1), "target"),)),
+    Rule("pragma", runner=_pragma, changes=(_rule_change("VY001", (0, 3, 10), "target_update"),)),
+    Rule("legacy_decorators", runner=_legacy_decorators, changes=(_rule_change("VY201", (0, 2, 1), "target_floor"),)),
+    Rule("legacy_type_units", runner=_legacy_type_units, changes=(_rule_change("VY202", (0, 2, 1), "target_floor"),)),
     Rule(
         "legacy_events",
         runner=_legacy_events,
         changes=(
-            _rule_change("VY203", (0, 2, 1), "target"),
-            _rule_change("VY204", (0, 2, 1), "target"),
+            _rule_change("VY203", (0, 2, 1), "target_floor"),
+            _rule_change("VY204", (0, 2, 1), "target_floor"),
         ),
     ),
     Rule("event_kwargs", runner=_event_kwargs, changes=(_rule_change("VY112", (0, 4, 1)),)),
@@ -5351,33 +5358,33 @@ RULES = (
         "legacy_maps_and_interfaces",
         runner=_legacy_maps_and_interfaces,
         changes=(
-            _rule_change("VY205", (0, 2, 1), "target"),
-            _rule_change("VY206", (0, 2, 1), "target"),
+            _rule_change("VY205", (0, 2, 1), "target_floor"),
+            _rule_change("VY206", (0, 2, 1), "target_floor"),
         ),
     ),
     Rule(
         "early_beta_syntax",
         runner=_early_beta_syntax,
         changes=(
-            _rule_change("VY216", (0, 2, 1), "target"),
-            _rule_change("VY217", (0, 2, 1), "target"),
-            _rule_change("VY218", (0, 2, 1), "target"),
-            _rule_change("VY219", (0, 2, 1), "target"),
-            _rule_change("VY221", (0, 2, 1), "target"),
+            _rule_change("VY216", (0, 2, 1), "target_floor"),
+            _rule_change("VY217", (0, 2, 1), "target_floor"),
+            _rule_change("VY218", (0, 2, 1), "target_floor"),
+            _rule_change("VY219", (0, 2, 1), "target_floor"),
+            _rule_change("VY221", (0, 2, 1), "target_floor"),
         ),
     ),
-    Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(_rule_change("VY207", (0, 2, 1), "target"),)),
-    Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(_rule_change("VY212", (0, 2, 1), "target"),)),
+    Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(_rule_change("VY207", (0, 2, 1), "target_floor"),)),
+    Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(_rule_change("VY212", (0, 2, 1), "target_floor"),)),
     Rule(
         "legacy_diagnostics",
         runner=_legacy_diagnostics,
         changes=(
-            _rule_change("VYD210", (0, 2, 1), "target"),
-            _rule_change("VYD211", (0, 2, 1), "target"),
-            _rule_change("VYD212", (0, 2, 1), "target"),
-            _rule_change("VYD213", (0, 2, 1), "target"),
-            _rule_change("VYD214", (0, 2, 1), "target"),
-            _rule_change("VYD215", (0, 2, 1), "target"),
+            _rule_change("VYD210", (0, 2, 1), "target_floor"),
+            _rule_change("VYD211", (0, 2, 1), "target_floor"),
+            _rule_change("VYD212", (0, 2, 1), "target_floor"),
+            _rule_change("VYD213", (0, 2, 1), "target_floor"),
+            _rule_change("VYD214", (0, 2, 1), "target_floor"),
+            _rule_change("VYD215", (0, 2, 1), "target_floor"),
         ),
     ),
     Rule("natspec_strictness", runner=_natspec_strictness, changes=(_rule_change("VY058", (0, 4, 0)),)),
@@ -5385,8 +5392,8 @@ RULES = (
         "legacy_builtin_calls",
         runner=_legacy_builtin_calls,
         changes=(
-            _rule_change("VY208", (0, 2, 1), "target"),
-            _rule_change("VY209", (0, 2, 1), "target"),
+            _rule_change("VY208", (0, 2, 1), "target_floor"),
+            _rule_change("VY209", (0, 2, 1), "target_floor"),
         ),
     ),
     Rule("not_in_comparator", runner=_not_in_comparator, changes=(_rule_change("VY211", (0, 2, 8)),)),

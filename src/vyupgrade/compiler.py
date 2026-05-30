@@ -528,7 +528,7 @@ def _default_python(version: str) -> str:
     if legacy_prerelease_version(version) is not None:
         return "3.8"
     parsed = parse_version(version)
-    if parsed is not None and parsed < VyperVersion(0, 3, 1):
+    if parsed is not None and parsed < VyperVersion("0.3.1"):
         return "3.8"
     # Modern Vyper releases run cleanly on Python 3.11. Pinning the subprocess
     # interpreter avoids accidentally using a bleeding-edge project venv, where
@@ -538,7 +538,7 @@ def _default_python(version: str) -> str:
 
 def _supports_warning_policy(version: str | None) -> bool:
     parsed = parse_version(version)
-    return parsed is not None and parsed >= VyperVersion(0, 4, 1)
+    return parsed is not None and parsed >= VyperVersion("0.4.1")
 
 
 def _target_compile_config(source: str, config: Config) -> Config:

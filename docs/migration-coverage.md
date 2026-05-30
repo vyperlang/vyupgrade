@@ -8,10 +8,10 @@ syntax, or validation-only when surviving obsolete source is left for compiler
 validation. Newer prerelease entries are tracked as planning reference until
 `vyupgrade` supports targeting those compilers.
 
-Rules are version-gated. Unless noted as a target rule, a rule runs only when
-the inferred source version is older than the listed change and the target
-version is at or after it. Target rules cover legacy source syntax whenever the
-requested target is in the supported range.
+Rules are version-gated. Unless noted as a target-floor rule, a rule runs only
+when the inferred source version is older than the listed change and the target
+version is at or after it. Target-floor rules cover legacy source syntax
+whenever the requested target is in the supported range.
 
 `0.1.0b*` source compilers are validated through a `typed-ast` compatibility
 wrapper. This preserves source compilation for legacy compilers that expected
@@ -510,7 +510,7 @@ modern Python interpreter.
 ### v0.1.0-beta.1
 
 - Initial beta source forms are validation-only where they predate later
-  supported rewrite rules. Later target rules cover major surviving forms:
+  supported rewrite rules. Later target-floor rules cover major surviving forms:
   `VY201`, `VY202`, `VY203`, `VY204`, `VY206`, `VY207`, `VY208`, `VY209`,
   `VY216`, and `VY221`.
 

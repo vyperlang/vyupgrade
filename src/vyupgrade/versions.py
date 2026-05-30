@@ -3,26 +3,32 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from packaging.version import InvalidVersion, Version
+
 
 PRAGMA_RE = re.compile(r"^\s*#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
-VERSION_RE = re.compile(r"0\.(?:2|3|4)\.\d+")
+VERSION_RE = re.compile(r"0\.(?:1|2|3|4|5)\.\d+(?:(?:a|b|rc)\d+)?")
 # PyPI has no final 0.1.0 release; these are the installable Vyper releases before 0.2.1.
 LEGACY_PRERELEASE_VERSIONS = tuple(f"0.1.0b{number}" for number in range(1, 18))
-LEGACY_PRERELEASE_RE = re.compile(r"0\.1\.0b(?:[1-9]|1[0-7])\b")
+LEGACY_PRERELEASES = frozenset(Version(version) for version in LEGACY_PRERELEASE_VERSIONS)
 
 
-@dataclass(frozen=True, order=True)
-class VyperVersion:
-    major: int
-    minor: int
-    patch: int
-
-    def __str__(self) -> str:
-        return f"{self.major}.{self.minor}.{self.patch}"
+VyperVersion = Version
 
 
 KNOWN_VERSIONS = tuple(
-    VyperVersion(0, minor, patch)
+    [
+        *(Version(version) for version in LEGACY_PRERELEASE_VERSIONS),
+        *(
+            Version(f"0.{minor}.{patch}")
+            for minor, last_patch in ((2, 16), (3, 10), (4, 3))
+            for patch in range(1 if minor == 2 else 0, last_patch + 1)
+        ),
+    ]
+)
+
+SUPPORTED_FINAL_VERSIONS = frozenset(
+    Version(f"0.{minor}.{patch}")
     for minor, last_patch in ((2, 16), (3, 10), (4, 3))
     for patch in range(1 if minor == 2 else 0, last_patch + 1)
 )
@@ -39,7 +45,7 @@ class MigrationContext:
     def from_specs(cls, source_spec: str | None, target_spec: str) -> MigrationContext:
         target = parse_version(compiler_version_for_spec(target_spec)) or parse_version(target_spec)
         if target is None:
-            target = VyperVersion(0, 4, 3)
+            target = Version("0.4.3")
         return cls(
             source_spec=source_spec,
             target_spec=target_spec,
@@ -70,8 +76,10 @@ def parse_version(raw: str | None) -> VyperVersion | None:
     match = VERSION_RE.search(raw)
     if match is None:
         return None
-    major, minor, patch = (int(part) for part in match.group(0).split("."))
-    return VyperVersion(major, minor, patch)
+    try:
+        return Version(match.group(0))
+    except InvalidVersion:
+        return None
 
 
 def ensure_version(raw: str | VyperVersion) -> VyperVersion:
@@ -93,9 +101,6 @@ def minimum_satisfying_version(spec: str | None) -> VyperVersion | None:
 
 
 def compiler_version_for_spec(spec: str | None) -> str | None:
-    legacy = legacy_prerelease_version(spec)
-    if legacy is not None:
-        return legacy
     versions = known_versions_satisfying(spec)
     if versions:
         return str(versions[0] if _has_lower_bound(spec or "") else versions[-1])
@@ -105,8 +110,6 @@ def compiler_version_for_spec(spec: str | None) -> str | None:
 
 def default_evm_version_for_spec(spec: str | None) -> str | None:
     compiler_version = compiler_version_for_spec(spec)
-    if legacy_prerelease_version(compiler_version) is not None:
-        return "istanbul"
     version = parse_version(compiler_version)
     return default_evm_version(version)
 
@@ -114,15 +117,15 @@ def default_evm_version_for_spec(spec: str | None) -> str | None:
 def default_evm_version(version: VyperVersion | None) -> str | None:
     if version is None:
         return None
-    if version < VyperVersion(0, 2, 12):
+    if version < Version("0.2.12"):
         return "istanbul"
-    if version < VyperVersion(0, 3, 7):
+    if version < Version("0.3.7"):
         return "berlin"
-    if version < VyperVersion(0, 3, 8):
+    if version < Version("0.3.8"):
         return "paris"
-    if version < VyperVersion(0, 4, 0):
+    if version < Version("0.4.0"):
         return "shanghai"
-    if version < VyperVersion(0, 4, 3):
+    if version < Version("0.4.3"):
         return "cancun"
     return "prague"
 
@@ -142,23 +145,20 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
 
 
 def is_supported_source_version(version: str | None) -> bool:
-    if legacy_prerelease_version(version) is not None:
-        return True
     parsed = parse_version(version)
-    return bool(known_versions_satisfying(version) or (parsed and parsed in KNOWN_VERSIONS))
+    return parsed in LEGACY_PRERELEASES or parsed in SUPPORTED_FINAL_VERSIONS
 
 
 def legacy_prerelease_version(spec: str | None) -> str | None:
-    if spec is None:
-        return None
-    match = LEGACY_PRERELEASE_RE.search(spec)
-    return match.group(0) if match else None
+    version = parse_version(spec)
+    return str(version) if version in LEGACY_PRERELEASES else None
 
 
 def _parse_clauses(spec: str) -> list[tuple[str, VyperVersion]]:
     clauses: list[tuple[str, VyperVersion]] = []
     for match in re.finditer(
-        r"(?P<op>\^|==|!=|<=|>=|<|>|=)?\s*(?P<version>0\.(?:2|3|4)\.\d+)", spec
+        r"(?P<op>\^|==|!=|<=|>=|<|>|=)?\s*(?P<version>0\.(?:1|2|3|4|5)\.\d+(?:(?:a|b|rc)\d+)?)",
+        spec,
     ):
         op = match.group("op") or "=="
         version = ensure_version(match.group("version"))
@@ -179,7 +179,7 @@ def _has_lower_bound(spec: str) -> bool:
 def _caret_upper_bound(version: VyperVersion) -> VyperVersion:
     # Vyper versions in this tool are all 0.x. The useful historical caret
     # range is therefore the current minor line.
-    return VyperVersion(version.major, version.minor + 1, 0)
+    return Version(f"{version.major}.{version.minor + 1}.0")
 
 
 def _satisfies(version: VyperVersion, op: str, bound: VyperVersion) -> bool:

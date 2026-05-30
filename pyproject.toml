@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = ["rich>=13.0.0", "uv>=0.8.0"]
+dependencies = ["packaging>=24.0", "rich>=13.0.0", "uv>=0.8.0"]
 
 [project.urls]
 Homepage = "https://github.com/banteg/vyupgrade"
