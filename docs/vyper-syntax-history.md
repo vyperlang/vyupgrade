@@ -17,7 +17,9 @@ runtime semantic changes unless they require source text to change.
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a2>
 
 - Docstring-only function bodies are rejected; use an explicit `pass` body. [#4972](https://github.com/vyperlang/vyper/pull/4972)
+
   Before:
+
   ```vyper
   @internal
   def hook():
@@ -25,7 +27,9 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a2>
       Optional override point.
       """
   ```
+
   After:
+
   ```vyper
   @internal
   def hook():
@@ -37,12 +41,16 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a2>
 - Wildcard interface lengths and unbounded length spellings added for dynamic
   reference types, and interface return-type bounds now check covariantly.
   [#4967](https://github.com/vyperlang/vyper/pull/4967)
+
   Before:
+
   ```vyper
   interface Metadata:
       def tokenURI(id: uint256) -> String[1]: view
   ```
+
   After:
+
   ```vyper
   interface Metadata:
       def tokenURI(id: uint256) -> String[...]: view
@@ -58,64 +66,88 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a2>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a1>
 
 - `isqrt` moved into the `math` stdlib module. [#4923](https://github.com/vyperlang/vyper/pull/4923)
+
   Before:
+
   ```vyper
   return isqrt(x)
   ```
+
   After:
+
   ```vyper
   import math
   return math.isqrt(x)
   ```
 - Interface imports can import multiple names from the same module. [#4762](https://github.com/vyperlang/vyper/pull/4762)
+
   Before:
+
   ```vyper
   from interfaces import IERC20
   from interfaces import IERC4626
   ```
+
   After:
+
   ```vyper
   from interfaces import IERC20, IERC4626
   ```
 - Multiple interfaces can be declared in a single `implements` statement, and
   duplicate `implements` declarations are rejected. [#4772](https://github.com/vyperlang/vyper/pull/4772), duplicate rejection [#4775](https://github.com/vyperlang/vyper/pull/4775)
+
   Before:
+
   ```vyper
   implements: IERC20
   implements: IERC4626
   ```
+
   After:
+
   ```vyper
   implements: (IERC20, IERC4626)
   ```
 - Interface default parameter values can be written as `...`; concrete default
   values in interfaces are deprecated. [#4813](https://github.com/vyperlang/vyper/pull/4813)
+
   Before:
+
   ```vyper
   interface Vault:
       def deposit(amount: uint256 = 0): nonpayable
   ```
+
   After:
+
   ```vyper
   interface Vault:
       def deposit(amount: uint256 = ...): nonpayable
   ```
 - Numeric literals accept underscores as visual separators. [#3665](https://github.com/vyperlang/vyper/pull/3665)
+
   Before:
+
   ```vyper
   FEE_DENOMINATOR: constant(uint256) = 10000000000
   ```
+
   After:
+
   ```vyper
   FEE_DENOMINATOR: constant(uint256) = 10_000_000_000
   ```
 - Abstract module methods added with `@abstract`, `@override`, and ellipsis
   bodies. [#4875](https://github.com/vyperlang/vyper/pull/4875)
+
   Before:
+
   ```vyper
   # No abstract module method syntax.
   ```
+
   After:
+
   ```vyper
   @abstract
   def quote(amount: uint256) -> uint256: ...
@@ -125,14 +157,18 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a1>
       return amount
   ```
 - Event fields cannot be module types. [#4768](https://github.com/vyperlang/vyper/pull/4768)
+
   Before:
+
   ```vyper
   import math
 
   event Loaded:
       value: math
   ```
+
   After:
+
   ```vyper
   event Loaded:
       value: uint256
@@ -145,11 +181,15 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a1>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1b4>
 
 - Absolute relative imports were disallowed. [#4268](https://github.com/vyperlang/vyper/pull/4268)
+
   Before:
+
   ```vyper
   import sibling
   ```
+
   After:
+
   ```vyper
   from . import sibling
   ```
@@ -159,11 +199,15 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1b4>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1b2>
 
 - Imported modules can be cast to interfaces with `module.__at__()`. [#4090](https://github.com/vyperlang/vyper/pull/4090)
+
   Before:
+
   ```vyper
   token: IERC20 = IERC20(addr)
   ```
+
   After:
+
   ```vyper
   token: erc20 = erc20.__at__(addr)
   ```
@@ -173,39 +217,55 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1b2>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1b1>
 
 - `mana` added as an alias for the external-call `gas` kwarg. [#3713](https://github.com/vyperlang/vyper/pull/3713)
+
   Before:
+
   ```vyper
   extcall target.f(gas=50000)
   ```
+
   After:
+
   ```vyper
   extcall target.f(mana=50000)
   ```
 - `@external` became optional in `.vyi` interface files. [#4178](https://github.com/vyperlang/vyper/pull/4178)
+
   Before:
+
   ```vyper
   @external
   def totalSupply() -> uint256: view
   ```
+
   After:
+
   ```vyper
   def totalSupply() -> uint256: view
   ```
 - Event instantiation accepts keyword arguments. [#4257](https://github.com/vyperlang/vyper/pull/4257)
+
   Before:
+
   ```vyper
   log Transfer(msg.sender, to, amount)
   ```
+
   After:
+
   ```vyper
   log Transfer(sender=msg.sender, receiver=to, value=amount)
   ```
 - Native hex string literals added. [#4271](https://github.com/vyperlang/vyper/pull/4271)
+
   Before:
+
   ```vyper
   sig: Bytes[4] = b"\x12\x34\x56\x78"
   ```
+
   After:
+
   ```vyper
   sig: Bytes[4] = x"12345678"
   ```
@@ -215,11 +275,15 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1b1>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b6>
 
 - `block.prevrandao` returns `bytes32`. [#3879](https://github.com/vyperlang/vyper/pull/3879)
+
   Before:
+
   ```vyper
   seed: uint256 = block.prevrandao
   ```
+
   After:
+
   ```vyper
   seed: bytes32 = block.prevrandao
   ```
@@ -229,11 +293,15 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b6>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b5>
 
 - Bytestring downcasts added. [#3832](https://github.com/vyperlang/vyper/pull/3832)
+
   Before:
+
   ```vyper
   out: Bytes[4] = convert(data, Bytes[4])
   ```
+
   After:
+
   ```vyper
   out: Bytes[4] = data
   ```
@@ -244,12 +312,16 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b3>
 
 - External calls require `extcall`, `staticcall`, or `delegatecall` keyword
   syntax. [#2938](https://github.com/vyperlang/vyper/pull/2938)
+
   Before:
+
   ```vyper
   token.transfer(to, amount)
   token.balanceOf(user)
   ```
+
   After:
+
   ```vyper
   extcall token.transfer(to, amount)
   staticcall token.balanceOf(user)
@@ -260,94 +332,130 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b3>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b1>
 
 - Module syntax and imports added for code reuse. [#3663](https://github.com/vyperlang/vyper/pull/3663), [#3729](https://github.com/vyperlang/vyper/pull/3729), [#3786](https://github.com/vyperlang/vyper/pull/3786)
+
   Before:
+
   ```vyper
   # No reusable .vy module import syntax.
   ```
+
   After:
+
   ```vyper
   import math
   uses: math
   exports: math.sqrt
   ```
 - Named reentrancy locks removed. [#3769](https://github.com/vyperlang/vyper/pull/3769)
+
   Before:
+
   ```vyper
   @nonreentrant("lock")
   ```
+
   After:
+
   ```vyper
   @nonreentrant
   ```
 - `enum` declarations replaced by `flag`. [#3697](https://github.com/vyperlang/vyper/pull/3697)
+
   Before:
+
   ```vyper
   enum Roles:
       ADMIN
   ```
+
   After:
+
   ```vyper
   flag Roles:
       ADMIN
   ```
 - Loop variables require type annotations. [#3596](https://github.com/vyperlang/vyper/pull/3596)
+
   Before:
+
   ```vyper
   for i in range(10):
       pass
   ```
+
   After:
+
   ```vyper
   for i: uint256 in range(10):
       pass
   ```
 - Struct instantiation uses keyword arguments. [#3777](https://github.com/vyperlang/vyper/pull/3777)
+
   Before:
+
   ```vyper
   Pair({1, 2})
   ```
+
   After:
+
   ```vyper
   Pair({a: 1, b: 2})
   ```
 - Integer division uses `//`. [#2937](https://github.com/vyperlang/vyper/pull/2937)
+
   Before:
+
   ```vyper
   x / y
   ```
+
   After:
+
   ```vyper
   x // y
   ```
 - Builtin constants removed. [#3350](https://github.com/vyperlang/vyper/pull/3350)
+
   Before:
+
   ```vyper
   ZERO_ADDRESS
   MAX_UINT256
   ```
+
   After:
+
   ```vyper
   empty(address)
   max_value(uint256)
   ```
 - Two-argument `range` can include an explicit `bound=`. [#3679](https://github.com/vyperlang/vyper/pull/3679)
+
   Before:
+
   ```vyper
   for i: uint256 in range(start, stop):
       pass
   ```
+
   After:
+
   ```vyper
   for i: uint256 in range(start, stop, bound=10):
       pass
   ```
 - Builtin ERC interface imports moved from `vyper.interfaces` to
   `ethereum.ercs` and gained an `I` prefix. [#3741](https://github.com/vyperlang/vyper/pull/3741), [#3804](https://github.com/vyperlang/vyper/pull/3804)
+
   Before:
+
   ```vyper
   from vyper.interfaces import ERC20
   ```
+
   After:
+
   ```vyper
   from ethereum.ercs import IERC20
   ```
@@ -359,12 +467,16 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0b1>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.3>
 
 - `@raw_return` added for returning raw bytes without ABI encoding. [#4568](https://github.com/vyperlang/vyper/pull/4568), interface restriction [#4700](https://github.com/vyperlang/vyper/pull/4700)
+
   Before:
+
   ```vyper
   def proxy() -> Bytes[1024]:
       return raw_call(target, msg.data, max_outsize=1024)
   ```
+
   After:
+
   ```vyper
   @external
   @raw_return
@@ -377,17 +489,23 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.3>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.2>
 
 - Decimal `sqrt` moved into the `math` stdlib module. [#4520](https://github.com/vyperlang/vyper/pull/4520)
+
   Before:
+
   ```vyper
   return sqrt(x)
   ```
+
   After:
+
   ```vyper
   import math
   return math.sqrt(x)
   ```
 - Deprecated bitwise builtins removed. [#4552](https://github.com/vyperlang/vyper/pull/4552)
+
   Before:
+
   ```vyper
   bitwise_and(x, y)
   bitwise_or(x, y)
@@ -395,7 +513,9 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.2>
   bitwise_not(x)
   shift(x, n)
   ```
+
   After:
+
   ```vyper
   x & y
   x | y
@@ -405,23 +525,31 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.2>
   x >> n
   ```
 - `raw_create()` builtin added for deploying arbitrary initcode. [#4204](https://github.com/vyperlang/vyper/pull/4204)
+
   Before:
+
   ```vyper
   # No direct raw initcode deployment builtin.
   ```
+
   After:
+
   ```vyper
   created: address = raw_create(initcode, arg, salt=salt, value=msg.value)
   ```
 - File-level nonreentrancy pragma, `@reentrant`, and `public(reentrant(...))` added. [#4563](https://github.com/vyperlang/vyper/pull/4563)
+
   Before:
+
   ```vyper
   # Per-function opt-in only:
   @external
   @nonreentrant
   def f(): ...
   ```
+
   After:
+
   ```vyper
   #pragma nonreentrancy on
   x: public(reentrant(uint256))
@@ -435,57 +563,81 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.2>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1>
 
 - `@external` became optional in `.vyi` interface files. [#4178](https://github.com/vyperlang/vyper/pull/4178)
+
   Before:
+
   ```vyper
   @external
   def totalSupply() -> uint256: view
   ```
+
   After:
+
   ```vyper
   def totalSupply() -> uint256: view
   ```
 - Imported modules can be cast to interfaces with `module.__at__()`. [#4090](https://github.com/vyperlang/vyper/pull/4090)
+
   Before:
+
   ```vyper
   token: IERC20 = IERC20(addr)
   ```
+
   After:
+
   ```vyper
   token: erc20 = erc20.__at__(addr)
   ```
 - Event instantiation accepts keyword arguments. [#4257](https://github.com/vyperlang/vyper/pull/4257)
+
   Before:
+
   ```vyper
   log Transfer(msg.sender, to, amount)
   ```
+
   After:
+
   ```vyper
   log Transfer(sender=msg.sender, receiver=to, value=amount)
   ```
 - Native hex string literals added. [#4271](https://github.com/vyperlang/vyper/pull/4271)
+
   Before:
+
   ```vyper
   data: Bytes[2] = b"\x12\x34"
   ```
+
   After:
+
   ```vyper
   data: Bytes[2] = x"1234"
   ```
 - `mana` added as an alias for `gas` in call keyword arguments. [#3713](https://github.com/vyperlang/vyper/pull/3713)
+
   Before:
+
   ```vyper
   raw_call(to, data, gas=50_000)
   ```
+
   After:
+
   ```vyper
   raw_call(to, data, mana=50_000)
   ```
 - Absolute relative imports disallowed. [#4268](https://github.com/vyperlang/vyper/pull/4268)
+
   Before:
+
   ```vyper
   # Ambiguous absolute-relative import form accepted by older compilers.
   ```
+
   After:
+
   ```vyper
   from . import token
   ```
@@ -495,164 +647,224 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.1>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0>
 
 - Constructor visibility changed to `@deploy`. Implemented as part of the module/ownership work. [#3729](https://github.com/vyperlang/vyper/pull/3729)
+
   Before:
+
   ```vyper
   @external
   def __init__(): ...
   ```
+
   After:
+
   ```vyper
   @deploy
   def __init__(): ...
   ```
 - Named reentrancy locks removed. [#3769](https://github.com/vyperlang/vyper/pull/3769)
+
   Before:
+
   ```vyper
   @nonreentrant("lock")
   def withdraw(): ...
   ```
+
   After:
+
   ```vyper
   @nonreentrant
   def withdraw(): ...
   ```
 - `_abi_encode` and `_abi_decode` renamed. [#4097](https://github.com/vyperlang/vyper/pull/4097)
+
   Before:
+
   ```vyper
   _abi_encode(a, b, method_id=method_id("f()"))
   _abi_decode(data, uint256)
   ```
+
   After:
+
   ```vyper
   abi_encode(a, b, method_id=method_id("f()"))
   abi_decode(data, uint256)
   ```
 - `@internal` decorator became optional. [#4040](https://github.com/vyperlang/vyper/pull/4040)
+
   Before:
+
   ```vyper
   @internal
   def _helper(): ...
   ```
+
   After:
+
   ```vyper
   def _helper(): ...
   ```
 - External calls require `extcall`, `staticcall`, or `delegatecall` keyword syntax. [#2938](https://github.com/vyperlang/vyper/pull/2938)
+
   Before:
+
   ```vyper
   token.transfer(to, amount)
   balance: uint256 = token.balanceOf(self)
   checker.ping(msg.sender)
   ```
+
   After:
+
   ```vyper
   extcall token.transfer(to, amount)
   balance: uint256 = staticcall token.balanceOf(self)
   _unused: uint256 = staticcall checker.ping(msg.sender)
   ```
 - Integer division uses `//`; `/` is banned for integers. [#2937](https://github.com/vyperlang/vyper/pull/2937)
+
   Before:
+
   ```vyper
   half: uint256 = amount / 2
   ```
+
   After:
+
   ```vyper
   half: uint256 = amount // 2
   ```
 - Struct literals require keyword arguments. [#3777](https://github.com/vyperlang/vyper/pull/3777), docs fix [#3792](https://github.com/vyperlang/vyper/pull/3792)
+
   Before:
+
   ```vyper
   p: Point = Point(1, 2)
   ```
+
   After:
+
   ```vyper
   p: Point = Point(x=1, y=2)
   ```
 - Loop variables require type annotations. [#3596](https://github.com/vyperlang/vyper/pull/3596)
+
   Before:
+
   ```vyper
   for i in range(10):
   ```
+
   After:
+
   ```vyper
   for i: uint256 in range(10):
   ```
 - `enum` keyword replaced by `flag`. [#3697](https://github.com/vyperlang/vyper/pull/3697)
+
   Before:
+
   ```vyper
   enum Role:
       ADMIN
       USER
   ```
+
   After:
+
   ```vyper
   flag Role:
       ADMIN
       USER
   ```
 - Builtin constants removed. [#3350](https://github.com/vyperlang/vyper/pull/3350)
+
   Before:
+
   ```vyper
   MAX_UINT256
   ZERO_ADDRESS
   EMPTY_BYTES32
   ```
+
   After:
+
   ```vyper
   max_value(uint256)
   empty(address)
   empty(bytes32)
   ```
 - Two-argument `range` with `bound=` added for dynamic ranges. [#3679](https://github.com/vyperlang/vyper/pull/3679), earlier `bound=` support [#3537](https://github.com/vyperlang/vyper/pull/3537), [#3551](https://github.com/vyperlang/vyper/pull/3551)
+
   Before:
+
   ```vyper
   for i in range(stop):
   ```
+
   After:
+
   ```vyper
   for i: uint256 in range(start, stop, bound=MAX):
   ```
 - Builtin ERC interface import path changed and interface names gained `I` prefixes. [#3741](https://github.com/vyperlang/vyper/pull/3741), [#3804](https://github.com/vyperlang/vyper/pull/3804)
+
   Before:
+
   ```vyper
   from vyper.interfaces import ERC20
   token: ERC20
   ```
+
   After:
+
   ```vyper
   from ethereum.ercs import IERC20
   token: IERC20
   ```
 - Module import and ownership declarations added. [#3655](https://github.com/vyperlang/vyper/pull/3655), [#3663](https://github.com/vyperlang/vyper/pull/3663), [#3729](https://github.com/vyperlang/vyper/pull/3729)
+
   Before:
+
   ```vyper
   # No reusable .vy module import syntax.
   ```
+
   After:
+
   ```vyper
   import ownable
   initializes: ownable
   uses: ownable
   ```
 - Module function and interface exports added. [#3786](https://github.com/vyperlang/vyper/pull/3786), [#3919](https://github.com/vyperlang/vyper/pull/3919), transitive fix [#3888](https://github.com/vyperlang/vyper/pull/3888)
+
   Before:
+
   ```vyper
   # Imported external module functions were not exported through the importer ABI.
   ```
+
   After:
+
   ```vyper
   exports: ownable.transfer_ownership
   exports: token.__interface__
   ```
 - Imported events are auto-exported in the ABI. [#3808](https://github.com/vyperlang/vyper/pull/3808)
+
   Before:
+
   ```vyper
   event Transfer:
       sender: indexed(address)
       receiver: indexed(address)
       value: uint256
   ```
+
   After:
+
   ```vyper
   import erc20
 
@@ -661,20 +873,28 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0>
       log erc20.Transfer(msg.sender, to, value)
   ```
 - Decimal use requires the decimal feature flag. [#3930](https://github.com/vyperlang/vyper/pull/3930)
+
   Before:
+
   ```vyper
   x: decimal
   ```
+
   After:
+
   ```vyper
   x: decimal  # compile with decimals enabled
   ```
 - `block.prevrandao` type/signature changed. [#3879](https://github.com/vyperlang/vyper/pull/3879)
+
   Before:
+
   ```vyper
   seed: bytes32 = block.prevrandao
   ```
+
   After:
+
   ```vyper
   seed: uint256 = block.prevrandao
   ```
@@ -686,32 +906,44 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.10>
 
 - Vyper-specific `#pragma` directives added for optimization and EVM version. [#3493](https://github.com/vyperlang/vyper/pull/3493)
+
   Before:
+
   ```vyper
   # @version ^0.3.0
   ```
+
   After:
+
   ```vyper
   #pragma version ^0.3.0
   #pragma optimize codesize
   #pragma evm-version shanghai
   ```
 - Version pragma parsing relaxed. [#3511](https://github.com/vyperlang/vyper/pull/3511)
+
   Before:
+
   ```vyper
   # @version ^0.3.0
   ```
+
   After:
+
   ```vyper
   #pragma version 0.3.10
   ```
 - `range(..., bound=...)` added for dynamic loop bounds. [#3537](https://github.com/vyperlang/vyper/pull/3537), [#3551](https://github.com/vyperlang/vyper/pull/3551)
+
   Before:
+
   ```vyper
   for i in range(n):
       pass
   ```
+
   After:
+
   ```vyper
   for i in range(n, bound=MAX):
   ```
@@ -727,87 +959,123 @@ No source syntax changes identified in the release notes.
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.8>
 
 - `transient(...)` storage qualifier added. [#3373](https://github.com/vyperlang/vyper/pull/3373)
+
   Before:
+
   ```vyper
   balances: HashMap[address, uint256]
   ```
+
   After:
+
   ```vyper
   balances: transient(HashMap[address, uint256])
   ```
 - Ternary operator added. [#3398](https://github.com/vyperlang/vyper/pull/3398)
+
   Before:
+
   ```vyper
   if ok:
       return a
   return b
   ```
+
   After:
+
   ```vyper
   return a if ok else b
   ```
 - Shift operators added. [#3019](https://github.com/vyperlang/vyper/pull/3019)
+
   Before:
+
   ```vyper
   shift(x, 3)
   shift(x, -3)
   ```
+
   After:
+
   ```vyper
   x << 3
   x >> 3
   ```
 - `raw_revert()` builtin added. [#3136](https://github.com/vyperlang/vyper/pull/3136)
+
   Before:
+
   ```vyper
   raise "reason"
   ```
+
   After:
+
   ```vyper
   raw_revert(data)
   ```
 - `send()` gas stipend can be configured. [#3158](https://github.com/vyperlang/vyper/pull/3158)
+
   Before:
+
   ```vyper
   send(receiver, amount)
   ```
+
   After:
+
   ```vyper
   send(receiver, amount, gas=50_000)
   ```
 - `custom:` NatSpec tags added. [#3403](https://github.com/vyperlang/vyper/pull/3403), docs [#3404](https://github.com/vyperlang/vyper/pull/3404)
+
   Before:
+
   ```vyper
   # @notice Transfer tokens
   ```
+
   After:
+
   ```vyper
   # @custom:oz-upgrades-unsafe-allow constructor
   ```
 - Unary plus disabled. [#3174](https://github.com/vyperlang/vyper/pull/3174)
+
   Before:
+
   ```vyper
   x: int128 = +y
   ```
+
   After:
+
   ```vyper
   x: int128 = y
   ```
 - Numeric boolean negation blocked. [#3231](https://github.com/vyperlang/vyper/pull/3231)
+
   Before:
+
   ```vyper
   not amount
   ```
+
   After:
+
   ```vyper
   amount == 0
   ```
 - Enum values became valid mapping keys. [#3256](https://github.com/vyperlang/vyper/pull/3256)
+
   Before:
+
   ```vyper
   flags: HashMap[Role, bool]
   ```
+
   After:
+
   ```vyper
   flags: HashMap[Role, bool]
   ```
@@ -817,38 +1085,54 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.8>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.7>
 
 - `isqrt()` builtin added. [#3074](https://github.com/vyperlang/vyper/pull/3074), [#3069](https://github.com/vyperlang/vyper/pull/3069)
+
   Before:
+
   ```vyper
   # Hand-written integer square root helper.
   ```
+
   After:
+
   ```vyper
   root: uint256 = isqrt(x)
   ```
 - `epsilon()` builtin added for decimals. [#3057](https://github.com/vyperlang/vyper/pull/3057)
+
   Before:
+
   ```vyper
   EPSILON: constant(decimal) = 0.0000000001
   ```
+
   After:
+
   ```vyper
   eps: decimal = epsilon(decimal)
   ```
 - `block.prevrandao` alias added for `block.difficulty`. [#3085](https://github.com/vyperlang/vyper/pull/3085)
+
   Before:
+
   ```vyper
   block.difficulty
   ```
+
   After:
+
   ```vyper
   block.prevrandao
   ```
 - Constants and immutables can be declared public. [#3024](https://github.com/vyperlang/vyper/pull/3024)
+
   Before:
+
   ```vyper
   SUPPLY: constant(uint256) = 1_000
   ```
+
   After:
+
   ```vyper
   SUPPLY: public(constant(uint256)) = 1_000
   ```
@@ -864,20 +1148,28 @@ No source syntax changes identified in the release notes.
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.5> (pulled)
 
 - `create_from_blueprint` accepts arbitrary data. [#2996](https://github.com/vyperlang/vyper/pull/2996)
+
   Before:
+
   ```vyper
   create_from_blueprint(blueprint, code_offset=3)
   ```
+
   After:
+
   ```vyper
   create_from_blueprint(blueprint, raw_args, code_offset=3)
   ```
 - `empty()` accepted in constants and default argument positions. [#3008](https://github.com/vyperlang/vyper/pull/3008)
+
   Before:
+
   ```vyper
   # empty(T) in constants/default arguments could be rejected.
   ```
+
   After:
+
   ```vyper
   DEFAULT: constant(Bytes[32]) = empty(Bytes[32])
   ```
@@ -887,89 +1179,125 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.5> (pulled)
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.4>
 
 - `enum` custom type added. [#2874](https://github.com/vyperlang/vyper/pull/2874), [#2915](https://github.com/vyperlang/vyper/pull/2915), [#2925](https://github.com/vyperlang/vyper/pull/2925), [#2977](https://github.com/vyperlang/vyper/pull/2977)
+
   Before:
+
   ```vyper
   ROLE_ADMIN: constant(uint256) = 1
   ROLE_USER: constant(uint256) = 2
   ```
+
   After:
+
   ```vyper
   enum Role:
       ADMIN
       USER
   ```
 - `_abi_decode()` builtin added. [#2882](https://github.com/vyperlang/vyper/pull/2882)
+
   Before:
+
   ```vyper
   # Decode with external helper code or manual slicing.
   ```
+
   After:
+
   ```vyper
   x: uint256 = _abi_decode(data, uint256, unwrap_tuple=False)
   ```
 - `create_from_blueprint()` and `create_copy_of()` builtins added. [#2895](https://github.com/vyperlang/vyper/pull/2895)
+
   Before:
+
   ```vyper
   clone: address = create_minimal_proxy_to(template)
   ```
+
   After:
+
   ```vyper
   clone: address = create_copy_of(template)
   deployed: address = create_from_blueprint(blueprint, arg)
   ```
 - `default_return_value=` external-call kwarg added. [#2839](https://github.com/vyperlang/vyper/pull/2839)
+
   Before:
+
   ```vyper
   token.transfer(to, amount)
   ```
+
   After:
+
   ```vyper
   token.transfer(to, amount, default_return_value=True)
   ```
 - `min_value()` and `max_value()` builtins added for numeric types. [#2935](https://github.com/vyperlang/vyper/pull/2935)
+
   Before:
+
   ```vyper
   MAX_UINT256
   -2**127
   ```
+
   After:
+
   ```vyper
   max_value(uint256)
   min_value(int128)
   ```
 - `uint2str()` builtin added. [#2879](https://github.com/vyperlang/vyper/pull/2879)
+
   Before:
+
   ```vyper
   # Custom uint-to-string helper.
   ```
+
   After:
+
   ```vyper
   return uint2str(token_id)
   ```
 - `msg.data` can be passed directly to `raw_call`. [#2902](https://github.com/vyperlang/vyper/pull/2902)
+
   Before:
+
   ```vyper
   raw_call(to, slice(msg.data, 0, len(msg.data)))
   ```
+
   After:
+
   ```vyper
   raw_call(to, msg.data)
   ```
 - `shift()` supports signed integers. [#2964](https://github.com/vyperlang/vyper/pull/2964)
+
   Before:
+
   ```vyper
   shift()
   ```
+
   After:
+
   ```vyper
   shift(x_int256, n)
   ```
 - Dynamic arrays of strings enabled. [#2922](https://github.com/vyperlang/vyper/pull/2922)
+
   Before:
+
   ```vyper
   DynArray[String[32], 5]
   ```
+
   After:
+
   ```vyper
   names: DynArray[String[32], 5]
   ```
@@ -979,11 +1307,15 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.4>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.3>
 
 - `print()` debug builtin added. [#2818](https://github.com/vyperlang/vyper/pull/2818)
+
   Before:
+
   ```vyper
   # No Vyper-level debug print builtin.
   ```
+
   After:
+
   ```vyper
   print("value", x)
   ```
@@ -993,96 +1325,136 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.3>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.2>
 
 - `convert()` semantics generalized. [#2694](https://github.com/vyperlang/vyper/pull/2694)
+
   Before:
+
   ```vyper
   # Several conversions were unavailable or special-cased.
   ```
+
   After:
+
   ```vyper
   y: bytes32 = convert(x, bytes32)
   ```
 - Hex and bytes literals restricted. [#2736](https://github.com/vyperlang/vyper/pull/2736), [#2782](https://github.com/vyperlang/vyper/pull/2782)
+
   Before:
+
   ```vyper
   data: Bytes[5] = "hello"
   ```
+
   After:
+
   ```vyper
   data: Bytes[5] = b"hello"
   ```
 - `DynArray[T, N]` dynamic array type added. [#2556](https://github.com/vyperlang/vyper/pull/2556), [#2606](https://github.com/vyperlang/vyper/pull/2606), [#2615](https://github.com/vyperlang/vyper/pull/2615)
+
   Before:
+
   ```vyper
   uint256[5]
   ```
+
   After:
+
   ```vyper
   items: DynArray[uint256, 5]
   ```
 - Full ABIv2 integer and bytes types added. [#2705](https://github.com/vyperlang/vyper/pull/2705)
+
   Before:
+
   ```vyper
   x: uint256
   y: int128
   z: bytes32
   ```
+
   After:
+
   ```vyper
   x: uint8
   y: int256
   z: bytes1
   ```
 - `<address>.code` attribute added. [#2583](https://github.com/vyperlang/vyper/pull/2583)
+
   Before:
+
   ```vyper
   # Use external tooling or raw_call-based patterns.
   ```
+
   After:
+
   ```vyper
   runtime: Bytes[1024] = slice(target.code, 0, target.codesize)
   ```
 - `tx.gasprice` environment variable added. [#2624](https://github.com/vyperlang/vyper/pull/2624)
+
   Before:
+
   ```vyper
   # No direct tx.gasprice source expression.
   ```
+
   After:
+
   ```vyper
   price: uint256 = tx.gasprice
   ```
 - Struct constants accepted. [#2617](https://github.com/vyperlang/vyper/pull/2617)
+
   Before:
+
   ```vyper
   # Structs could not be used as constant values.
   ```
+
   After:
+
   ```vyper
   POINT: constant(Point) = Point({x: 1, y: 2})
   ```
 - `skip_contract_check=` external-call kwarg added. [#2551](https://github.com/vyperlang/vyper/pull/2551)
+
   Before:
+
   ```vyper
   Foo(addr).bar()
   ```
+
   After:
+
   ```vyper
   Foo(addr).bar(skip_contract_check=True)
   ```
 - `unsafe_add`, `unsafe_sub`, `unsafe_mul`, `unsafe_div` builtins added. [#2629](https://github.com/vyperlang/vyper/pull/2629)
+
   Before:
+
   ```vyper
   x + y
   ```
+
   After:
+
   ```vyper
   unsafe_add(x, y)
   ```
 - Lists of any type can be loop variables. [#2616](https://github.com/vyperlang/vyper/pull/2616)
+
   Before:
+
   ```vyper
   # Loop variables over some list element types were rejected.
   ```
+
   After:
+
   ```vyper
   for item in list_of_structs:
   ```
@@ -1092,70 +1464,98 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.2>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.1>
 
 - `immutable(T)` declarations added. [#2466](https://github.com/vyperlang/vyper/pull/2466)
+
   Before:
+
   ```vyper
   OWNER: constant(address) = 0x0000000000000000000000000000000000000000
   ```
+
   After:
+
   ```vyper
   OWNER: immutable(address)
   def __init__():
       OWNER = msg.sender
   ```
 - `uint8` type added. [#2477](https://github.com/vyperlang/vyper/pull/2477)
+
   Before:
+
   ```vyper
   decimals: uint256
   assert decimals <= 255
   ```
+
   After:
+
   ```vyper
   decimals: uint8
   ```
 - `block.gaslimit` and `block.basefee` added. [#2495](https://github.com/vyperlang/vyper/pull/2495)
+
   Before:
+
   ```vyper
   # No direct source expression.
   ```
+
   After:
+
   ```vyper
   limit: uint256 = block.gaslimit
   fee: uint256 = block.basefee
   ```
 - Checkable `raw_call()` added. [#2482](https://github.com/vyperlang/vyper/pull/2482)
+
   Before:
+
   ```vyper
   response: Bytes[32] = raw_call(to, data, max_outsize=32)
   ```
+
   After:
+
   ```vyper
   success: bool = raw_call(to, data, revert_on_failure=False)
   success, response = raw_call(to, data, max_outsize=32, revert_on_failure=False)
   ```
 - Non-constant revert reason strings accepted. [#2509](https://github.com/vyperlang/vyper/pull/2509)
+
   Before:
+
   ```vyper
   raise "literal"
   ```
+
   After:
+
   ```vyper
   raise reason
   ```
 - Slices of complex expressions accepted. [#2500](https://github.com/vyperlang/vyper/pull/2500)
+
   Before:
+
   ```vyper
   slice(tmp, start, len)
   ```
+
   After:
+
   ```vyper
   slice(raw_call(to, data, max_outsize=64), 0, 32)
   ```
 - Lists of structs can be function arguments. [#2515](https://github.com/vyperlang/vyper/pull/2515)
+
   Before:
+
   ```vyper
   def f(xs: MyStruct[3]): ...
   ```
+
   After:
+
   ```vyper
   def f(xs: MyStruct[3]): ...
   ```
@@ -1165,20 +1565,28 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.1>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.0>
 
 - Any ABI-encodable type can be used as function arguments and return types. [#2154](https://github.com/vyperlang/vyper/issues/2154), [#2190](https://github.com/vyperlang/vyper/issues/2190)
+
   Before:
+
   ```vyper
   # Many complex ABI types were rejected at function boundaries.
   ```
+
   After:
+
   ```vyper
   def get() -> (uint256, DynArray[Bytes[32], 5]): ...
   ```
 - Minimal proxy deterministic deployment supports CREATE2 salt. [#2460](https://github.com/vyperlang/vyper/pull/2460)
+
   Before:
+
   ```vyper
   create_minimal_proxy_to(target)
   ```
+
   After:
+
   ```vyper
   create_minimal_proxy_to(target, salt=salt)
   ```
@@ -1190,40 +1598,56 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.3.0>
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.16>
 
 - `_abi_encode()` exposed as user-facing builtin. [#2401](https://github.com/vyperlang/vyper/pull/2401)
+
   Before:
+
   ```vyper
   # Manual ABI packing or external helper code.
   ```
+
   After:
+
   ```vyper
   payload: Bytes[68] = _abi_encode(to, amount, method_id=method_id("transfer(address,uint256)"))
   ```
 - Event arguments can be any ABI-encodable type. [#2403](https://github.com/vyperlang/vyper/pull/2403)
+
   Before:
+
   ```vyper
   # Event argument types were more restricted.
   ```
+
   After:
+
   ```vyper
   event Batch:
       values: uint256[8]
   ```
 - Interfaces can appear in lists, structs, and maps. [#2397](https://github.com/vyperlang/vyper/pull/2397)
+
   Before:
+
   ```vyper
   # HashMap[address, ERC20] and related forms rejected.
   ```
+
   After:
+
   ```vyper
   tokens: ERC20[8]
   ```
 - `@nonreentrant` on constructors disallowed. [#2426](https://github.com/vyperlang/vyper/pull/2426)
+
   Before:
+
   ```vyper
   @nonreentrant("lock")
   def __init__(): ...
   ```
+
   After:
+
   ```vyper
   def __init__():
       pass
@@ -1246,11 +1670,15 @@ No source syntax changes identified in the release notes.
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.13> (pulled)
 
 - `abs()` builtin added. [#2356](https://github.com/vyperlang/vyper/pull/2356)
+
   Before:
+
   ```vyper
   x if x >= 0 else -x
   ```
+
   After:
+
   ```vyper
   abs(x)
   ```
@@ -1260,20 +1688,28 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.13> (pulled)
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.12>
 
 - `int256` signed integer type added. [#2351](https://github.com/vyperlang/vyper/pull/2351)
+
   Before:
+
   ```vyper
   x: int128
   ```
+
   After:
+
   ```vyper
   x: int256
   ```
 - `msg.data` environment variable added. [#2343](https://github.com/vyperlang/vyper/pull/2343)
+
   Before:
+
   ```vyper
   # No direct source expression for calldata bytes.
   ```
+
   After:
+
   ```vyper
   payload: Bytes[4096] = msg.data
   ```
@@ -1295,12 +1731,16 @@ No source syntax changes identified in the release notes.
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.9> (pulled)
 
 - Reserved keyword checks updated. [#2286](https://github.com/vyperlang/vyper/pull/2286)
+
   Before:
+
   ```vyper
   def f(value: uint256):
       pass
   ```
+
   After:
+
   ```vyper
   def f(amount: uint256):
       pass
@@ -1311,40 +1751,56 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.9> (pulled)
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.8>
 
 - `not in` comparator added. [#2232](https://github.com/vyperlang/vyper/pull/2232)
+
   Before:
+
   ```vyper
   not (x in values)
   ```
+
   After:
+
   ```vyper
   x not in values
   ```
 - `empty(...)` accepted as a function-call argument. [#2234](https://github.com/vyperlang/vyper/pull/2234)
+
   Before:
+
   ```vyper
   x: Bytes[32] = empty(Bytes[32])
   foo(x)
   ```
+
   After:
+
   ```vyper
   foo(empty(Bytes[32]))
   ```
 - Empty static arrays accepted in `log` statements. [#2235](https://github.com/vyperlang/vyper/pull/2235)
+
   Before:
+
   ```vyper
   xs: uint256[3] = empty(uint256[3])
   log Values(xs)
   ```
+
   After:
+
   ```vyper
   log Values(empty(uint256[3]))
   ```
 - `Bytes` variables can be mapping keys. [#2239](https://github.com/vyperlang/vyper/pull/2239)
+
   Before:
+
   ```vyper
   HashMap[Bytes[32], uint256]
   ```
+
   After:
+
   ```vyper
   values: HashMap[Bytes[32], uint256]
   ```
@@ -1360,11 +1816,15 @@ No source syntax changes identified in the release notes.
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.6> (pulled)
 
 - `uint256` can be used implicitly as the iterator type in range loops. [#2180](https://github.com/vyperlang/vyper/pull/2180)
+
   Before:
+
   ```vyper
   for i in range(10):
   ```
+
   After:
+
   ```vyper
   for i in range(10):
   uint256
@@ -1375,11 +1835,15 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.6> (pulled)
 Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.5>
 
 - Excessive local-variable scoping rules removed. [#2166](https://github.com/vyperlang/vyper/pull/2166)
+
   Before:
+
   ```vyper
   # Some local declarations could not be reused naturally.
   ```
+
   After:
+
   ```vyper
   if ok:
       x: uint256 = 1
@@ -1413,7 +1877,9 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.2.1>
 upstream release notes.
 
 - `@public` and `@private` renamed. [VIP #2065](https://github.com/vyperlang/vyper/issues/2065)
+
   Before:
+
   ```vyper
   @public
   def f(): ...
@@ -1421,7 +1887,9 @@ upstream release notes.
   @private
   def _g(): ...
   ```
+
   After:
+
   ```vyper
   @external
   def f(): ...
@@ -1430,35 +1898,47 @@ upstream release notes.
   def _g(): ...
   ```
 - `@constant` renamed to `@view`. [VIP #2040](https://github.com/vyperlang/vyper/issues/2040)
+
   Before:
+
   ```vyper
   @constant
   @public
   def balance() -> uint256: ...
   ```
+
   After:
+
   ```vyper
   @view
   @external
   def balance() -> uint256: ...
   ```
 - Type units removed. [VIP #1881](https://github.com/vyperlang/vyper/issues/1881)
+
   Before:
+
   ```vyper
   amount: uint256(wei)
   price: uint256(currency_value)
   ```
+
   After:
+
   ```vyper
   amount: uint256
   price: uint256
   ```
 - Event declaration syntax changed to struct-like blocks. [VIP #1864](https://github.com/vyperlang/vyper/issues/1864)
+
   Before:
+
   ```vyper
   Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})
   ```
+
   After:
+
   ```vyper
   event Transfer:
       _from: indexed(address)
@@ -1466,195 +1946,275 @@ upstream release notes.
       _value: uint256
   ```
 - `log` became a statement. [VIP #1864](https://github.com/vyperlang/vyper/issues/1864)
+
   Before:
+
   ```vyper
   log.Transfer(msg.sender, to, amount)
   ```
+
   After:
+
   ```vyper
   log Transfer(msg.sender, to, amount)
   ```
 - Mapping declarations changed to `HashMap[...]`. [VIP #1969](https://github.com/vyperlang/vyper/issues/1969)
+
   Before:
+
   ```vyper
   balances: map(address, uint256)
   ```
+
   After:
+
   ```vyper
   balances: HashMap[address, uint256]
   ```
 - Interfaces use `interface` instead of `contract`. [VIP #1825](https://github.com/vyperlang/vyper/issues/1825)
+
   Before:
+
   ```vyper
   contract ERC20:
       def balanceOf(a: address) -> uint256: view
   ```
+
   After:
+
   ```vyper
   interface ERC20:
       def balanceOf(a: address) -> uint256: view
   ```
 - Dynamic byte and string type names capitalized. [#2080](https://github.com/vyperlang/vyper/pull/2080)
+
   Before:
+
   ```vyper
   payload: bytes[100]
   name: string[32]
   ```
+
   After:
+
   ```vyper
   payload: Bytes[100]
   name: String[32]
   ```
 - Byte and string literals are no longer interchangeable. [VIP #1876](https://github.com/vyperlang/vyper/issues/1876)
+
   Before:
+
   ```vyper
   b: bytes[5] = "hello"
   s: string[5] = b"hello"
   ```
+
   After:
+
   ```vyper
   b: Bytes[5] = b"hello"
   s: String[5] = "hello"
   ```
 - `assert_modifiable()` removed. [#2050](https://github.com/vyperlang/vyper/pull/2050)
+
   Before:
+
   ```vyper
   assert_modifiable(token.transfer(to, amount))
   ```
+
   After:
+
   ```vyper
   assert token.transfer(to, amount)
   ```
 - Function input name `value` reserved. [VIP #1877](https://github.com/vyperlang/vyper/issues/1877)
+
   Before:
+
   ```vyper
   def pay(value: uint256): ...
   ```
+
   After:
+
   ```vyper
   def pay(amount: uint256): ...
   ```
 - `slice()` start and length arguments must be `uint256`. [VIP #1986](https://github.com/vyperlang/vyper/issues/1986)
+
   Before:
+
   ```vyper
   slice(data, 0, len)
   0
   len
   int128
   ```
+
   After:
+
   ```vyper
   slice(data, convert(start, uint256), convert(length, uint256))
   ```
 - `len()` returns `uint256`. [VIP #1979](https://github.com/vyperlang/vyper/issues/1979)
+
   Before:
+
   ```vyper
   n: int128 = len(data)
   ```
+
   After:
+
   ```vyper
   n: uint256 = len(data)
   ```
 - External-call `value=` and `gas=` kwargs must be `uint256`. [VIP #1878](https://github.com/vyperlang/vyper/issues/1878)
+
   Before:
+
   ```vyper
   foo.pay(value=as_wei_value(1, "wei"), gas=50000)
   uint256
   ```
+
   After:
+
   ```vyper
   foo.pay(value=convert(v, uint256), gas=convert(g, uint256))
   ```
 - `raw_call` kwarg `outsize` renamed to `max_outsize`. [#1977](https://github.com/vyperlang/vyper/pull/1977)
+
   Before:
+
   ```vyper
   raw_call(to, data, outsize=32)
   ```
+
   After:
+
   ```vyper
   raw_call(to, data, max_outsize=32)
   ```
 - `extract32` kwarg `type` renamed to `output_type`. [#2036](https://github.com/vyperlang/vyper/pull/2036)
+
   Before:
+
   ```vyper
   extract32(data, 0, type=uint256)
   ```
+
   After:
+
   ```vyper
   extract32(data, 0, output_type=uint256)
   ```
 - Public array getter indexes use `uint256`. [VIP #1983](https://github.com/vyperlang/vyper/issues/1983)
+
   Before:
+
   ```vyper
   # Getter ABI used the older integer index type.
   ```
+
   After:
+
   ```vyper
   uint256
   uint256
   ```
 - Public struct getters return all struct values. [#2064](https://github.com/vyperlang/vyper/pull/2064)
+
   Before:
+
   ```vyper
   # Public struct getter returned a narrower shape.
   ```
+
   After:
+
   ```vyper
   # Public struct getter returns every member in declaration order.
   ```
 - `RLPList` removed. [VIP #1866](https://github.com/vyperlang/vyper/issues/1866)
+
   Before:
+
   ```vyper
   RLPList(...)
   ```
+
   After:
+
   ```vyper
   # No replacement source syntax in Vyper.
   ```
 - `empty()` builtin added. [#1676](https://github.com/vyperlang/vyper/pull/1676)
+
   Before:
+
   ```vyper
   xs: uint256[3] = [0, 0, 0]
   ```
+
   After:
+
   ```vyper
   empty(uint256[3])
   ```
 - `@pure` decorator added. [VIP #2041](https://github.com/vyperlang/vyper/issues/2041)
+
   Before:
+
   ```vyper
   @view
   ```
+
   After:
+
   ```vyper
   @pure
   @external
   def add(a: uint256, b: uint256) -> uint256:
   ```
 - `raise` can omit a reason string. [VIP #1902](https://github.com/vyperlang/vyper/issues/1902)
+
   Before:
+
   ```vyper
   raise "failed"
   ```
+
   After:
+
   ```vyper
   raise
   ```
 - `method_id()` type argument made optional. [VIP #1980](https://github.com/vyperlang/vyper/issues/1980)
+
   Before:
+
   ```vyper
   method_id("transfer(address,uint256)", output_type=bytes4)
   ```
+
   After:
+
   ```vyper
   method_id("transfer(address,uint256)")
   ```
 - `raw_call` can perform `STATICCALL`. [#1973](https://github.com/vyperlang/vyper/pull/1973)
+
   Before:
+
   ```vyper
   # No raw static call kwarg.
   ```
+
   After:
+
   ```vyper
   raw_call(to, data, max_outsize=32, is_static_call=True)
   ```
@@ -1666,22 +2226,30 @@ upstream release notes.
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.17/docs/release-notes.rst>
 
 - Required `raw_call` and `slice` arguments became positional. [VIP #1879](https://github.com/vyperlang/vyper/issues/1879)
+
   Before:
+
   ```vyper
   raw_call(target, payload, outsize=32, gas=50000)
   slice(data, start=4, len=32)
   ```
+
   After:
+
   ```vyper
   raw_call(target, payload, 32, 50000)
   slice(data, 4, 32)
   ```
 - NatSpec comments were accepted as source documentation. [#1898](https://github.com/vyperlang/vyper/pull/1898)
+
   Before:
+
   ```vyper
   # No Vyper NatSpec support.
   ```
+
   After:
+
   ```vyper
   # @notice Transfer tokens to another account.
   # @param to Recipient address.
@@ -1692,29 +2260,41 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.17/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.15/docs/release-notes.rst>
 
 - `chain.id` environment variable added. [VIP #1652](https://github.com/vyperlang/vyper/issues/1652)
+
   Before:
+
   ```vyper
   # No Vyper source expression for CHAINID.
   ```
+
   After:
+
   ```vyper
   domain_chain_id: uint256 = chain.id
   ```
 - Account code hash access added as `address.codehash`. [VIP #1765](https://github.com/vyperlang/vyper/issues/1765)
+
   Before:
+
   ```vyper
   # No Vyper source expression for EXTCODEHASH.
   ```
+
   After:
+
   ```vyper
   h: bytes32 = target.codehash
   ```
 - Scientific notation for numeric literals accepted. [#1721](https://github.com/vyperlang/vyper/pull/1721)
+
   Before:
+
   ```vyper
   x: decimal = 10000000000.0
   ```
+
   After:
+
   ```vyper
   x: decimal = 1e10
   ```
@@ -1724,33 +2304,45 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.15/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.14/docs/release-notes.rst>
 
 - `bytes[32]` annotations were implicitly rewritten to fixed `bytes32`. [#1718](https://github.com/vyperlang/vyper/pull/1718)
+
   Before:
+
   ```vyper
   digest: bytes[32]
   ```
+
   After:
+
   ```vyper
   digest: bytes32
   ```
 - Scientific notation was rejected after previously parsing incorrectly; it was
   reintroduced in `v0.1.0-beta.15`. [#1681](https://github.com/vyperlang/vyper/pull/1681)
+
   Before:
+
   ```vyper
   x: decimal = 1e10
   ```
+
   After:
+
   ```vyper
   x: decimal = 10000000000.0
   ```
 - `for ... else` syntax was disallowed. [#1633](https://github.com/vyperlang/vyper/pull/1633)
+
   Before:
+
   ```vyper
   for i in range(3):
       pass
   else:
       pass
   ```
+
   After:
+
   ```vyper
   for i in range(3):
       pass
@@ -1761,7 +2353,9 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.14/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.13/docs/release-notes.rst>
 
 - Environment variables and constants can be used as default parameter values. [VIP #1525](https://github.com/vyperlang/vyper/issues/1525)
+
   Before:
+
   ```vyper
   EMPTY: constant(address) = empty(address)
 
@@ -1770,7 +2364,9 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.13/docs/rele
       if recipient == EMPTY:
           recipient = msg.sender
   ```
+
   After:
+
   ```vyper
   @public
   def deposit(recipient: address = msg.sender):
@@ -1782,11 +2378,15 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.13/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.12/docs/release-notes.rst>
 
 - Relative imports added. [VIP #1367](https://github.com/vyperlang/vyper/issues/1367)
+
   Before:
+
   ```vyper
   import token_interface as TokenInterface
   ```
+
   After:
+
   ```vyper
   from .token_interface import TokenInterface
   from ..interfaces import Vault
@@ -1797,20 +2397,28 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.12/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.11/docs/release-notes.rst>
 
 - `sha3()` removed in favor of `keccak256()`. [VIP #1328](https://github.com/vyperlang/vyper/issues/1328)
+
   Before:
+
   ```vyper
   digest: bytes32 = sha3(data)
   ```
+
   After:
+
   ```vyper
   digest: bytes32 = keccak256(data)
   ```
 - Equality comparisons for strings and dynamic bytes added. [#1507](https://github.com/vyperlang/vyper/pull/1507)
+
   Before:
+
   ```vyper
   # Direct string and bytes equality was not supported.
   ```
+
   After:
+
   ```vyper
   same_name: bool = name == "alice"
   same_data: bool = data == b"alice"
@@ -1821,11 +2429,15 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.11/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.10/docs/release-notes.rst>
 
 - Unreachable assertions added. [VIP #711](https://github.com/vyperlang/vyper/issues/711)
+
   Before:
+
   ```vyper
   assert False
   ```
+
   After:
+
   ```vyper
   assert amount != 0, UNREACHABLE
   raise UNREACHABLE
@@ -1836,40 +2448,56 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.10/docs/rele
 Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.9/docs/release-notes.rst>
 
 - List constants added. [#1211](https://github.com/vyperlang/vyper/issues/1211)
+
   Before:
+
   ```vyper
   # No constant list literal support.
   ```
+
   After:
+
   ```vyper
   VALUES: constant(uint256[3]) = [1, 2, 3]
   ```
 - `sha256()` builtin added. [#1327](https://github.com/vyperlang/vyper/issues/1327)
+
   Before:
+
   ```vyper
   # No Vyper source builtin for the SHA-256 precompile.
   ```
+
   After:
+
   ```vyper
   digest: bytes32 = sha256(data)
   ```
 - `create_with_code_of()` renamed to `create_forwarder_to()`. [#1177](https://github.com/vyperlang/vyper/issues/1177)
+
   Before:
+
   ```vyper
   child: address = create_with_code_of(template)
   ```
+
   After:
+
   ```vyper
   child: address = create_forwarder_to(template)
   ```
 - `@nonreentrant` decorator added. [VIP #1204](https://github.com/vyperlang/vyper/issues/1204)
+
   Before:
+
   ```vyper
   @public
   def withdraw():
       pass
   ```
+
   After:
+
   ```vyper
   @public
   @nonreentrant("lock")
@@ -1882,31 +2510,43 @@ Release notes: <https://github.com/vyperlang/vyper/blob/v0.1.0-beta.9/docs/relea
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.8>
 
 - `string[N]` type support added. [release-note source](https://github.com/vyperlang/vyper/commit/9d2ddb34a40c53f6598f3b0b4717678b2b74213d)
+
   Before:
+
   ```vyper
   name: bytes[32]
   ```
+
   After:
+
   ```vyper
   name: string[32]
   ```
 - String support was added to `len()`, `sha3()`, slicing, `concat()`, map keys,
   defaults, events, and returns. [release-note source](https://github.com/vyperlang/vyper/commit/56e36fa975213109c305008a8e8f6193090f38f8)
+
   Before:
+
   ```vyper
   # Dynamic string expressions were not generally accepted.
   ```
+
   After:
+
   ```vyper
   n: uint256 = len(name)
   digest: bytes32 = sha3(name)
   ```
 - Source interfaces were added for extraction and checking. [release-note source](https://github.com/vyperlang/vyper/commit/216dc509bdfe24afc4e0ee0c1ef9b061fd93d3aa)
+
   Before:
+
   ```vyper
   # No source interface extraction or checking.
   ```
+
   After:
+
   ```vyper
   contract Token:
       def transfer(to: address, value: uint256) -> bool: modifying
@@ -1917,31 +2557,43 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.8>
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.7>
 
 - Constants became usable in function and event signatures. [release-note source](https://github.com/vyperlang/vyper/commit/675b6f520d4df93af9e4c9162f394cba6194fd30)
+
   Before:
+
   ```vyper
   def f(data: bytes[32]): ...
   ```
+
   After:
+
   ```vyper
   SIZE: constant(uint256) = 32
   def f(data: bytes[SIZE]): ...
   ```
 - Implicit assignment conversions were disallowed. [release-note source](https://github.com/vyperlang/vyper/commit/4fb089b4b08c39c38c7358150cbecdfcbe9a5bc5)
+
   Before:
+
   ```vyper
   x: uint256 = 1
   y: int128 = x
   ```
+
   After:
+
   ```vyper
   y: int128 = convert(x, int128)
   ```
 - Side effects inside `assert` were disallowed. [release-note source](https://github.com/vyperlang/vyper/commit/6056e4cb10d20a0fa2d94da88802d5fc733bbdbd)
+
   Before:
+
   ```vyper
   assert self.f()
   ```
+
   After:
+
   ```vyper
   ok: bool = self.f()
   assert ok
@@ -1952,20 +2604,28 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.7>
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.6>
 
 - Mapping syntax changed from subscript form to `map(...)`. [VIP #564](https://github.com/vyperlang/vyper/issues/564)
+
   Before:
+
   ```vyper
   balances: uint256[address]
   ```
+
   After:
+
   ```vyper
   balances: map(address, uint256)
   ```
 - Struct definitions and constructors were added. [release-note source](https://github.com/vyperlang/vyper/commit/9a732d8a14ec456a5e598f26d5235c13f9f3770a)
+
   Before:
+
   ```vyper
   # No named struct declaration syntax.
   ```
+
   After:
+
   ```vyper
   struct Point:
       x: uint256
@@ -1974,21 +2634,29 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.6>
   p: Point = Point({x: 1, y: 2})
   ```
 - `clear()` replaced `reset()` for zeroing values; `del` was disallowed. [release-note source](https://github.com/vyperlang/vyper/commit/6753ce6aac78829b05e63a029723559b81959005)
+
   Before:
+
   ```vyper
   reset(self.balance)
   del self.balance
   ```
+
   After:
+
   ```vyper
   clear(self.balance)
   ```
 - `EMPTY_BYTES32` builtin constant added. [release-note source](https://github.com/vyperlang/vyper/commit/d73f75b86341dc14326c2cffaa2bb7c77271d861)
+
   Before:
+
   ```vyper
   b"\x00\x00\x00\x00"
   ```
+
   After:
+
   ```vyper
   EMPTY_BYTES32
   ```
@@ -1998,21 +2666,29 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.6>
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.5>
 
 - Unit annotations were supported in signatures. [release-note source](https://github.com/vyperlang/vyper/commit/80f390bb64c583243238aab24e4b6284d2077dc8)
+
   Before:
+
   ```vyper
   def pay(amount: uint256): ...
   ```
+
   After:
+
   ```vyper
   def pay(amount: uint256(wei)): ...
   ```
 - `convert()` accepted additional primitive targets, including `bool` and
   byte-array-to-integer cases. [release-note source](https://github.com/vyperlang/vyper/commit/7a09a38b3cbe0b5557c1b510cdba50541abf3606)
+
   Before:
+
   ```vyper
   # bool conversion rejected.
   ```
+
   After:
+
   ```vyper
   ok: bool = convert(x, bool)
   ```
@@ -2022,31 +2698,43 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.5>
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.4>
 
 - Conversions changed from string type arguments to type-name arguments. [VIP #1026](https://github.com/vyperlang/vyper/issues/1026)
+
   Before:
+
   ```vyper
   convert(x, "uint256")
   ```
+
   After:
+
   ```vyper
   convert(x, uint256)
   ```
 - Custom constants added. [release-note source](https://github.com/vyperlang/vyper/commit/6789d8f6d6f22daab4ea35c6300a6e8eda7641b8)
+
   Before:
+
   ```vyper
   # No user-defined constant declaration syntax.
   ```
+
   After:
+
   ```vyper
   FEE: constant(uint256) = 10
   ```
 - `if` and `assert` statements became stricter about boolean expressions.
   [release-note source](https://github.com/vyperlang/vyper/commit/b4a9d7a8d035a9b4888a95aec2a68f7606238d23)
+
   Before:
+
   ```vyper
   if amount:
       pass
   ```
+
   After:
+
   ```vyper
   if amount != 0:
       pass
@@ -2057,40 +2745,56 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.4>
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.3>
 
 - Default function arguments added. [release-note source](https://github.com/vyperlang/vyper/commit/17bfed464d5ce25b4fe810e317d6d9b148d2a4c4)
+
   Before:
+
   ```vyper
   def transfer(to: address, amount: uint256): ...
   ```
+
   After:
+
   ```vyper
   def transfer(to: address, amount: uint256 = 0): ...
   ```
 - `assert` statements can include reason strings. [release-note source](https://github.com/vyperlang/vyper/commit/1fa176962468e6abcb5d09537de927c244f9d38e)
+
   Before:
+
   ```vyper
   assert ok
   ```
+
   After:
+
   ```vyper
   assert ok, "failed"
   ```
 - `not` was restricted to boolean values. [release-note source](https://github.com/vyperlang/vyper/commit/706fb1f1b30680bec10576e46e8be5a858ea21a7)
+
   Before:
+
   ```vyper
   if not amount:
       pass
   ```
+
   After:
+
   ```vyper
   if amount == 0:
       pass
   ```
 - `num128` was replaced by `int128`. [release-note source](https://github.com/vyperlang/vyper/commit/1fcf304d4b9fab334b36e7dac274a32f54f0a262)
+
   Before:
+
   ```vyper
   x: num128
   ```
+
   After:
+
   ```vyper
   x: int128
   ```
@@ -2100,13 +2804,17 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.3>
 Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.2>
 
 - Function docblocks were accepted. [release-note source](https://github.com/vyperlang/vyper/commit/ac34bb21148ece590e192b55b553b1483c7c3388)
+
   Before:
+
   ```vyper
   @public
   def f():
       pass
   ```
+
   After:
+
   ```vyper
   @public
   def f():
@@ -2116,11 +2824,15 @@ Released tag: <https://github.com/vyperlang/vyper/releases/tag/v0.1.0-beta.2>
       pass
   ```
 - Builtin constants added. [release-note source](https://github.com/vyperlang/vyper/commit/8e25d4b4782e8f610be3c4dd2d22c4f5078623dc)
+
   Before:
+
   ```vyper
   0x0000000000000000000000000000000000000000
   ```
+
   After:
+
   ```vyper
   ZERO_ADDRESS
   ```
