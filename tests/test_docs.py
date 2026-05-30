@@ -42,8 +42,9 @@ def test_migration_coverage_tracks_syntax_history_versions() -> None:
     history = Path("docs/vyper-syntax-history.md").read_text(encoding="utf-8")
     coverage = Path("docs/migration-coverage.md").read_text(encoding="utf-8")
 
-    history_versions = set(re.findall(r"^### v0\.\d+\.\d+$", history, re.MULTILINE))
-    coverage_versions = set(re.findall(r"^### v0\.\d+\.\d+$", coverage, re.MULTILINE))
+    version_heading = r"^### v0\.\d+\.\d+(?:(?:a|b|rc)\d+|-[A-Za-z0-9.]+)?$"
+    history_versions = set(re.findall(version_heading, history, re.MULTILINE))
+    coverage_versions = set(re.findall(version_heading, coverage, re.MULTILINE))
 
     assert history_versions <= coverage_versions
 

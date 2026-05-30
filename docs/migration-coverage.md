@@ -1,22 +1,91 @@
 # Migration Coverage
 
-This document maps the target-supported syntax history in
+This document maps the syntax history in
 [`vyper-syntax-history.md`](vyper-syntax-history.md) to `vyupgrade` behavior.
 Each source-visible entry is classified as an automated rewrite, a diagnostic,
-or an explicit no-op when the historical change only introduced newly accepted
-syntax and does not imply a necessary migration from older source. Newer
-prerelease entries are tracked in the syntax history as planning reference until
+an explicit no-op when the historical change only introduced newly accepted
+syntax, or validation-only when surviving obsolete source is left for compiler
+validation. Newer prerelease entries are tracked as planning reference until
 `vyupgrade` supports targeting those compilers.
 
 Rules are version-gated. Unless noted as a target rule, a rule runs only when
 the inferred source version is older than the listed change and the target
-version is at or after it. Target rules cover the legacy cleanup pass for
-pre-`0.2.1` syntax whenever the requested target is in the supported range.
+version is at or after it. Target rules cover legacy source syntax whenever the
+requested target is in the supported range.
 
 `0.1.0b*` source compilers are validated through a `typed-ast` compatibility
 wrapper. This preserves source compilation for legacy compilers that expected
 pre-Python-3.8 AST node classes while still allowing `vyupgrade` to run under a
 modern Python interpreter.
+
+## v0.5.x prereleases
+
+### v0.5.0a2
+
+- Docstring-only function bodies rejected: validation-only until `0.5.x`
+  targets are supported.
+- Wildcard interface lengths and unbounded length spellings added: no-op. This
+  is newly accepted source syntax.
+
+### v0.5.0a1
+
+- `isqrt` moved into `math`: validation-only until `0.5.x` targets are
+  supported.
+- Multi-name interface imports added: no-op. This is newly accepted import
+  syntax.
+- Multi-interface `implements` added and duplicate `implements` rejected:
+  no-op for the new tuple form; duplicate declarations are validation-only.
+- `...` interface default parameter values added: no-op. This is newly
+  accepted interface syntax.
+- Numeric literal underscores added: no-op. This is newly accepted literal
+  syntax.
+- Abstract module methods added: no-op. This is new opt-in module syntax.
+- Event fields cannot be module types: validation-only.
+
+## v0.4.x prereleases
+
+### v0.4.1b4
+
+- Absolute relative imports disallowed: `VYD015`.
+
+### v0.4.1b2
+
+- `module.__at__()` casts added: no-op. Existing interface cast syntax is not
+  mechanically equivalent in the general case.
+
+### v0.4.1b1
+
+- `mana` call kwarg alias added: no-op. Existing `gas=` spelling remains valid.
+- `@external` became optional in `.vyi` files: no-op. Existing explicit
+  decorators remain valid.
+- Event instantiation keyword arguments added: `VY112`.
+- Native hex string literals added: no-op. Existing byte literals remain valid.
+
+### v0.4.0b6
+
+- `block.prevrandao` signature changed to `bytes32`: `VYD001`.
+
+### v0.4.0b5
+
+- Bytestring downcasts added: no-op. This is newly accepted source syntax.
+
+### v0.4.0b3
+
+- External calls require keywords: `VY040`, `VY041`, `VY042`, `VY057`, and
+  `VYD003`.
+
+### v0.4.0b1
+
+- Module syntax and imports added: no-op for new opt-in syntax. Module import
+  rewrites and diagnostics are otherwise covered by `VY120` and `VYD015`.
+- Named reentrancy locks removed: `VY090` and `VYD002`.
+- `enum` declarations replaced by `flag`: `VY030`.
+- Loop variables require type annotations: `VY070`.
+- Struct instantiation uses keyword arguments: `VY060`.
+- Integer division uses `//`: `VY050` and `VYD004`.
+- Builtin constants removed: `VY012`.
+- Two-argument `range` can include `bound=`: `VY071` and `VYD011`.
+- Builtin ERC interface imports moved and gained an `I` prefix: `VY020`.
 
 ## v0.4.x
 
@@ -324,6 +393,124 @@ modern Python interpreter.
 - `method_id()` type argument made optional: `VY209`.
 - `raw_call` can perform `STATICCALL`: no-op.
 - Interfaces can be split into generated `.vyi` files: `VY120`.
+
+## v0.1.0 beta prereleases
+
+### v0.1.0-beta.17
+
+- Required `raw_call` and `slice` arguments became positional:
+  validation-only. The `v0.2.1` coverage covers the later `raw_call` `outsize`
+  to `max_outsize` spelling and `slice()` integer-width diagnostics.
+- NatSpec comments added: no-op for beta targets. `VY058` handles a later
+  `0.4.0` NatSpec tag syntax cleanup.
+
+### v0.1.0-beta.15
+
+- `chain.id` added: no-op. This is new opt-in environment syntax.
+- `address.codehash` added: no-op. This is new opt-in environment syntax.
+- Scientific notation for numeric literals accepted: no-op. This is newly
+  accepted literal syntax.
+
+### v0.1.0-beta.14
+
+- `bytes[32]` implicitly rewrites to `bytes32`: `VY207` handles the later
+  dynamic byte and string spelling cleanup for supported targets.
+- Scientific notation rejected after previously parsing incorrectly: no-op.
+  `v0.1.0-beta.15` accepts it again.
+- `for ... else` disallowed: no-op. This is rejected source, not a migration
+  target.
+
+### v0.1.0-beta.13
+
+- Environment variables and constants as default parameter values: no-op. This
+  is newly accepted source syntax.
+
+### v0.1.0-beta.12
+
+- Relative imports added: no-op for beta targets. `VYD015` handles the later
+  `0.4.1` import-resolution restriction.
+
+### v0.1.0-beta.11
+
+- `sha3()` removed: validation-only.
+- String and dynamic bytes equality added: no-op. This is newly accepted
+  expression syntax.
+
+### v0.1.0-beta.10
+
+- Unreachable assertions added: no-op. This is new opt-in assertion syntax.
+
+### v0.1.0-beta.9
+
+- List constants added: no-op. This is newly accepted constant syntax.
+- `sha256()` added: no-op. This is new opt-in builtin syntax.
+- `create_with_code_of()` renamed to `create_forwarder_to()`: `VY208` handles
+  the modern `create_copy_of()` spelling used by supported targets.
+- `@nonreentrant` added: no-op for beta targets. Later reentrancy syntax
+  migrations are covered by `VY090`, `VY210`, and `VYD002`.
+
+### v0.1.0-beta.8
+
+- `string[N]` type support added: `VY207` handles the later `string[N]` to
+  `String[N]` rename.
+- String support in builtins and expressions added: no-op. This is newly
+  accepted source syntax.
+- Source interfaces added: `VY206` handles the later `contract` to `interface`
+  spelling change.
+
+### v0.1.0-beta.7
+
+- Constants in function and event signatures added: no-op. This is newly
+  accepted source syntax.
+- Implicit assignment conversions disallowed: validation-only.
+- Side effects inside `assert` disallowed: validation-only.
+
+### v0.1.0-beta.6
+
+- Subscript mapping syntax changed to `map(...)`: `VY205` rewrites both this
+  form and `map(...)` to modern `HashMap[...]`.
+- Struct definitions and constructors added: no-op for beta targets. Later
+  struct literal syntax is covered by `VY060`.
+- `clear()` replaced `reset()` and `del` was disallowed: validation-only.
+- `EMPTY_BYTES32` added: `VY012` handles the later builtin-constant removal.
+
+### v0.1.0-beta.5
+
+- Unit annotations in signatures added: `VY202` handles later type-unit
+  removal.
+- Additional `convert()` target types added: no-op. This is newly accepted
+  builtin syntax.
+
+### v0.1.0-beta.4
+
+- `convert(x, "T")` string type arguments changed to `convert(x, T)`:
+  validation-only.
+- Custom constants added: no-op for beta targets. Later constant accessor
+  collisions are covered by `VY016`.
+- `if` and `assert` became stricter about boolean expressions:
+  validation-only.
+
+### v0.1.0-beta.3
+
+- Default function arguments added: no-op. This is newly accepted source
+  syntax.
+- `assert` reason strings added: no-op. This is newly accepted assertion
+  syntax.
+- `not` restricted to boolean values: `VY231` and `VYD013` handle later numeric
+  `not` cleanup.
+- `num128` replaced by `int128`: validation-only.
+
+### v0.1.0-beta.2
+
+- Function docblocks added: no-op for beta targets. Later docstring-only
+  function bodies are covered by the `v0.5.0a2` syntax history entry.
+- Builtin constants added: `VY012` handles later builtin-constant removal.
+
+### v0.1.0-beta.1
+
+- Initial beta source forms are validation-only where they predate later
+  supported rewrite rules. Later target rules cover major surviving forms:
+  `VY201`, `VY202`, `VY203`, `VY204`, `VY206`, `VY207`, `VY208`, and `VY209`.
 
 ## Global Diagnostics
 

@@ -8,9 +8,8 @@ method identifiers, and storage layout.
 It covers installable Vyper `0.1.0b*` prereleases through `0.4.3`. Rules are
 version-gated: a given rewrite only fires when the migration from the source
 version to the target version actually crosses the compiler release that
-introduced the change. The detailed syntax-history reference tracks `0.2.1`
-onward, including newer prerelease syntax for planning; older beta-era forms
-are handled as legacy cleanup rules.
+introduced the change. The detailed syntax-history reference tracks `0.1.0b*`
+onward, including newer prerelease syntax for planning.
 
 ## Install
 
@@ -133,11 +132,11 @@ Rewrites carry a `VY###` code and diagnostics a `VYD###` code. Where the source
 intent cannot be proven safe, the change is reported as a manual-review
 diagnostic instead of being applied.
 
-- [docs/migration-coverage.md](docs/migration-coverage.md) — every
-  target-supported syntax change mapped to a rule, diagnostic, or explicit
-  no-op.
+- [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
+  change mapped to a rule, diagnostic, explicit no-op, or validation-only
+  behavior.
 - [docs/vyper-syntax-history.md](docs/vyper-syntax-history.md) — the versioned
-  Vyper syntax history from `0.5.0a2` back to `0.2.1`, with PR links and
-  before/after examples.
+  Vyper syntax history from `0.5.0a2` back through the `0.1.0b*` prereleases,
+  with PR links and before/after examples.
 - [CHANGELOG.md](CHANGELOG.md) — release notes.
 - [DEVELOPMENT.md](DEVELOPMENT.md) — maintainer validation and release workflow.
