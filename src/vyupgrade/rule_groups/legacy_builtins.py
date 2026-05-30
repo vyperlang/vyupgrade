@@ -279,7 +279,7 @@ def _method_id_comparison_operand(
 RULES = (
     Rule(
         "legacy_builtin_calls",
-        context_runner=_legacy_builtin_calls,
+        runner=_legacy_builtin_calls,
         changes=(
             target_floor("VY208", (0, 2, 1)),
             target_floor("VY209", (0, 2, 1)),

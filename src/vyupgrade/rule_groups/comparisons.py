@@ -37,7 +37,7 @@ def not_in_comparator(
 RULES = (
     Rule(
         "not_in_comparator",
-        context_runner=not_in_comparator,
+        runner=not_in_comparator,
         changes=(crossing("VY211", (0, 2, 8)),),
     ),
 )

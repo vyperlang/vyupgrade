@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..analysis import infer_expr_type, normalize_type, unwrap_type
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
@@ -15,7 +15,6 @@ from ..source import (
     line_number,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .external_call_helpers import external_call_matches
 
 
@@ -240,12 +239,11 @@ def _external_call_keywords_once(
     return apply_edits(source, selected_edits), selected_fixes, diagnostics
 
 
-def _external_call_subscripts(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _external_call_subscripts(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for match in re.finditer(r"\b(?:staticcall|extcall)\s+", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
@@ -271,7 +269,7 @@ def _external_call_subscripts(
 RULES = (
     Rule(
         "external_call_keywords",
-        context_runner=_external_call_keywords,
+        runner=_external_call_keywords,
         changes=(
             crossing("VY040", (0, 4, 0)),
             crossing("VY041", (0, 4, 0)),
@@ -281,7 +279,7 @@ RULES = (
     Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
     Rule(
         "external_call_keywords_after_subscripts",
-        context_runner=_external_call_keywords,
+        runner=_external_call_keywords,
         changes=(
             crossing("VY040", (0, 4, 0)),
             crossing("VY041", (0, 4, 0)),
@@ -290,7 +288,7 @@ RULES = (
     ),
     Rule(
         "ignored_external_call_results",
-        context_runner=ignored_external_call_results,
+        runner=ignored_external_call_results,
         changes=(crossing("VY057", (0, 4, 0)),),
     ),
 )

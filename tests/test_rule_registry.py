@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from vyupgrade.models import Config, Diagnostic, Fix
+from vyupgrade.models import Config
 from vyupgrade.rule_registry import Rule, RuleContext, crossing, rule_changes
 from vyupgrade.rules import RULE_CHANGES
 from vyupgrade.versions import MigrationContext
@@ -12,15 +12,17 @@ from vyupgrade.versions import MigrationContext
 RULE_CODE_RE = re.compile(r"""["'](?P<code>VYD?\d{3})["']""")
 
 
+def test_rule_descriptor_has_single_runner_field() -> None:
+    assert not hasattr(Rule("sample"), "context_runner")
+
+
 def test_rule_bind_skips_runner_when_descriptor_is_disabled() -> None:
     calls = 0
 
-    def runner(
-        source: str, config: Config, context: MigrationContext
-    ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    def runner(context: RuleContext):
         nonlocal calls
         calls += 1
-        return source + "changed", [], []
+        return context.source + "changed", [], []
 
     rule = Rule("sample", runner=runner, changes=(crossing("VYX001", (0, 4, 0)),))
     bound = rule.bind()
@@ -41,12 +43,10 @@ def test_rule_bind_skips_runner_when_descriptor_is_disabled() -> None:
 def test_rule_bind_runs_runner_when_any_descriptor_is_enabled() -> None:
     calls = 0
 
-    def runner(
-        source: str, config: Config, context: MigrationContext
-    ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    def runner(context: RuleContext):
         nonlocal calls
         calls += 1
-        return source + " changed", [], []
+        return context.source + " changed", [], []
 
     rule = Rule(
         "sample",

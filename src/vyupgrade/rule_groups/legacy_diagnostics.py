@@ -174,7 +174,7 @@ def _is_uint256_expr(expr: str, vars_for_line: dict[str, str]) -> bool:
 RULES = (
     Rule(
         "legacy_diagnostics",
-        context_runner=_legacy_diagnostics,
+        runner=_legacy_diagnostics,
         changes=(
             target_floor("VYD210", (0, 2, 1)),
             target_floor("VYD211", (0, 2, 1)),

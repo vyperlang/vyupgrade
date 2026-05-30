@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import SourceFacts, parse_source_facts
-from ..models import Config, Diagnostic, Fix
+from ..analysis import SourceFacts
+from ..models import Diagnostic, Fix
 from .legacy_call_helpers import iter_calls, replace_identifier_call
 from ..rule_helpers import (
     function_body_span as _function_body_span,
@@ -12,7 +12,6 @@ from ..rule_helpers import (
     is_attribute_name as _is_attribute_name,
     is_keyword_argument_name as _is_keyword_argument_name,
     line_match_starts_outside_string as _line_match_starts_outside_string,
-    line_offsets as _line_offsets,
     pre_021_context as _pre_021_context,
     remove_constructor_decorators as _remove_constructor_decorators,
 )
@@ -32,14 +31,14 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext, VyperVersion
+from ..versions import VyperVersion
 
 
-def _pragma(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _pragma(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
     fixes: list[Fix] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(
         r"^([ \t]*)#[ \t]*(?:@version|pragma[ \t]+version)[ \t]+(.+?)[ \t]*$", re.MULTILINE
     )
@@ -72,16 +71,15 @@ def _pragma(
     return pragma + rewritten, fixes, []
 
 
-def _legacy_decorators(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _legacy_decorators(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     replacements = {
         "public": "external",
         "private": "internal",
         "constant": "view",
     }
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(r"^([ \t]*)@(public|private|constant)([ \t]*(?:#.*)?$)", re.MULTILINE)
 
     def repl(match: re.Match[str]) -> str:
@@ -103,12 +101,11 @@ def _legacy_decorators(
     return pattern.sub(repl, source), fixes, []
 
 
-def _legacy_type_units(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _legacy_type_units(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     type_re = re.compile(
         r"\b(u?int(?:8|16|32|64|128|256)?|decimal)\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*\)"
     )
@@ -202,16 +199,15 @@ def _legacy_events(
     return current, fixes, []
 
 
-def _event_kwargs(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _event_kwargs(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     event_fields = _collect_event_fields(source)
     if not event_fields:
         return source, [], []
 
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for match in re.finditer(r"\blog\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
@@ -248,12 +244,11 @@ def _event_kwargs(
     return apply_edits(source, edits), fixes, []
 
 
-def _legacy_dynamic_types(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _legacy_dynamic_types(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for match in re.finditer(r"\b(bytes|string)(\s*\[)", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
@@ -464,14 +459,14 @@ def _rewrite_slice_keyword_args(source: str) -> tuple[str, list[Fix]]:
     return apply_edits(source, edits), fixes
 
 
-def _reserved_parameter_names(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _reserved_parameter_names(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    context = rule_context.migration
     if context.source_floor is not None and context.source_floor > VyperVersion("0.2.1"):
         return source, [], []
-    facts = parse_source_facts(source)
-    line_offsets = _line_offsets(source)
-    mask = code_mask(source)
+    facts = rule_context.facts
+    line_offsets = rule_context.line_offsets
+    mask = rule_context.code_mask
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     pattern = re.compile(r"^\s*def\s+[A-Za-z_][A-Za-z0-9_]*\s*\((?P<args>[^)]*)\)", re.MULTILINE)
@@ -510,10 +505,9 @@ def _reserved_parameter_names(
     return apply_edits(source, edits), fixes, []
 
 
-def _natspec_strictness(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     in_docstring = False
@@ -585,8 +579,9 @@ def _natspec_line_replacement(line: str, params: set[str] | None) -> str | None:
 
 
 def _legacy_constructor_locks(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     current, fixes, insertions = _remove_constructor_decorators(
         source,
         {"@nonreentrant"},
@@ -680,7 +675,7 @@ EARLY_RULES = (
     Rule("legacy_type_units", runner=_legacy_type_units, changes=(target_floor("VY202", (0, 2, 1)),)),
     Rule(
         "legacy_events",
-        context_runner=_legacy_events,
+        runner=_legacy_events,
         changes=(
             target_floor("VY203", (0, 2, 1)),
             target_floor("VY204", (0, 2, 1)),
@@ -692,7 +687,7 @@ EARLY_RULES = (
 POST_INTERFACE_RULES = (
     Rule(
         "early_beta_syntax",
-        context_runner=_early_beta_syntax,
+        runner=_early_beta_syntax,
         changes=(
             target_floor("VY216", (0, 2, 1)),
             target_floor("VY217", (0, 2, 1)),

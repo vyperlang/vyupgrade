@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
-from ..models import Config, Diagnostic, Fix
+from ..analysis import SourceFacts, infer_expr_type, normalize_type
+from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
 from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
@@ -14,21 +14,21 @@ from ..rule_helpers import (
 from ..source import (
     TextEdit,
     apply_edits,
-    code_mask,
     line_number,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 
 
 def _constant_integer_decl_casts(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    config = rule_context.config
+    facts = rule_context.facts
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     integer_type = r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)"
     pattern = re.compile(
         rf"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\(\s*(?P<type>{integer_type})\s*\)\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
@@ -143,12 +143,11 @@ def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool
     )
 
 
-def _dynamic_pow_mod256(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _dynamic_pow_mod256(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     convert_operand = r"convert\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*uint256\s*\)"
     pattern = re.compile(rf"(?P<left>{convert_operand})\s*\*\*\s*(?P<right>{convert_operand})")
     for match in pattern.finditer(source):
@@ -184,11 +183,12 @@ def _top_level_constant_line(source: str, index: int) -> bool:
 
 
 def _dynamic_bytes_hex_literals(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*Bytes\[[^\]]+\]\s*=\s*(0x[0-9A-Fa-f]*)\b")
     for match in pattern.finditer(source):
         if not span_is_code(mask, match.start(), match.end()):
@@ -225,7 +225,7 @@ def _hex_literal_to_byte_string(literal: str) -> str | None:
 CONSTANT_EXPONENT_RULES = (
     Rule(
         "constant_exponent_literals",
-        context_runner=_constant_exponent_literals_context,
+        runner=_constant_exponent_literals_context,
         changes=(crossing("VY054", (0, 4, 0)),),
     ),
 )

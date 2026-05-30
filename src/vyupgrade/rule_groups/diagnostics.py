@@ -55,7 +55,7 @@ def missing_pragma_diagnostic(
 
 
 RULES = (
-    Rule("decimal_diagnostic", context_runner=decimal_diagnostic, changes=(crossing("VYD001", (0, 4, 0)),)),
-    Rule("prevrandao_diagnostic", context_runner=prevrandao_diagnostic, changes=(crossing("VYD010", (0, 4, 0)),)),
-    Rule("missing_pragma_diagnostic", context_runner=missing_pragma_diagnostic, changes=(crossing("VYD005", (0, 4, 0)),)),
+    Rule("decimal_diagnostic", runner=decimal_diagnostic, changes=(crossing("VYD001", (0, 4, 0)),)),
+    Rule("prevrandao_diagnostic", runner=prevrandao_diagnostic, changes=(crossing("VYD010", (0, 4, 0)),)),
+    Rule("missing_pragma_diagnostic", runner=missing_pragma_diagnostic, changes=(crossing("VYD005", (0, 4, 0)),)),
 )

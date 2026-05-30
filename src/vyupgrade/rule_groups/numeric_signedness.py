@@ -8,15 +8,14 @@ from ..analysis import (
     indexed_key_type,
     indexed_value_type,
     normalize_type,
-    parse_source_facts,
 )
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
     lhs_assigned_type as _lhs_assigned_type,
     lhs_declared_type as _lhs_declared_type,
 )
-from ..rule_registry import Rule, crossing
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -27,7 +26,6 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .numeric_casts import inside_convert_call
 from .numeric_constant_helpers import integer_constant_values
 from .numeric_scope import (
@@ -40,9 +38,11 @@ from .numeric_types import (
 
 
 def _mixed_signed_unsigned_arithmetic(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    config = rule_context.config
+    facts = rule_context.facts
     constant_values = integer_constant_values(source, config.source_ast)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -270,7 +270,7 @@ def _mixed_signed_unsigned_arithmetic(
                         replacement,
                     )
                 )
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for bracket in re.finditer(r"\[", source):
         if not span_is_code(mask, bracket.start(), bracket.end()):
             continue

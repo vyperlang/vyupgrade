@@ -39,7 +39,7 @@ from .rule_groups.numeric_operators import PRE_INTERFACE_RULES as NUMERIC_PRE_IN
 from .rule_groups.numeric_ranges import RULES as NUMERIC_RANGE_RULES
 from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
 from .rule_registry import (
-    ContextRuleRunner,
+    RuleRunner,
     RuleContext,
     rule_changes,
 )
@@ -73,7 +73,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     return RewriteResult(current, fixes, diagnostics)
 
 
-def _runnable_rules() -> Iterator[ContextRuleRunner]:
+def _runnable_rules() -> Iterator[RuleRunner]:
     for rule in RULES:
         runner = rule.bind()
         if runner is not None:

@@ -4,7 +4,7 @@ import re
 from collections import Counter
 
 from ..analysis import SourceFacts, parse_source_facts
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from .numeric_casts import cast_integer_arg_to_expected
 from ..rule_helpers import (
     has_line_comment as _has_line_comment,
@@ -24,12 +24,10 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext
 
 
-def _constructor_deploy(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _constructor_deploy(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     current, fixes, insertions = _remove_constructor_decorators(
         source,
         {"@external", "@internal", "@public", "@private"},
@@ -68,15 +66,15 @@ def _abi_builtins(
     return current, fixes, []
 
 
-def _enum_to_flag(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _enum_to_flag(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     if re.search(r"\benum\s+\w+:", source) is None:
         return source, fixes, diagnostics
 
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(r"^([ \t]*)enum[ \t]+([A-Za-z_][A-Za-z0-9_]*):", re.MULTILINE)
     for match in pattern.finditer(source):
         if not _line_match_starts_outside_string(source, mask, match.start()):
@@ -140,10 +138,8 @@ def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
     return "".join(out), fixes
 
 
-def _struct_kwargs(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    current = source
+def _struct_kwargs(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    current = rule_context.source
     all_fixes: list[Fix] = []
     while True:
         facts = parse_source_facts(current)
@@ -250,13 +246,12 @@ def _ordered_kwarg_string(
     )
 
 
-def _create_from_blueprint(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _create_from_blueprint(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     diagnostics: list[Diagnostic] = []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for match in re.finditer(r"\bcreate_from_blueprint\s*\(", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
@@ -339,7 +334,7 @@ CONSTRUCTOR_RULES = (
     Rule("constructor_deploy", runner=_constructor_deploy, changes=(crossing("VY002", (0, 4, 0)),)),
     Rule(
         "abi_builtins",
-        context_runner=_abi_builtins,
+        runner=_abi_builtins,
         changes=(
             crossing("VY010", (0, 4, 0)),
             crossing("VY011", (0, 4, 0)),
@@ -356,7 +351,7 @@ POST_NUMERIC_RULES = (
     Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
     Rule(
         "nonreentrant",
-        context_runner=_nonreentrant,
+        runner=_nonreentrant,
         changes=(
             crossing("VY090", (0, 4, 0)),
             crossing("VYD002", (0, 4, 0)),

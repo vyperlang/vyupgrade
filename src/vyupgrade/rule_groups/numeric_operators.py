@@ -102,7 +102,7 @@ def _replace_numeric_not(
 PRE_INTERFACE_RULES = (
     Rule(
         "pre_04_expression_rewrites",
-        context_runner=_pre_04_expression_rewrites,
+        runner=_pre_04_expression_rewrites,
         changes=(
             crossing("VY220", (0, 3, 7)),
             crossing("VY230", (0, 3, 8)),

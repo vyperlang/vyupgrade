@@ -22,10 +22,7 @@ class RuleChange:
 
 
 CodeChange = tuple[str, RuleChange]
-RuleRunner = Callable[
-    [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
-]
-ContextRuleRunner = Callable[["RuleContext"], tuple[str, list[Fix], list[Diagnostic]]]
+RuleRunner = Callable[["RuleContext"], tuple[str, list[Fix], list[Diagnostic]]]
 
 
 def is_enabled(
@@ -88,23 +85,11 @@ class RuleContext:
 class Rule:
     name: str
     runner: RuleRunner | None = None
-    context_runner: ContextRuleRunner | None = None
     changes: tuple[CodeChange, ...] = ()
 
-    def bind(self) -> ContextRuleRunner | None:
-        runner: ContextRuleRunner | None
-        if self.context_runner is not None:
-            runner = self.context_runner
-        elif self.runner is not None:
-            def source_runner(
-                context: RuleContext,
-                self: Rule = self,
-            ) -> tuple[str, list[Fix], list[Diagnostic]]:
-                assert self.runner is not None
-                return self.runner(context.source, context.config, context.migration)
-
-            runner = source_runner
-        else:
+    def bind(self) -> RuleRunner | None:
+        runner = self.runner
+        if runner is None:
             return None
 
         def gated_runner(context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:

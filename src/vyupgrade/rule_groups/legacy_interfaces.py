@@ -414,7 +414,7 @@ def _rewrite_legacy_map_type(text: str) -> str:
 RULES = (
     Rule(
         "legacy_maps_and_interfaces",
-        context_runner=_legacy_maps_and_interfaces,
+        runner=_legacy_maps_and_interfaces,
         changes=(
             target_floor("VY205", (0, 2, 1)),
             target_floor("VY206", (0, 2, 1)),

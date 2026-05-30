@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
-from ..models import Config, Diagnostic, Fix
+from ..analysis import SourceFacts, infer_expr_type, normalize_type
+from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     line_match_starts_outside_string as _line_match_starts_outside_string,
     line_offsets as _line_offsets,
@@ -20,14 +20,12 @@ from ..source import (
     replace_identifier,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .external_call_helpers import external_call_matches
 from .legacy_interfaces import IMPORT_RENAMES
 
 
-def _legacy_constants(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _legacy_constants(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     current = source
     replacements = {
@@ -55,8 +53,9 @@ def _legacy_constants(
 
 
 def _immutable_accessor_collisions(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     current, fixes = _accessor_collision_rewrites(
         source,
         r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*immutable\s*\(",
@@ -68,8 +67,9 @@ def _immutable_accessor_collisions(
 
 
 def _constant_accessor_collisions(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     current, fixes = _accessor_collision_rewrites(
         source,
         r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\(",
@@ -203,14 +203,15 @@ def _is_constant_declaration_name(source: str, start: int) -> bool:
 
 
 def _interface_view_mutability(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     view_names = _view_implementation_names(source)
     if not view_names:
         return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(
         r"^([ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^#\n]*\)[ \t]*(?:->[ \t]*[^:#\n]+)?[ \t]*:[ \t]*)(nonpayable)\b",
         re.MULTILINE,
@@ -258,13 +259,12 @@ def _view_implementation_names(source: str) -> set[str]:
     return names
 
 
-def _pure_immutable_reads(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
     immutable_names = _immutable_names(facts)
-    mask = code_mask(source)
-    line_offsets = _line_offsets(source)
+    mask = rule_context.code_mask
+    line_offsets = rule_context.line_offsets
     lines = source.splitlines(keepends=True)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -499,7 +499,7 @@ RULES = (
     Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
     Rule(
         "interface_imports",
-        context_runner=_interface_imports,
+        runner=_interface_imports,
         changes=(
             crossing("VY020", (0, 4, 0)),
             crossing("VYD003", (0, 4, 0)),
@@ -507,7 +507,7 @@ RULES = (
     ),
     Rule(
         "absolute_relative_imports",
-        context_runner=_absolute_relative_imports,
+        runner=_absolute_relative_imports,
         changes=(crossing("VYD015", (0, 4, 1)),),
     ),
 )

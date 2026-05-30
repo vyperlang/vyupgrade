@@ -9,7 +9,7 @@ from ..analysis import (
     normalize_type,
     parse_source_facts,
 )
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     find_matching_open as _find_matching_open,
     innermost_non_overlapping as _innermost_non_overlapping,
@@ -26,7 +26,6 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .numeric_constant_helpers import integer_constant_values
 from .numeric_scope import vars_for_argument as _vars_for_argument
 from .numeric_types import (
@@ -107,13 +106,12 @@ def _integer_division(
     return apply_edits(source, edits), fixes, diagnostics
 
 
-def _sqrt(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+def _sqrt(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
     if _name_is_user_defined(facts, "sqrt") or _name_is_imported(source, "sqrt"):
         return source, [], []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     for match in re.finditer(r"(?<!\.)\bsqrt\s*\(", source):
@@ -504,12 +502,13 @@ def _name_is_imported(source: str, name: str) -> bool:
 
 
 def _redundant_integer_convert(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    facts = parse_source_facts(source)
-    mask = code_mask(source)
+    facts = rule_context.facts
+    mask = rule_context.code_mask
     for match in re.finditer(r"\bconvert\s*\(", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
@@ -608,7 +607,7 @@ def _expression_has_signed_integer(expr: str, vars_for_line: dict[str, str]) -> 
 INTEGER_DIVISION_RULES = (
     Rule(
         "integer_division",
-        context_runner=_integer_division,
+        runner=_integer_division,
         changes=(
             crossing("VY050", (0, 4, 0)),
             crossing("VYD004", (0, 4, 0)),
@@ -626,7 +625,7 @@ LATE_RULES = (
     Rule("sqrt", runner=_sqrt, changes=(crossing("VY100", (0, 4, 2)),)),
     Rule(
         "bitwise",
-        context_runner=_bitwise,
+        runner=_bitwise,
         changes=(
             crossing("VY110", (0, 4, 2)),
             crossing("VY111", (0, 4, 2)),

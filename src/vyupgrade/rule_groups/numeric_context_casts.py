@@ -2,21 +2,19 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import infer_expr_type, is_integer_type, iterable_element_type, normalize_type, parse_source_facts
-from ..models import Config, Diagnostic, Fix
+from ..analysis import infer_expr_type, is_integer_type, iterable_element_type, normalize_type
+from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
-from ..rule_registry import Rule, crossing
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
-    code_mask,
     find_matching,
     line_number,
     split_top_level_arg_spans,
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .external_call_helpers import external_call_matches
 from .numeric_casts import (
     cast_integer_arg_to_exact_expected,
@@ -32,11 +30,12 @@ from .numeric_types import (
 
 
 def _signed_integer_array_constant_types(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     decl_pattern = re.compile(
         r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\(\s*"
         r"(?P<signed>int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)"
@@ -103,12 +102,13 @@ def _widest_unsigned_integer_type(type_names: set[str]) -> str:
 
 
 def _typed_array_literal_arguments(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    facts = rule_context.facts
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(
         r"(?P<decl>\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>[^=\n]+?)\s*=\s*)\[",
         re.MULTILINE,
@@ -148,10 +148,12 @@ def _typed_array_literal_arguments(
 
 
 def _unsigned_range_bound_signed_constants(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
-    mask = code_mask(source)
+    source = rule_context.source
+    config = rule_context.config
+    facts = rule_context.facts
+    mask = rule_context.code_mask
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     constant_values = integer_constant_values(source, config.source_ast)
@@ -226,12 +228,13 @@ def _unsigned_range_bound_signed_constants(
 
 
 def _typed_external_call_arguments(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    facts = rule_context.facts
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for start, end, target, method, cast_type in external_call_matches(source, facts):
         if not span_is_code(mask, start, end):
             continue

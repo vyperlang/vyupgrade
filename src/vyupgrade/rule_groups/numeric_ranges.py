@@ -8,9 +8,8 @@ from ..analysis import (
     is_integer_type,
     iterable_element_type,
     normalize_type,
-    parse_source_facts,
 )
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     function_start_at_line as _function_start_at_line,
     line_match_starts_outside_string as _line_match_starts_outside_string,
@@ -20,13 +19,11 @@ from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
-    code_mask,
     find_matching,
     line_number,
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext
 from .numeric_constant_helpers import integer_constant_values
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
@@ -34,13 +31,12 @@ from .numeric_types import (
 )
 
 
-def _typed_range_loops(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    facts = parse_source_facts(source)
-    mask = code_mask(source)
+    facts = rule_context.facts
+    mask = rule_context.code_mask
     pattern = re.compile(
         r"^([ \t]*)for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+(.+?):", re.MULTILINE
     )
@@ -79,12 +75,13 @@ def _typed_range_loops(
 
 
 def _integer_assignment_casts(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    facts = rule_context.facts
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(
         r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
         re.MULTILINE,
@@ -255,7 +252,7 @@ def _range_bound_literal(value: str, values: dict[str, int]) -> str | None:
 RULES = (
     Rule(
         "range_bound",
-        context_runner=_range_bound,
+        runner=_range_bound,
         changes=(
             crossing("VY071", (0, 4, 0)),
             crossing("VYD011", (0, 4, 0)),
