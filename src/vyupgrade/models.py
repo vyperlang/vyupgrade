@@ -25,6 +25,21 @@ class Diagnostic:
     severity: Severity = "warning"
 
 
+@dataclass(frozen=True)
+class GeneratedFile:
+    path: Path
+    source: str
+    fix: Fix
+
+
+@dataclass
+class RewriteResult:
+    source: str
+    fixes: list[Fix]
+    diagnostics: list[Diagnostic]
+    generated_files: list[GeneratedFile] = field(default_factory=list)
+
+
 @dataclass
 class FileReport:
     path: Path

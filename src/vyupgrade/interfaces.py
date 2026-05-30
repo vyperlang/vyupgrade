@@ -4,21 +4,14 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import Fix
+from .models import Fix, GeneratedFile
 from .source import TextEdit, apply_edits, code_mask, find_matching, line_number, span_is_code
-
-
-@dataclass(frozen=True)
-class GeneratedInterface:
-    path: Path
-    source: str
-    fix: Fix
 
 
 @dataclass(frozen=True)
 class InterfaceSplitResult:
     source: str
-    generated: tuple[GeneratedInterface, ...]
+    generated: tuple[GeneratedFile, ...]
     fixes: tuple[Fix, ...]
 
 
@@ -28,7 +21,7 @@ def split_interfaces_to_vyi(source: str, path: Path) -> InterfaceSplitResult:
         return InterfaceSplitResult(source, (), ())
 
     edits: list[TextEdit] = []
-    generated: list[GeneratedInterface] = []
+    generated: list[GeneratedFile] = []
     fixes: list[Fix] = []
     import_lines: list[str] = []
     existing_imports = _existing_imports(source)
@@ -43,7 +36,7 @@ def split_interfaces_to_vyi(source: str, path: Path) -> InterfaceSplitResult:
             source[block.start : block.end].rstrip("\n"),
             vyi_source.rstrip("\n"),
         )
-        generated.append(GeneratedInterface(vyi_path, vyi_source, fix))
+        generated.append(GeneratedFile(vyi_path, vyi_source, fix))
         fixes.append(fix)
         edits.append(TextEdit(block.start, block.end, ""))
         if block.name not in existing_imports:

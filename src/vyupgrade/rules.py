@@ -4,7 +4,6 @@ import ast
 import re
 from collections.abc import Callable, Iterator
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 
 from .analysis import (
@@ -19,7 +18,7 @@ from .analysis import (
     unwrap_type,
 )
 from .ast_facts import integer_constants as ast_integer_constants
-from .models import Config, Diagnostic, Fix
+from .models import Config, Diagnostic, Fix, RewriteResult
 from .rule_groups.comparisons import not_in_comparator
 from .rule_registry import (
     ContextRuleRunner,
@@ -52,13 +51,6 @@ IMPORT_RENAMES = {
     "ERC721": "IERC721",
     "ERC1155": "IERC1155",
 }
-
-
-@dataclass
-class RewriteResult:
-    source: str
-    fixes: list[Fix]
-    diagnostics: list[Diagnostic]
 
 
 def apply_rules(source: str, config: Config, path: Path | None = None) -> RewriteResult:

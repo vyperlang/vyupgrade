@@ -18,11 +18,11 @@ from .compiler import (
     compile_target_source,
     target_overlay,
 )
-from .interfaces import GeneratedInterface, split_interfaces_to_vyi
-from .models import Config, Diagnostic, FileReport, RunReport
+from .interfaces import split_interfaces_to_vyi
+from .models import Config, Diagnostic, FileReport, RewriteResult, RunReport
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
-from .rules import RewriteResult, apply_rules
+from .rules import apply_rules
 from .versions import (
     MigrationContext,
     compiler_version_for_spec,
@@ -39,7 +39,6 @@ class RewriteWork:
     report: FileReport
     source_compile: CompileResult
     source_version: str | None
-    generated_interfaces: tuple[GeneratedInterface, ...]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,13 +102,23 @@ def main(argv: list[str] | None = None) -> int:
         reports.append(work.report)
         if human_reporter:
             human_reporter.file(work.report)
-        for interface in work.generated_interfaces:
+        for generated_file in work.rewrite.generated_files:
             previous = (
-                interface.path.read_text(encoding="utf-8") if interface.path.exists() else ""
+                generated_file.path.read_text(encoding="utf-8")
+                if generated_file.path.exists()
+                else ""
             )
-            if not _record_change(interface.path, previous, interface.source, write_back, diff_chunks):
+            if not _record_change(
+                generated_file.path,
+                previous,
+                generated_file.source,
+                write_back,
+                diff_chunks,
+            ):
                 continue
-            generated_report = FileReport(path=interface.path, changed=True, fixes=[interface.fix])
+            generated_report = FileReport(
+                path=generated_file.path, changed=True, fixes=[generated_file.fix]
+            )
             reports.append(generated_report)
             if human_reporter:
                 human_reporter.file(generated_report)
@@ -167,12 +176,11 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
         )
         rewrite = apply_rules(original, file_config, path)
-        generated_interfaces: tuple[GeneratedInterface, ...] = ()
         if config.split_interfaces and path.suffix == ".vy":
             split = split_interfaces_to_vyi(rewrite.source, path)
             rewrite.source = split.source
             rewrite.fixes.extend(split.fixes)
-            generated_interfaces = split.generated
+            rewrite.generated_files.extend(split.generated)
         changed = original != rewrite.source
         file_report = FileReport(
             path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics
@@ -189,7 +197,6 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
                 file_report,
                 source_compile,
                 source_version,
-                generated_interfaces,
             )
         )
     return rewrites
@@ -200,7 +207,10 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
     target_sources = {work.path: work.rewrite.source for work in rewrites}
     for work in rewrites:
         target_sources.update(
-            {interface.path: interface.source for interface in work.generated_interfaces}
+            {
+                generated_file.path: generated_file.source
+                for generated_file in work.rewrite.generated_files
+            }
         )
     with target_overlay(target_sources, config.target_version) as overlay:
         for work in rewrites:
