@@ -4,7 +4,6 @@ import re
 
 from ..analysis import infer_expr_type, is_integer_type, iterable_element_type, normalize_type, parse_source_facts
 from ..models import Config, Diagnostic, Fix
-from ..rule_groups.external_calls import _all_external_call_matches
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, crossing
 from ..source import (
@@ -18,12 +17,13 @@ from ..source import (
     span_is_code,
 )
 from ..versions import MigrationContext
+from .external_call_helpers import external_call_matches
 from .numeric_casts import (
-    _cast_integer_arg_to_exact_expected,
-    _cast_integer_arg_to_expected,
-    _inside_convert_call,
+    cast_integer_arg_to_exact_expected,
+    cast_integer_arg_to_expected,
+    inside_convert_call,
 )
-from .numeric_constants import _constant_range_iteration_bound, _integer_constant_values
+from .numeric_constant_helpers import constant_range_iteration_bound, integer_constant_values
 from .numeric_scope import vars_for_argument as _vars_for_argument
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
@@ -128,7 +128,7 @@ def _typed_array_literal_arguments(
             continue
         vars_for_line = facts.vars_at_line(line_number(source, match.start()))
         for start, end, arg in arg_spans:
-            replacement = _cast_integer_arg_to_exact_expected(
+            replacement = cast_integer_arg_to_exact_expected(
                 arg, expected_type, vars_for_line, facts
             )
             if replacement == arg:
@@ -154,7 +154,7 @@ def _unsigned_range_bound_signed_constants(
     mask = code_mask(source)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    constant_values = _integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, config.source_ast)
     for match in re.finditer(
         r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*uint(?:\d+)?\s+in\s+range\s*\(",
         source,
@@ -191,7 +191,7 @@ def _unsigned_range_bound_signed_constants(
                     continue
                 start = args_start + name_match.start()
                 end = args_start + name_match.end()
-                if _inside_convert_call(source, start) or not span_is_code(mask, start, end):
+                if inside_convert_call(source, start) or not span_is_code(mask, start, end):
                     continue
                 replacement = f"convert({name}, uint256)"
                 edits.append(TextEdit(start, end, replacement))
@@ -206,7 +206,7 @@ def _unsigned_range_bound_signed_constants(
                     )
                 )
         if converted and not has_bound_keyword:
-            bound = _constant_range_iteration_bound(
+            bound = constant_range_iteration_bound(
                 ", ".join(arg for _start, _end, arg in positional_spans), constant_values
             )
             if bound is not None:
@@ -232,7 +232,7 @@ def _typed_external_call_arguments(
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
-    for start, end, target, method, cast_type in _all_external_call_matches(source, facts):
+    for start, end, target, method, cast_type in external_call_matches(source, facts):
         if not span_is_code(mask, start, end):
             continue
         open_index = end - 1
@@ -264,7 +264,7 @@ def _typed_external_call_arguments(
                 cursor += len(arg) + 1
                 continue
             vars_for_arg = _vars_for_argument(source, arg_start, arg, vars_for_line)
-            replacement = _cast_integer_arg_to_expected(arg, expected, vars_for_arg, facts)
+            replacement = cast_integer_arg_to_expected(arg, expected, vars_for_arg, facts)
             if replacement == arg:
                 cursor = arg_start + len(arg) + 1
                 continue

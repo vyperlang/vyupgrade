@@ -4,7 +4,7 @@ import re
 
 from ..analysis import SourceFacts, parse_source_facts
 from ..models import Config, Diagnostic, Fix
-from .legacy_call_helpers import _iter_calls, _replace_identifier_call
+from .legacy_call_helpers import iter_calls, replace_identifier_call
 from ..rule_helpers import (
     function_body_span as _function_body_span,
     function_start_at_line as _function_start_at_line,
@@ -285,7 +285,7 @@ def _early_beta_syntax(
         current, new_fixes = _rewrite_early_beta_types(current)
         fixes.extend(new_fixes)
     if rule_context.is_enabled("VY217"):
-        current, new_fixes = _replace_identifier_call(current, "sha3", "keccak256", "VY217")
+        current, new_fixes = replace_identifier_call(current, "sha3", "keccak256", "VY217")
         fixes.extend(new_fixes)
     if rule_context.is_enabled("VY218"):
         current, new_fixes = _rewrite_string_convert_types(current)
@@ -344,7 +344,7 @@ def _rewrite_early_beta_types(source: str) -> tuple[str, list[Fix]]:
 def _rewrite_string_convert_types(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in _iter_calls(source, "convert"):
+    for match, _open_index, close, raw_args in iter_calls(source, "convert"):
         args = split_top_level_args(raw_args)
         if args is None or len(args) != 2:
             continue
@@ -367,7 +367,7 @@ def _rewrite_string_convert_types(source: str) -> tuple[str, list[Fix]]:
 
 
 def _rewrite_early_beta_clear(source: str) -> tuple[str, list[Fix]]:
-    current, fixes = _replace_identifier_call(source, "reset", "clear", "VY219")
+    current, fixes = replace_identifier_call(source, "reset", "clear", "VY219")
     mask = code_mask(current)
     edits: list[TextEdit] = []
     for match in re.finditer(
@@ -402,7 +402,7 @@ def _rewrite_early_beta_call_syntax(source: str) -> tuple[str, list[Fix]]:
 def _rewrite_as_wei_value_units(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in _iter_calls(source, "as_wei_value"):
+    for match, _open_index, close, raw_args in iter_calls(source, "as_wei_value"):
         args = split_top_level_args(raw_args)
         if args is None or len(args) != 2:
             continue
@@ -426,7 +426,7 @@ def _rewrite_as_wei_value_units(source: str) -> tuple[str, list[Fix]]:
 def _rewrite_slice_keyword_args(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in _iter_calls(source, "slice"):
+    for match, _open_index, close, raw_args in iter_calls(source, "slice"):
         args = split_top_level_args(raw_args)
         if args is None or len(args) != 3:
             continue

@@ -7,7 +7,7 @@ from ..rule_helpers import literal_integer as _literal_integer
 from .numeric_types import same_integer_signedness as _same_integer_signedness
 
 
-def _cast_integer_arg_to_expected(
+def cast_integer_arg_to_expected(
     value: str, expected_type: str | None, vars_for_line: dict[str, str], facts: SourceFacts
 ) -> str:
     if not is_integer_type(expected_type) or value.strip().startswith("convert("):
@@ -18,7 +18,7 @@ def _cast_integer_arg_to_expected(
     return f"convert({value}, {normalize_type(expected_type or '')})"
 
 
-def _cast_integer_arg_to_exact_expected(
+def cast_integer_arg_to_exact_expected(
     value: str, expected_type: str | None, vars_for_line: dict[str, str], facts: SourceFacts
 ) -> str:
     stripped = value.strip()
@@ -36,8 +36,7 @@ def _cast_integer_arg_to_exact_expected(
     return f"convert({value}, {normalize_type(expected_type or '')})"
 
 
-def _inside_convert_call(source: str, index: int) -> bool:
+def inside_convert_call(source: str, index: int) -> bool:
     prefix = source[max(0, index - 24) : index]
     return bool(re.search(r"\bconvert\s*\([^,\n]*$", prefix))
-
 

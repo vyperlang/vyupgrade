@@ -27,7 +27,7 @@ from ..source import (
     span_is_code,
 )
 from ..versions import MigrationContext
-from .numeric_constants import _integer_constant_values
+from .numeric_constant_helpers import integer_constant_values
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -204,7 +204,7 @@ def _range_bound(
         if _literal_integer(args[0]) and _literal_integer(args[1]):
             continue
         bound = _infer_range_bound(
-            args[0], args[1], _integer_constant_values(source, config.source_ast)
+            args[0], args[1], integer_constant_values(source, config.source_ast)
         )
         if bound is None:
             diagnostics.append(

@@ -27,9 +27,7 @@ from ..source import (
     span_is_code,
 )
 from ..versions import MigrationContext
-from .numeric_constants import (
-    _integer_constant_values,
-)
+from .numeric_constant_helpers import integer_constant_values
 from .numeric_scope import vars_for_argument as _vars_for_argument
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
@@ -352,7 +350,7 @@ def _replace_shift_builtin(
     all_diagnostics: list[Diagnostic] = []
     while True:
         mask = code_mask(current)
-        constant_values = _integer_constant_values(current, rule_context.config.source_ast)
+        constant_values = integer_constant_values(current, rule_context.config.source_ast)
         facts = parse_source_facts(current)
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []

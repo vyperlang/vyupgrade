@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import ast
 import re
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
-from ..ast_facts import integer_constants as ast_integer_constants
 from ..models import Config, Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
 from ..rule_helpers import (
@@ -18,10 +16,10 @@ from ..source import (
     apply_edits,
     code_mask,
     line_number,
-    split_top_level_args,
     span_is_code,
 )
 from ..versions import MigrationContext
+from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 
 
 def _constant_integer_decl_casts(
@@ -49,9 +47,7 @@ def _constant_integer_decl_casts(
         actual_type = infer_expr_type(value, vars_for_line, facts)
         if actual_type is not None and normalize_type(actual_type) == expected_type:
             continue
-        folded = _eval_integer_constant_expr(
-            value, _integer_constant_values(source, config.source_ast)
-        )
+        folded = eval_integer_constant_expr(value, integer_constant_values(source, config.source_ast))
         if folded is None or not _integer_value_fits_type(folded, expected_type):
             continue
         before = match.group(0)
@@ -105,7 +101,7 @@ def _constant_exponent_literals_context(
                 replacement,
             )
         )
-    constant_values = _integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, config.source_ast)
     for name, value in constant_values.items():
         if value < 0:
             continue
@@ -176,48 +172,6 @@ def _dynamic_pow_mod256(
     return apply_edits(source, edits), fixes, []
 
 
-def _eval_integer_constant_expr(expr: str, values: dict[str, int]) -> int | None:
-    try:
-        node = ast.parse(expr.strip(), mode="eval")
-    except SyntaxError:
-        return None
-    return _eval_integer_ast(node.body, values)
-
-
-def _eval_integer_ast(node: ast.AST, values: dict[str, int]) -> int | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, int):
-        return node.value
-    if isinstance(node, ast.Name):
-        return values.get(node.id)
-    if isinstance(node, ast.UnaryOp):
-        operand = _eval_integer_ast(node.operand, values)
-        if operand is None:
-            return None
-        if isinstance(node.op, ast.USub):
-            return -operand
-        if isinstance(node.op, ast.UAdd):
-            return operand
-        return None
-    if isinstance(node, ast.BinOp):
-        left = _eval_integer_ast(node.left, values)
-        right = _eval_integer_ast(node.right, values)
-        if left is None or right is None:
-            return None
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.FloorDiv) and right != 0:
-            return left // right
-        if isinstance(node.op, ast.Mod) and right != 0:
-            return left % right
-        if isinstance(node.op, ast.Pow) and right >= 0:
-            return left**right
-    return None
-
-
 def _inside_exponent(source: str, start: int, end: int) -> bool:
     before = source[max(0, start - 8) : start]
     after = source[end : min(len(source), end + 8)]
@@ -227,41 +181,6 @@ def _inside_exponent(source: str, start: int, end: int) -> bool:
 def _top_level_constant_line(source: str, index: int) -> bool:
     line_start = source.rfind("\n", 0, index) + 1
     return bool(re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*constant\s*\(", source[line_start:]))
-
-
-def _constant_range_iteration_bound(args: str, values: dict[str, int]) -> int | None:
-    parts = split_top_level_args(args)
-    if parts is None:
-        return None
-    if len(parts) == 1:
-        stop = _eval_integer_constant_expr(parts[0], values)
-        if stop is None or stop < 0:
-            return None
-        return stop
-    if len(parts) != 2:
-        return None
-    start = _eval_integer_constant_expr(parts[0], values)
-    stop = _eval_integer_constant_expr(parts[1], values)
-    if start is None or stop is None or stop < start:
-        return None
-    return stop - start
-
-
-def _integer_constant_values(
-    source: str, source_ast: dict[str, object] | None = None
-) -> dict[str, int]:
-    values: dict[str, int] = ast_integer_constants(source_ast) if source_ast is not None else {}
-    constant_re = re.compile(
-        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\([^#\n=]+\)\s*=\s*(?P<expr>[^\n#]+)",
-        re.MULTILINE,
-    )
-    mask = code_mask(source)
-    for match in constant_re.finditer(source):
-        if span_is_code(mask, match.start(), match.end()):
-            value = _eval_integer_constant_expr(match.group("expr"), values)
-            if value is not None:
-                values[match.group("name")] = value
-    return values
 
 
 def _dynamic_bytes_hex_literals(

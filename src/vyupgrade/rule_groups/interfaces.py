@@ -5,8 +5,6 @@ from collections.abc import Callable
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
 from ..models import Config, Diagnostic, Fix
-from ..rule_groups.external_calls import _all_external_call_matches
-from ..rule_groups.legacy_interfaces import IMPORT_RENAMES
 from ..rule_helpers import (
     line_match_starts_outside_string as _line_match_starts_outside_string,
     line_offsets as _line_offsets,
@@ -23,6 +21,8 @@ from ..source import (
     span_is_code,
 )
 from ..versions import MigrationContext
+from .external_call_helpers import external_call_matches
+from .legacy_interfaces import IMPORT_RENAMES
 
 
 def _legacy_constants(
@@ -318,7 +318,7 @@ def _function_contains_external_view_call(
 ) -> bool:
     line_offsets = _line_offsets(source)
     body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
-    for start, _end, target, method, cast_type in _all_external_call_matches(source, facts):
+    for start, _end, target, method, cast_type in external_call_matches(source, facts):
         if not (body_start <= start < body_end):
             continue
         vars_for_line = facts.vars_at_line(line_number(source, start))

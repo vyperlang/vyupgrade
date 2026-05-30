@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..models import Diagnostic, Fix
-from .legacy_call_helpers import _iter_calls, _replace_identifier_call
+from .legacy_call_helpers import iter_calls, replace_identifier_call
 from ..rule_registry import Rule, RuleContext, target_floor
 from ..source import (
     TextEdit,
@@ -21,7 +21,7 @@ def _legacy_builtin_calls(
     fixes: list[Fix] = []
     current = source
     if rule_context.is_enabled("VY208"):
-        current, new_fixes = _replace_identifier_call(
+        current, new_fixes = replace_identifier_call(
             current, "create_with_code_of", "create_copy_of", "VY208"
         )
         fixes.extend(new_fixes)
@@ -58,7 +58,7 @@ def _replace_call_keyword(
 ) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, _close, args in _iter_calls(source, call_name):
+    for match, _open_index, _close, args in iter_calls(source, call_name):
         keyword_match = re.search(rf"(?<!\w){re.escape(before)}\s*=", args)
         if keyword_match is None:
             continue
@@ -80,7 +80,7 @@ def _replace_call_keyword(
 def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in _iter_calls(source, "assert_modifiable"):
+    for match, _open_index, close, raw_args in iter_calls(source, "assert_modifiable"):
         args = split_top_level_args(raw_args)
         if args is None or len(args) != 1:
             continue
@@ -101,7 +101,7 @@ def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
 def _unwrap_legacy_builtin(source: str, call_name: str, rule: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in _iter_calls(source, call_name):
+    for match, _open_index, close, raw_args in iter_calls(source, call_name):
         args = split_top_level_args(raw_args)
         if args is None or len(args) != 1:
             continue
@@ -128,7 +128,7 @@ def _remove_call_keyword_arg(
 ) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in _iter_calls(source, call_name):
+    for match, _open_index, close, raw_args in iter_calls(source, call_name):
         args = split_top_level_args(raw_args)
         if args is None:
             continue
@@ -159,7 +159,7 @@ def _remove_call_keyword_arg(
 def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, open_index, close, raw_args in _iter_calls(source, "method_id"):
+    for match, open_index, close, raw_args in iter_calls(source, "method_id"):
         arg_spans = split_top_level_arg_spans(raw_args)
         if arg_spans is None:
             continue
@@ -198,7 +198,7 @@ def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]
 def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, open_index, close, raw_args in _iter_calls(source, "method_id"):
+    for match, open_index, close, raw_args in iter_calls(source, "method_id"):
         line_start = source.rfind("\n", 0, match.start()) + 1
         line_end = source.find("\n", close)
         if line_end == -1:

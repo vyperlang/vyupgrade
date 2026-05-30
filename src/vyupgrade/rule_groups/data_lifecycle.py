@@ -5,7 +5,7 @@ from collections import Counter
 
 from ..analysis import SourceFacts, parse_source_facts
 from ..models import Config, Diagnostic, Fix
-from ..rule_groups.numeric_casts import _cast_integer_arg_to_expected
+from .numeric_casts import cast_integer_arg_to_expected
 from ..rule_helpers import (
     has_line_comment as _has_line_comment,
     innermost_non_overlapping as _innermost_non_overlapping,
@@ -245,7 +245,7 @@ def _ordered_kwarg_string(
     ordered_names = [name for name in field_order if name in by_name]
     ordered_names.extend(name for name, _value in pairs if name not in field_order)
     return ", ".join(
-        f"{name}={_cast_integer_arg_to_expected(by_name[name], struct_fields.get(name), vars_for_line, facts)}"
+        f"{name}={cast_integer_arg_to_expected(by_name[name], struct_fields.get(name), vars_for_line, facts)}"
         for name in ordered_names
     )
 

@@ -7,7 +7,7 @@ from ..models import Fix
 from ..source import TextEdit, apply_edits, code_mask, find_matching, line_number, span_is_code
 
 
-def _replace_identifier_call(source: str, old: str, new: str, rule: str) -> tuple[str, list[Fix]]:
+def replace_identifier_call(source: str, old: str, new: str, rule: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
@@ -21,7 +21,7 @@ def _replace_identifier_call(source: str, old: str, new: str, rule: str) -> tupl
     return apply_edits(source, edits), fixes
 
 
-def _iter_calls(
+def iter_calls(
     source: str, call_name: str, mask: list[bool] | None = None
 ) -> Iterator[tuple[re.Match[str], int, int, str]]:
     if mask is None:
@@ -33,5 +33,4 @@ def _iter_calls(
         close = find_matching(source, open_index)
         if close is not None:
             yield match, open_index, close, source[open_index + 1 : close]
-
 

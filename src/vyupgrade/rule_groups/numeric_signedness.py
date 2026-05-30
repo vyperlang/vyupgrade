@@ -28,8 +28,8 @@ from ..source import (
     span_is_code,
 )
 from ..versions import MigrationContext
-from .numeric_casts import _inside_convert_call
-from .numeric_constants import _integer_constant_values
+from .numeric_casts import inside_convert_call
+from .numeric_constant_helpers import integer_constant_values
 from .numeric_scope import (
     nearest_loop_var_type as _nearest_loop_var_type,
 )
@@ -43,7 +43,7 @@ def _mixed_signed_unsigned_arithmetic(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     facts = parse_source_facts(source)
-    constant_values = _integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, config.source_ast)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     offset = 0
@@ -108,7 +108,7 @@ def _mixed_signed_unsigned_arithmetic(
                 )
                 if (
                     _inside_attribute_access(source, start, end)
-                    or _inside_convert_call(source, start)
+                    or inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or (name in constant_values and _inside_shift_amount(source, start))
                     or _inside_type_subscript(source, start)
@@ -157,7 +157,7 @@ def _mixed_signed_unsigned_arithmetic(
                 end = start + len(name)
                 if (
                     _inside_attribute_access(source, start, end)
-                    or _inside_convert_call(source, start)
+                    or inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                 ):
                     continue
@@ -199,7 +199,7 @@ def _mixed_signed_unsigned_arithmetic(
                 end = start + len(name)
                 if (
                     _inside_attribute_access(source, start, end)
-                    or _inside_convert_call(source, start)
+                    or inside_convert_call(source, start)
                     or _inside_any_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
@@ -301,7 +301,7 @@ def _mixed_signed_unsigned_arithmetic(
                 end = bracket.end() + name_match.end()
                 if (
                     _inside_attribute_access(source, start, end)
-                    or _inside_convert_call(source, start)
+                    or inside_convert_call(source, start)
                     or _inside_type_subscript(source, start)
                     or not _inside_array_subscript(source, start, vars_for_line)
                 ):
