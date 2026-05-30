@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
+from .analysis import SourceFacts, parse_source_facts
 from .models import Config, Diagnostic, Fix
+from .source import code_mask
 from .versions import MigrationContext, VyperVersion
 
 
@@ -23,6 +26,36 @@ RuleRunner = Callable[
     [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
 ]
 PathRuleFactory = Callable[[Path | None], RuleRunner]
+ContextRuleRunner = Callable[["RuleContext"], tuple[str, list[Fix], list[Diagnostic]]]
+
+
+@dataclass(frozen=True)
+class RuleContext:
+    source: str
+    config: Config
+    migration: MigrationContext
+    path: Path | None = None
+
+    @cached_property
+    def code_mask(self) -> list[bool]:
+        return code_mask(self.source)
+
+    @cached_property
+    def facts(self) -> SourceFacts:
+        return parse_source_facts(self.source)
+
+    @cached_property
+    def line_offsets(self) -> list[int]:
+        offsets = [0]
+        for index, char in enumerate(self.source):
+            if char == "\n":
+                offsets.append(index + 1)
+        return offsets
+
+    def with_source(self, source: str) -> RuleContext:
+        if source == self.source:
+            return self
+        return RuleContext(source, self.config, self.migration, self.path)
 
 
 @dataclass(frozen=True)
@@ -30,13 +63,20 @@ class Rule:
     name: str
     runner: RuleRunner | None = None
     path_runner: PathRuleFactory | None = None
+    context_runner: ContextRuleRunner | None = None
     changes: tuple[CodeChange, ...] = ()
 
-    def bind(self, path: Path | None) -> RuleRunner | None:
+    def bind(self) -> ContextRuleRunner | None:
+        if self.context_runner is not None:
+            return self.context_runner
         if self.runner is not None:
-            return self.runner
+            return lambda context: self.runner(
+                context.source, context.config, context.migration
+            )
         if self.path_runner is not None:
-            return self.path_runner(path)
+            return lambda context: self.path_runner(context.path)(
+                context.source, context.config, context.migration
+            )
         return None
 
 

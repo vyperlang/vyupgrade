@@ -21,8 +21,9 @@ from .analysis import (
 from .ast_facts import integer_constants as ast_integer_constants
 from .models import Config, Diagnostic, Fix
 from .rule_registry import (
+    ContextRuleRunner,
     Rule,
-    RuleRunner,
+    RuleContext,
     crossing,
     rule_changes,
     target_floor,
@@ -67,8 +68,10 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     )
 
     current = source
-    for rule in _runnable_rules(path):
-        current, rule_fixes, rule_diagnostics = rule(current, config, context)
+    rule_context = RuleContext(current, config, context, path)
+    for rule in _runnable_rules():
+        current, rule_fixes, rule_diagnostics = rule(rule_context)
+        rule_context = rule_context.with_source(current)
         fixes.extend(rule_fixes)
         diagnostics.extend(rule_diagnostics)
 
@@ -94,9 +97,9 @@ def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> 
     return any(_enabled(rule, config, context) for rule in rules)
 
 
-def _runnable_rules(path: Path | None) -> Iterator[RuleRunner]:
+def _runnable_rules() -> Iterator[ContextRuleRunner]:
     for rule in RULES:
-        runner = rule.bind(path)
+        runner = rule.bind()
         if runner is not None:
             yield runner
 
@@ -1049,11 +1052,20 @@ def _replace_identifier_call(source: str, old: str, new: str, rule: str) -> tupl
 def _not_in_comparator(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    return _not_in_comparator_context(RuleContext(source, config, context))
+
+
+def _not_in_comparator_context(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
+    context = rule_context.migration
     if not _enabled("VY211", config, context):
         return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(
         r"\bnot\s*\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s+in\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\)"
     )
@@ -2029,9 +2041,18 @@ def _external_call_expression_end(source: str, start: int) -> int | None:
 def _ignored_external_call_results(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    return _ignored_external_call_results_context(RuleContext(source, config, context))
+
+
+def _ignored_external_call_results_context(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
+    context = rule_context.migration
     if not _enabled("VY057", config, context):
         return source, [], []
-    facts = parse_source_facts(source)
+    facts = rule_context.facts
     taken_names = _code_identifiers(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -2281,10 +2302,19 @@ def _integer_value_fits_type(value: int, type_name: str) -> bool:
 def _constant_exponent_literals(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    return _constant_exponent_literals_context(RuleContext(source, config, context))
+
+
+def _constant_exponent_literals_context(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
+    context = rule_context.migration
     if not _enabled("VY054", config, context):
         return source, [], []
-    facts = parse_source_facts(source)
-    mask = code_mask(source)
+    facts = rule_context.facts
+    mask = rule_context.code_mask
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     max_int128_re = re.compile(r"(?<![\w])(?:\(\s*)?2\s*\*\*\s*127\s*-\s*1(?:\s*\))?")
@@ -5354,7 +5384,11 @@ RULES = (
             target_floor("VY209", (0, 2, 1)),
         ),
     ),
-    Rule("not_in_comparator", runner=_not_in_comparator, changes=(crossing("VY211", (0, 2, 8)),)),
+    Rule(
+        "not_in_comparator",
+        context_runner=_not_in_comparator_context,
+        changes=(crossing("VY211", (0, 2, 8)),),
+    ),
     Rule("legacy_constructor_locks", runner=_legacy_constructor_locks, changes=(crossing("VY210", (0, 2, 16)),)),
     Rule(
         "pre_04_expression_rewrites",
@@ -5415,7 +5449,11 @@ RULES = (
     ),
     Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
     Rule("external_call_keywords_after_subscripts", runner=_external_call_keywords),
-    Rule("ignored_external_call_results", runner=_ignored_external_call_results, changes=(crossing("VY057", (0, 4, 0)),)),
+    Rule(
+        "ignored_external_call_results",
+        context_runner=_ignored_external_call_results_context,
+        changes=(crossing("VY057", (0, 4, 0)),),
+    ),
     Rule(
         "integer_division",
         runner=_integer_division,
@@ -5424,7 +5462,11 @@ RULES = (
             crossing("VYD004", (0, 4, 0)),
         ),
     ),
-    Rule("constant_exponent_literals", runner=_constant_exponent_literals, changes=(crossing("VY054", (0, 4, 0)),)),
+    Rule(
+        "constant_exponent_literals",
+        context_runner=_constant_exponent_literals_context,
+        changes=(crossing("VY054", (0, 4, 0)),),
+    ),
     Rule("mixed_signed_unsigned_arithmetic", runner=_mixed_signed_unsigned_arithmetic),
     Rule("signed_integer_array_constant_types", runner=_signed_integer_array_constant_types),
     Rule("typed_array_literal_arguments", runner=_typed_array_literal_arguments),
