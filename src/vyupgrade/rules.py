@@ -14,9 +14,11 @@ from .rule_groups.diagnostics import RULES as DIAGNOSTIC_RULES
 from .rule_groups.external_calls import RULES as EXTERNAL_CALL_RULES
 from .rule_groups.interfaces import RULES as INTERFACE_RULES
 from .rule_groups.legacy import (
+    EARLY_RULES as LEGACY_EARLY_RULES,
     POST_COMPARISON_RULES as LEGACY_POST_COMPARISON_RULES,
-    RULES as LEGACY_RULES,
+    POST_INTERFACE_RULES as LEGACY_POST_INTERFACE_RULES,
 )
+from .rule_groups.legacy_interfaces import RULES as LEGACY_INTERFACE_RULES
 from .rule_groups.meta import RULES as META_RULES
 from .rule_groups.numeric import (
     INTEGER_DIVISION_RULES as NUMERIC_INTEGER_DIVISION_RULES,
@@ -72,7 +74,9 @@ def _runnable_rules() -> Iterator[ContextRuleRunner]:
 
 
 RULES = (
-    *LEGACY_RULES,
+    *LEGACY_EARLY_RULES,
+    *LEGACY_INTERFACE_RULES,
+    *LEGACY_POST_INTERFACE_RULES,
     *COMPARISON_RULES,
     *LEGACY_POST_COMPARISON_RULES,
     *NUMERIC_PRE_INTERFACE_RULES,

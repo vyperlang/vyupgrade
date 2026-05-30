@@ -7,7 +7,7 @@ from pathlib import Path
 from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
 from ..models import Config, Diagnostic, Fix
 from ..rule_groups.external_calls import _all_external_call_matches
-from ..rule_groups.legacy import IMPORT_RENAMES
+from ..rule_groups.legacy_interfaces import IMPORT_RENAMES
 from ..rule_helpers import (
     line_match_starts_outside_string as _line_match_starts_outside_string,
     line_offsets as _line_offsets,
