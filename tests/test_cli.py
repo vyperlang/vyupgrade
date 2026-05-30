@@ -5,7 +5,8 @@ import shutil
 from io import StringIO
 from pathlib import Path
 
-from vyupgrade.cli import _evm_default_diagnostic, _write_diff, main
+from vyupgrade.cli import _add_validation_diagnostics, _evm_default_diagnostic, _write_diff, main
+from vyupgrade.models import Config, FileReport
 
 
 class TtyStringIO(StringIO):
@@ -105,6 +106,38 @@ def balanceOf(owner: address) -> uint256: ...
 @external
 def transfer(to: address, amount: uint256) -> bool: ...
 """
+
+
+def test_split_interfaces_respects_rule_ignore(tmp_path: Path) -> None:
+    contract = tmp_path / "Main.vy"
+    contract.write_text(
+        """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--split-interfaces",
+            "--ignore",
+            "VY120",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code in {0, 2}
+    data = json.loads(report.read_text())
+    assert len(data["files"]) == 1
+    assert data["files"][0]["changed"] is False
+    assert not (tmp_path / "Token.vyi").exists()
+    assert not any(fix["rule"] == "VY120" for fix in data["files"][0]["fixes"])
 
 
 def test_target_validation_uses_rewritten_import_overlay(tmp_path: Path) -> None:
@@ -234,6 +267,27 @@ def test_evm_default_diagnostic_tracks_patch_level_default_changes() -> None:
     assert diagnostic is not None
     assert "cancun (source compiler 0.4.2) to prague (target compiler 0.4.3)" in diagnostic.message
     assert _evm_default_diagnostic("0.4.0", "0.4.2") is None
+
+
+def test_validation_diagnostics_respect_rule_selection(tmp_path: Path) -> None:
+    report = FileReport(path=tmp_path / "Contract.vy")
+    report.source_compile = "failed"
+    report.abi_equal = False
+    report.storage_layout_equal = False
+    config = Config(paths=(report.path,), select=frozenset({"VYD009"}))
+
+    _add_validation_diagnostics(report, "0.3.7", config)
+
+    assert [diagnostic.rule for diagnostic in report.diagnostics] == ["VYD009"]
+
+
+def test_validation_diagnostics_respect_rule_ignore(tmp_path: Path) -> None:
+    report = FileReport(path=tmp_path / "Contract.vy")
+    config = Config(paths=(report.path,), ignore=frozenset({"VYD009"}))
+
+    _add_validation_diagnostics(report, "0.3.7", config)
+
+    assert not report.diagnostics
 
 
 def test_source_newer_than_target_skips_compile_and_reports_error(tmp_path: Path) -> None:

@@ -22,7 +22,8 @@ from .interfaces import split_interfaces_to_vyi
 from .models import Config, Diagnostic, FileReport, RewriteResult, RunReport
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
-from .rules import apply_rules
+from .rule_registry import is_enabled
+from .rules import RULE_CHANGES, apply_rules
 from .versions import (
     MigrationContext,
     compiler_version_for_spec,
@@ -196,7 +197,11 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
         )
         rewrite = apply_rules(original, file_config, path)
-        if config.split_interfaces and path.suffix == ".vy":
+        if (
+            config.split_interfaces
+            and path.suffix == ".vy"
+            and _rule_enabled("VY120", source_version, config)
+        ):
             split = split_interfaces_to_vyi(rewrite.source, path)
             rewrite.source = split.source
             rewrite.fixes.extend(split.fixes)
@@ -374,24 +379,53 @@ def _add_validation_diagnostics(
     file_report: FileReport, source_version: str | None, config: Config
 ) -> None:
     if file_report.source_compile == "failed":
-        file_report.diagnostics.append(
+        _add_diagnostic_if_enabled(
+            file_report,
             Diagnostic(
                 "VYD006", 1, "source compile failed under declared or inferred source compiler"
-            )
+            ),
+            source_version,
+            config,
         )
     if file_report.abi_equal is False:
-        file_report.diagnostics.append(Diagnostic("VYD007", 1, "ABI changed after migration"))
+        _add_diagnostic_if_enabled(
+            file_report,
+            Diagnostic("VYD007", 1, "ABI changed after migration"),
+            source_version,
+            config,
+        )
     if file_report.method_ids_equal is False:
-        file_report.diagnostics.append(
-            Diagnostic("VYD007", 1, "method identifiers changed after migration")
+        _add_diagnostic_if_enabled(
+            file_report,
+            Diagnostic("VYD007", 1, "method identifiers changed after migration"),
+            source_version,
+            config,
         )
     if file_report.storage_layout_equal is False:
-        file_report.diagnostics.append(
-            Diagnostic("VYD008", 1, "storage layout changed after migration")
+        _add_diagnostic_if_enabled(
+            file_report,
+            Diagnostic("VYD008", 1, "storage layout changed after migration"),
+            source_version,
+            config,
         )
     evm_diagnostic = _evm_default_diagnostic(source_version, config.target_version)
-    if evm_diagnostic is not None:
+    if evm_diagnostic is not None and _rule_enabled(evm_diagnostic.rule, source_version, config):
         file_report.diagnostics.append(evm_diagnostic)
+
+
+def _add_diagnostic_if_enabled(
+    file_report: FileReport,
+    diagnostic: Diagnostic,
+    source_version: str | None,
+    config: Config,
+) -> None:
+    if _rule_enabled(diagnostic.rule, source_version, config):
+        file_report.diagnostics.append(diagnostic)
+
+
+def _rule_enabled(rule: str, source_version: str | None, config: Config) -> bool:
+    context = MigrationContext.from_specs(source_version, config.target_version)
+    return is_enabled(rule, config, context, RULE_CHANGES)
 
 
 def _evm_default_diagnostic(source_version: str | None, target_version: str) -> Diagnostic | None:

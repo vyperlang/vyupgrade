@@ -4,7 +4,7 @@ from ..rule_registry import Rule, crossing, target_floor
 
 
 RULES = (
-    Rule("interface_split", changes=(crossing("VY120", (0, 4, 0)),)),
+    Rule("interface_split", changes=(target_floor("VY120", (0, 4, 0)),)),
     Rule(
         "validation",
         changes=(
