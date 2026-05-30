@@ -1,6 +1,6 @@
 # Vyper Syntax History
 
-This document tracks Vyper source syntax changes from `v0.4.3` back through
+This document tracks Vyper source syntax changes from `v0.5.0a2` back through
 `v0.2.1`, the first post-beta release. It is intended as upgrade source
 material for `vyupgrade`.
 
@@ -9,6 +9,134 @@ declarations, type spellings, builtin names or signatures, call syntax, import
 syntax, pragmas, and newly accepted source forms. It intentionally excludes
 backend-only, ABI-layout-only, optimizer-only, EVM-default, CLI-only, and pure
 runtime semantic changes unless they require source text to change.
+
+## v0.5.x prereleases
+
+### v0.5.0a2
+
+Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a2>
+
+- Docstring-only function bodies are rejected; use an explicit `pass` body. [#4972](https://github.com/vyperlang/vyper/pull/4972)
+  Before:
+  ```vyper
+  @internal
+  def hook():
+      """
+      Optional override point.
+      """
+  ```
+  After:
+  ```vyper
+  @internal
+  def hook():
+      """
+      Optional override point.
+      """
+      pass
+  ```
+- Wildcard interface lengths and unbounded length spellings added for dynamic
+  reference types, and interface return-type bounds now check covariantly.
+  [#4967](https://github.com/vyperlang/vyper/pull/4967)
+  Before:
+  ```vyper
+  interface Metadata:
+      def tokenURI(id: uint256) -> String[1]: view
+  ```
+  After:
+  ```vyper
+  interface Metadata:
+      def tokenURI(id: uint256) -> String[...]: view
+
+  # Unbounded length spellings:
+  # Bytes[INF]
+  # String[INF]
+  # DynArray[uint256, INF]
+  ```
+
+### v0.5.0a1
+
+Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a1>
+
+- `isqrt` moved into the `math` stdlib module. [#4923](https://github.com/vyperlang/vyper/pull/4923)
+  Before:
+  ```vyper
+  return isqrt(x)
+  ```
+  After:
+  ```vyper
+  import math
+  return math.isqrt(x)
+  ```
+- Interface imports can import multiple names from the same module. [#4762](https://github.com/vyperlang/vyper/pull/4762)
+  Before:
+  ```vyper
+  from interfaces import IERC20
+  from interfaces import IERC4626
+  ```
+  After:
+  ```vyper
+  from interfaces import IERC20, IERC4626
+  ```
+- Multiple interfaces can be declared in a single `implements` statement, and
+  duplicate `implements` declarations are rejected. [#4772](https://github.com/vyperlang/vyper/pull/4772), duplicate rejection [#4775](https://github.com/vyperlang/vyper/pull/4775)
+  Before:
+  ```vyper
+  implements: IERC20
+  implements: IERC4626
+  ```
+  After:
+  ```vyper
+  implements: (IERC20, IERC4626)
+  ```
+- Interface default parameter values can be written as `...`; concrete default
+  values in interfaces are deprecated. [#4813](https://github.com/vyperlang/vyper/pull/4813)
+  Before:
+  ```vyper
+  interface Vault:
+      def deposit(amount: uint256 = 0): nonpayable
+  ```
+  After:
+  ```vyper
+  interface Vault:
+      def deposit(amount: uint256 = ...): nonpayable
+  ```
+- Numeric literals accept underscores as visual separators. [#3665](https://github.com/vyperlang/vyper/pull/3665)
+  Before:
+  ```vyper
+  FEE_DENOMINATOR: constant(uint256) = 10000000000
+  ```
+  After:
+  ```vyper
+  FEE_DENOMINATOR: constant(uint256) = 10_000_000_000
+  ```
+- Abstract module methods added with `@abstract`, `@override`, and ellipsis
+  bodies. [#4875](https://github.com/vyperlang/vyper/pull/4875)
+  Before:
+  ```vyper
+  # No abstract module method syntax.
+  ```
+  After:
+  ```vyper
+  @abstract
+  def quote(amount: uint256) -> uint256: ...
+
+  @override
+  def quote(amount: uint256) -> uint256:
+      return amount
+  ```
+- Event fields cannot be module types. [#4768](https://github.com/vyperlang/vyper/pull/4768)
+  Before:
+  ```vyper
+  import math
+
+  event Loaded:
+      value: math
+  ```
+  After:
+  ```vyper
+  event Loaded:
+      value: uint256
+  ```
 
 ## v0.4.x
 

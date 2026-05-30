@@ -1,10 +1,12 @@
 # Migration Coverage
 
-This document maps the syntax history in
+This document maps the target-supported syntax history in
 [`vyper-syntax-history.md`](vyper-syntax-history.md) to `vyupgrade` behavior.
 Each source-visible entry is classified as an automated rewrite, a diagnostic,
 or an explicit no-op when the historical change only introduced newly accepted
-syntax and does not imply a necessary migration from older source.
+syntax and does not imply a necessary migration from older source. Newer
+prerelease entries are tracked in the syntax history as planning reference until
+`vyupgrade` supports targeting those compilers.
 
 Rules are version-gated. Unless noted as a target rule, a rule runs only when
 the inferred source version is older than the listed change and the target
