@@ -67,6 +67,15 @@ def span_is_code(mask: list[bool], start: int, end: int) -> bool:
     return start >= 0 and end <= len(mask) and all(mask[start:end])
 
 
+def code_identifiers(source: str) -> set[str]:
+    mask = code_mask(source)
+    return {
+        match.group(0)
+        for match in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", source)
+        if span_is_code(mask, match.start(), match.end())
+    }
+
+
 def replace_identifier(source: str, name: str, replacement: str) -> tuple[str, list[TextEdit]]:
     mask = code_mask(source)
     edits: list[TextEdit] = []
