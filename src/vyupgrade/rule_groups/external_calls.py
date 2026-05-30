@@ -5,7 +5,7 @@ import re
 from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts, unwrap_type
 from ..models import Config, Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
-from ..rule_registry import RuleContext, any_enabled as _any_enabled, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, any_enabled as _any_enabled, crossing, is_enabled as _enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -344,3 +344,22 @@ def _parenthesized_external_call_matches(
             )
         )
     return matches
+
+
+RULES = (
+    Rule(
+        "external_call_keywords",
+        runner=_external_call_keywords,
+        changes=(
+            crossing("VY040", (0, 4, 0)),
+            crossing("VY041", (0, 4, 0)),
+        ),
+    ),
+    Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
+    Rule("external_call_keywords_after_subscripts", runner=_external_call_keywords),
+    Rule(
+        "ignored_external_call_results",
+        context_runner=ignored_external_call_results,
+        changes=(crossing("VY057", (0, 4, 0)),),
+    ),
+)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..models import Diagnostic, Fix
-from ..rule_registry import RuleContext
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import TextEdit, apply_edits, line_number, span_is_code
 
 
@@ -34,3 +34,12 @@ def not_in_comparator(
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+RULES = (
+    Rule(
+        "not_in_comparator",
+        context_runner=not_in_comparator,
+        changes=(crossing("VY211", (0, 2, 8)),),
+    ),
+)

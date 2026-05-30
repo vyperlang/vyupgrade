@@ -17,7 +17,14 @@ from ..rule_helpers import (
     pre_021_context as _pre_021_context,
     remove_constructor_decorators as _remove_constructor_decorators,
 )
-from ..rule_registry import any_enabled as _any_enabled, is_enabled as _enabled
+from ..rule_registry import (
+    Rule,
+    any_enabled as _any_enabled,
+    crossing,
+    is_enabled as _enabled,
+    target_floor,
+    target_update,
+)
 from ..source import (
     TextEdit,
     apply_edits,
@@ -1554,3 +1561,64 @@ def _method_id_comparison_operand(
             return expr_start, expr_end, expr
     return None
 
+
+RULES = (
+    Rule("pragma", runner=_pragma, changes=(target_update("VY001", (0, 3, 10)),)),
+    Rule("legacy_decorators", runner=_legacy_decorators, changes=(target_floor("VY201", (0, 2, 1)),)),
+    Rule("legacy_type_units", runner=_legacy_type_units, changes=(target_floor("VY202", (0, 2, 1)),)),
+    Rule(
+        "legacy_events",
+        runner=_legacy_events,
+        changes=(
+            target_floor("VY203", (0, 2, 1)),
+            target_floor("VY204", (0, 2, 1)),
+        ),
+    ),
+    Rule("event_kwargs", runner=_event_kwargs, changes=(crossing("VY112", (0, 4, 1)),)),
+    Rule(
+        "legacy_maps_and_interfaces",
+        runner=_legacy_maps_and_interfaces,
+        changes=(
+            target_floor("VY205", (0, 2, 1)),
+            target_floor("VY206", (0, 2, 1)),
+        ),
+    ),
+    Rule(
+        "early_beta_syntax",
+        runner=_early_beta_syntax,
+        changes=(
+            target_floor("VY216", (0, 2, 1)),
+            target_floor("VY217", (0, 2, 1)),
+            target_floor("VY218", (0, 2, 1)),
+            target_floor("VY219", (0, 2, 1)),
+            target_floor("VY221", (0, 2, 1)),
+        ),
+    ),
+    Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(target_floor("VY207", (0, 2, 1)),)),
+    Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(target_floor("VY212", (0, 2, 1)),)),
+    Rule(
+        "legacy_diagnostics",
+        runner=_legacy_diagnostics,
+        changes=(
+            target_floor("VYD210", (0, 2, 1)),
+            target_floor("VYD211", (0, 2, 1)),
+            target_floor("VYD212", (0, 2, 1)),
+            target_floor("VYD213", (0, 2, 1)),
+            target_floor("VYD214", (0, 2, 1)),
+            target_floor("VYD215", (0, 2, 1)),
+        ),
+    ),
+    Rule("natspec_strictness", runner=_natspec_strictness, changes=(crossing("VY058", (0, 4, 0)),)),
+    Rule(
+        "legacy_builtin_calls",
+        runner=_legacy_builtin_calls,
+        changes=(
+            target_floor("VY208", (0, 2, 1)),
+            target_floor("VY209", (0, 2, 1)),
+        ),
+    ),
+)
+
+POST_COMPARISON_RULES = (
+    Rule("legacy_constructor_locks", runner=_legacy_constructor_locks, changes=(crossing("VY210", (0, 2, 16)),)),
+)

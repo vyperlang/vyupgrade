@@ -26,7 +26,7 @@ from ..rule_helpers import (
     literal_integer as _literal_integer,
     replace_identifier_expr as _replace_identifier_expr,
 )
-from ..rule_registry import RuleContext, any_enabled as _any_enabled, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, any_enabled as _any_enabled, crossing, is_enabled as _enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -2375,4 +2375,69 @@ def _expression_has_signed_integer(expr: str, vars_for_line: dict[str, str]) -> 
             return True
     return False
 
+
+PRE_INTERFACE_RULES = (
+    Rule(
+        "pre_04_expression_rewrites",
+        runner=_pre_04_expression_rewrites,
+        changes=(
+            crossing("VY220", (0, 3, 7)),
+            crossing("VY230", (0, 3, 8)),
+            crossing("VY231", (0, 3, 8)),
+            crossing("VYD013", (0, 3, 8)),
+        ),
+    ),
+)
+
+RANGE_RULES = (
+    Rule(
+        "range_bound",
+        runner=_range_bound,
+        changes=(
+            crossing("VY071", (0, 4, 0)),
+            crossing("VYD011", (0, 4, 0)),
+            crossing("VYD014", (0, 3, 10)),
+        ),
+    ),
+    Rule("typed_range_loops", runner=_typed_range_loops, changes=(crossing("VY070", (0, 4, 0)),)),
+    Rule("integer_assignment_casts", runner=_integer_assignment_casts, changes=(crossing("VY052", (0, 4, 0)),)),
+)
+
+POST_EXTERNAL_RULES = (
+    Rule(
+        "integer_division",
+        runner=_integer_division,
+        changes=(
+            crossing("VY050", (0, 4, 0)),
+            crossing("VYD004", (0, 4, 0)),
+        ),
+    ),
+    Rule(
+        "constant_exponent_literals",
+        context_runner=_constant_exponent_literals_context,
+        changes=(crossing("VY054", (0, 4, 0)),),
+    ),
+    Rule("mixed_signed_unsigned_arithmetic", runner=_mixed_signed_unsigned_arithmetic),
+    Rule("signed_integer_array_constant_types", runner=_signed_integer_array_constant_types),
+    Rule("typed_array_literal_arguments", runner=_typed_array_literal_arguments),
+    Rule("unsigned_range_bound_signed_constants", runner=_unsigned_range_bound_signed_constants, changes=(crossing("VY056", (0, 4, 0)),)),
+    Rule("typed_external_call_arguments", runner=_typed_external_call_arguments),
+    Rule("dynamic_pow_mod256", runner=_dynamic_pow_mod256, changes=(crossing("VY055", (0, 4, 0)),)),
+    Rule("redundant_integer_convert", runner=_redundant_integer_convert, changes=(crossing("VY051", (0, 4, 0)),)),
+    Rule("constant_integer_decl_casts", runner=_constant_integer_decl_casts),
+    Rule("dynamic_bytes_hex_literals", runner=_dynamic_bytes_hex_literals, changes=(crossing("VY053", (0, 4, 0)),)),
+)
+
+LATE_RULES = (
+    Rule("sqrt", runner=_sqrt, changes=(crossing("VY100", (0, 4, 2)),)),
+    Rule(
+        "bitwise",
+        runner=_bitwise,
+        changes=(
+            crossing("VY110", (0, 4, 2)),
+            crossing("VY111", (0, 4, 2)),
+            crossing("VYD012", (0, 4, 2)),
+        ),
+    ),
+)
 

@@ -13,7 +13,7 @@ from ..rule_helpers import (
     remove_constructor_decorators as _remove_constructor_decorators,
     strip_arg_comments as _strip_arg_comments,
 )
-from ..rule_registry import any_enabled as _any_enabled, is_enabled as _enabled
+from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -342,4 +342,33 @@ def _nonreentrant(
     fixes.extend(internal_fixes)
     return current, fixes, diagnostics
 
+
+CONSTRUCTOR_RULES = (
+    Rule("constructor_deploy", runner=_constructor_deploy, changes=(crossing("VY002", (0, 4, 0)),)),
+    Rule(
+        "abi_builtins",
+        runner=_abi_builtins,
+        changes=(
+            crossing("VY010", (0, 4, 0)),
+            crossing("VY011", (0, 4, 0)),
+        ),
+    ),
+)
+
+ENUM_RULES = (
+    Rule("enum_to_flag", runner=_enum_to_flag, changes=(crossing("VY030", (0, 4, 0)),)),
+)
+
+POST_NUMERIC_RULES = (
+    Rule("struct_kwargs", runner=_struct_kwargs, changes=(crossing("VY060", (0, 4, 0)),)),
+    Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
+    Rule(
+        "nonreentrant",
+        runner=_nonreentrant,
+        changes=(
+            crossing("VY090", (0, 4, 0)),
+            crossing("VYD002", (0, 4, 0)),
+        ),
+    ),
+)
 

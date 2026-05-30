@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..models import Diagnostic, Fix
-from ..rule_registry import RuleContext
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import line_number
 
 
@@ -58,3 +58,10 @@ def missing_pragma_diagnostic(
             [Diagnostic("VYD005", 1, "source has no version pragma and no --source-version")],
         )
     return source, [], []
+
+
+RULES = (
+    Rule("decimal_diagnostic", context_runner=decimal_diagnostic, changes=(crossing("VYD001", (0, 4, 0)),)),
+    Rule("prevrandao_diagnostic", context_runner=prevrandao_diagnostic, changes=(crossing("VYD010", (0, 4, 0)),)),
+    Rule("missing_pragma_diagnostic", context_runner=missing_pragma_diagnostic, changes=(crossing("VYD005", (0, 4, 0)),)),
+)

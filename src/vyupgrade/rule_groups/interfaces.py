@@ -13,7 +13,7 @@ from ..rule_helpers import (
     line_offsets as _line_offsets,
     nested_under_config_path as _nested_under_config_path,
 )
-from ..rule_registry import any_enabled as _any_enabled, is_enabled as _enabled
+from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -506,3 +506,24 @@ def _absolute_relative_imports(path: Path | None):
 
     return rule
 
+
+RULES = (
+    Rule("legacy_constants", runner=_legacy_constants, changes=(crossing("VY012", (0, 4, 0)),)),
+    Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
+    Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(crossing("VY016", (0, 4, 0)),)),
+    Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(crossing("VY014", (0, 4, 0)),)),
+    Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
+    Rule(
+        "interface_imports",
+        runner=_interface_imports,
+        changes=(
+            crossing("VY020", (0, 4, 0)),
+            crossing("VYD003", (0, 4, 0)),
+        ),
+    ),
+    Rule(
+        "absolute_relative_imports",
+        path_runner=_absolute_relative_imports,
+        changes=(crossing("VYD015", (0, 4, 1)),),
+    ),
+)
