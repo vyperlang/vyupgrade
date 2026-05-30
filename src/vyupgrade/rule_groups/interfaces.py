@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from pathlib import Path
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
 from ..models import Config, Diagnostic, Fix
@@ -13,7 +12,7 @@ from ..rule_helpers import (
     line_offsets as _line_offsets,
     nested_under_config_path as _nested_under_config_path,
 )
-from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, any_enabled as _any_enabled, crossing, is_enabled as _enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -466,35 +465,31 @@ def _interface_imports(
     return current, fixes, diagnostics
 
 
-def _absolute_relative_imports(path: Path | None):
-    def rule(
-        source: str, config: Config, context: MigrationContext
-    ) -> tuple[str, list[Fix], list[Diagnostic]]:
-        if (
-            not _enabled("VYD015", config, context)
-            or path is None
-            or not _nested_under_config_path(path, config)
-        ):
-            return source, [], []
-        diagnostics: list[Diagnostic] = []
-        for match in re.finditer(
-            r"^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*(?:#.*)?$",
-            source,
-            re.MULTILINE,
-        ):
-            module = match.group(1)
-            if module in {"math"}:
-                continue
-            diagnostics.append(
-                Diagnostic(
-                    "VYD015",
-                    line_number(source, match.start()),
-                    "nested module uses bare import; 0.4.1 disallows implicit relative imports, review as 'from . import ...'",
-                )
+def _absolute_relative_imports(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    path = rule_context.path
+    config = rule_context.config
+    if path is None or not _nested_under_config_path(path, config):
+        return source, [], []
+    diagnostics: list[Diagnostic] = []
+    for match in re.finditer(
+        r"^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?\s*(?:#.*)?$",
+        source,
+        re.MULTILINE,
+    ):
+        module = match.group(1)
+        if module in {"math"}:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                "VYD015",
+                line_number(source, match.start()),
+                "nested module uses bare import; 0.4.1 disallows implicit relative imports, review as 'from . import ...'",
             )
-        return source, [], diagnostics
-
-    return rule
+        )
+    return source, [], diagnostics
 
 
 RULES = (
@@ -513,7 +508,7 @@ RULES = (
     ),
     Rule(
         "absolute_relative_imports",
-        path_runner=_absolute_relative_imports,
+        context_runner=_absolute_relative_imports,
         changes=(crossing("VYD015", (0, 4, 1)),),
     ),
 )

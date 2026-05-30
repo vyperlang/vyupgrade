@@ -25,7 +25,6 @@ CodeChange = tuple[str, RuleChange]
 RuleRunner = Callable[
     [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
 ]
-PathRuleFactory = Callable[[Path | None], RuleRunner]
 ContextRuleRunner = Callable[["RuleContext"], tuple[str, list[Fix], list[Diagnostic]]]
 _RULE_CHANGES: Mapping[str, RuleChange] = {}
 
@@ -93,7 +92,6 @@ class RuleContext:
 class Rule:
     name: str
     runner: RuleRunner | None = None
-    path_runner: PathRuleFactory | None = None
     context_runner: ContextRuleRunner | None = None
     changes: tuple[CodeChange, ...] = ()
 
@@ -110,17 +108,6 @@ class Rule:
                 return self.runner(context.source, context.config, context.migration)
 
             runner = source_runner
-        elif self.path_runner is not None:
-            def path_runner(
-                context: RuleContext,
-                self: Rule = self,
-            ) -> tuple[str, list[Fix], list[Diagnostic]]:
-                assert self.path_runner is not None
-                return self.path_runner(context.path)(
-                    context.source, context.config, context.migration
-                )
-
-            runner = path_runner
         else:
             return None
 
