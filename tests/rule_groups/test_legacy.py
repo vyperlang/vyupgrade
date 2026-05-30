@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+from vyupgrade.rules import apply_rules
+
+
+def test_event_logs_rewrite_to_keyword_arguments(config) -> None:
+    source = """# @version 0.3.0
+event Transfer:
+    sender: indexed(address)
+    receiver: indexed(address)
+    value: uint256
+
+@external
+def f(receiver: address, value: uint256):
+    log Transfer(msg.sender, receiver, value)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "log Transfer(sender=msg.sender, receiver=receiver, value=value)" in result.source
+
+
+def test_event_logs_rewrite_multiline_arguments_with_comments(config) -> None:
+    source = """# @version 0.3.10
+event StrategyReported:
+    strategy: indexed(address)
+    gain: uint256
+    loss: uint256
+    protocol_fees: uint256
+    total_fees: uint256
+
+@external
+def f(strategy: address, gain: uint256, loss: uint256, total_fees: uint256):
+    log StrategyReported(
+        strategy,
+        gain,
+        loss,
+        total_fees / 100,  # Protocol Fees
+        total_fees
+    )
+"""
+
+    result = apply_rules(source, config())
+
+    assert "protocol_fees=total_fees // 100" in result.source
+    assert "total_fees=#" not in result.source
+    assert "total_fees=total_fees" in result.source
+
+
+def test_natspec_strictness_removes_unknown_params_and_customizes_unknown_tags(config) -> None:
+    source = '''# @version 0.3.10
+"""
+@title Voting Escrow
+@fork Curve Finance
+"""
+
+@external
+def createMotion(
+    targets: DynArray[address, 4],
+    values: DynArray[uint256, 4],
+) -> uint256:
+    """
+    @notice Create a motion.
+    @param targets: The contracts to call
+    @param values: The values to send
+    @param calldatas: The calldata payloads
+    @param emptyParam
+    @return motionId: The id of the motion
+    """
+    return 1
+'''
+
+    result = apply_rules(source, config())
+
+    assert "@custom:fork Curve Finance" in result.source
+    assert "@param targets The contracts to call" in result.source
+    assert "@param values The values to send" in result.source
+    assert "calldatas" not in result.source
+    assert "emptyParam" not in result.source
+    assert any(fix.rule == "VY058" for fix in result.fixes)
+
+
+def test_pragma_rewrite_bumps_to_enabled_target_version(config) -> None:
+    source = """# @version 0.3.8
+@external
+def f():
+    pass
+"""
+
+    before = apply_rules(source, config(target_version="0.3.9"))
+    after = apply_rules(source, config(target_version="0.3.10"))
+
+    assert "# @version 0.3.8" in before.source
+    assert "#pragma version 0.3.10" in after.source
+
+
+def test_pragma_updates_existing_pragma_version(config) -> None:
+    source = """# pragma version 0.3.10
+@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "#pragma version 0.4.3" in result.source
+
+
+def test_pragma_does_not_report_unchanged_fix(config) -> None:
+    source = """#pragma version 0.3.10
+x: uint256
+"""
+
+    result = apply_rules(source, config(target_version="0.3.10"))
+
+    assert result.source == source
+    assert not [fix for fix in result.fixes if fix.rule == "VY001"]
+
+
+def test_pragma_is_added_when_missing(config) -> None:
+    source = """@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3", source_version="0.3.10"))
+
+    assert result.source.startswith("#pragma version 0.4.3\n")
+
+
+def test_legacy_0_2_1_syntax_rewrites_are_granular(config) -> None:
+    source = """# @version 0.2.1
+Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})
+
+contract Token:
+    def transfer(to: address, amount: uint256) -> bool: modifying
+
+balances: map(address, uint256)
+payload: bytes[100]
+name: string[32]
+
+@constant
+@public
+def f(token: Token, amount: uint256(wei), data: bytes[32]) -> uint256:
+    log.Transfer(msg.sender, self, amount)
+    assert_modifiable(token.transfer(msg.sender, amount))
+    raw_call(msg.sender, data, outsize=32)
+    return extract32(data, 0, type=uint256)
+
+@private
+def _g():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "event Transfer:\n    _from: indexed(address)" in result.source
+    assert "interface Token:" in result.source
+    assert "balances: HashMap[address, uint256]" in result.source
+    assert "payload: Bytes[100]" in result.source
+    assert "name: String[32]" in result.source
+    assert "@view\n@external" in result.source
+    assert "amount: uint256," in result.source
+    assert "data: Bytes[32]" in result.source
+    assert "log Transfer(msg.sender, self, amount)" in result.source
+    assert "assert token.transfer(msg.sender, amount)" in result.source
+    assert "max_outsize=32" in result.source
+    assert "output_type=uint256" in result.source
+    assert "@internal\ndef _g" in result.source
+    assert {fix.rule for fix in result.fixes} >= {
+        "VY201",
+        "VY202",
+        "VY203",
+        "VY204",
+        "VY205",
+        "VY206",
+        "VY207",
+        "VY208",
+    }
+
+
+def test_legacy_event_after_blank_line_does_not_add_blank_field_lines(config) -> None:
+    source = """# @version 0.2.1
+
+Transfer: event({_from: indexed(address), _to: indexed(address), _value: uint256})
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert (
+        "event Transfer:\n"
+        "    _from: indexed(address)\n"
+        "    _to: indexed(address)\n"
+        "    _value: uint256\n"
+    ) in result.source
+    assert "event Transfer:\n\n" not in result.source
+
+
+def test_legacy_timestamp_type_rewrites_in_type_positions(config) -> None:
+    source = """event CommitNewAdmin:
+    deadline: indexed(timestamp)
+
+event Start:
+    timestamp: uint256
+
+struct Ramp:
+    initial_time: timestamp
+
+period_timestamp: public(HashMap[int128, timestamp])
+last_epoch_time: public(timestamp)
+
+@external
+def f() -> timestamp:
+    log Start(timestamp=block.timestamp)
+    self.point_history[0] = Point({ts: block.timestamp})
+    return block.timestamp
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "deadline: indexed(uint256)" in result.source
+    assert "timestamp: uint256" in result.source
+    assert "log Start(timestamp=block.timestamp)" in result.source
+    assert "Point({ts: block.timestamp})" in result.source
+    assert "initial_time: uint256" in result.source
+    assert "period_timestamp: public(HashMap[int128, uint256])" in result.source
+    assert "last_epoch_time: public(uint256)" in result.source
+    assert "def f() -> uint256:" in result.source
+    assert "return block.timestamp" in result.source
+
+
+def test_legacy_as_unitless_number_is_unwrapped(config) -> None:
+    source = """# @version 0.2.1
+@external
+def f(start: uint256) -> uint256:
+    return as_unitless_number(block.timestamp - start)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "return block.timestamp - start" in result.source
+    assert "as_unitless_number" not in result.source
+
+
+def test_reserved_value_parameter_is_renamed_with_function_references(config) -> None:
+    source = """# @version 0.2.1
+@internal
+def _deposit_for(addr: address, value: uint256):
+    self.balance += value
+    log Deposit(addr, value=value)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "def _deposit_for(addr: address, _value: uint256):" in result.source
+    assert "self.balance += _value" in result.source
+    assert "log Deposit(addr, value=_value)" in result.source
+    assert any(fix.rule == "VY212" for fix in result.fixes)
+
+
+def test_early_beta_syntax_cleanup_rewrites_safe_forms(config) -> None:
+    source = """# @version 0.1.0b4
+payload: bytes <= 32
+amounts: num[3]
+counter: num256
+signed: signed256
+
+@public
+def f(data: bytes <= 32, amount: num128, target: address) -> uint256:
+    x: uint256 = convert(amount, "uint256")
+    digest: bytes32 = sha3(data)
+    reset(self.counter)
+    del self.signed
+    raw_call(target, data, outsize=32)
+    sliced: bytes <= 4 = slice(data, start=0, len=4)
+    return as_wei_value(1, wei)
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "payload: Bytes[32]" in result.source
+    assert "amounts: int128[3]" in result.source
+    assert "counter: uint256" in result.source
+    assert "signed: int256" in result.source
+    assert "data: Bytes[32]" in result.source
+    assert "amount: int128" in result.source
+    assert 'convert(amount, "uint256")' not in result.source
+    assert "convert(amount, uint256)" in result.source
+    assert "keccak256(data)" in result.source
+    assert "clear(self.counter)" in result.source
+    assert "clear(self.signed)" in result.source
+    assert "max_outsize=32" in result.source
+    assert "slice(data, 0, 4)" in result.source
+    assert 'as_wei_value(1, "wei")' in result.source
+    assert {fix.rule for fix in result.fixes} >= {"VY216", "VY217", "VY218", "VY219", "VY221"}
+
+
+def test_early_beta_cleanup_skips_comments_strings_and_identifiers(config) -> None:
+    source = """# @version 0.1.0b4
+note: String[64] = "sha3 convert(x, \\"uint256\\") reset bytes <= 32"
+# sha3(convert(x, "uint256"))
+
+@public
+def f(num: uint256) -> uint256:
+    return num
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert '"sha3 convert(x, \\"uint256\\") reset bytes <= 32"' in result.source
+    assert '# sha3(convert(x, "uint256"))' in result.source
+    assert "def f(num: uint256)" in result.source
+    assert "return num" in result.source
+    assert not ({"VY216", "VY217", "VY218", "VY219", "VY221"} & {fix.rule for fix in result.fixes})
