@@ -5,7 +5,7 @@ from collections import Counter
 
 from ..analysis import SourceFacts, parse_source_facts
 from ..models import Config, Diagnostic, Fix
-from ..rule_groups.numeric import _cast_integer_arg_to_expected
+from ..rule_groups.numeric_casts import _cast_integer_arg_to_expected
 from ..rule_helpers import (
     has_line_comment as _has_line_comment,
     innermost_non_overlapping as _innermost_non_overlapping,

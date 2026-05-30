@@ -24,7 +24,6 @@ from .rule_groups.numeric import (
     PRE_INTERFACE_RULES as NUMERIC_PRE_INTERFACE_RULES,
     RANGE_RULES as NUMERIC_RANGE_RULES,
     REDUNDANT_CONVERT_RULES as NUMERIC_REDUNDANT_CONVERT_RULES,
-    SIGNEDNESS_RULES as NUMERIC_SIGNEDNESS_RULES,
 )
 from .rule_groups.numeric_constants import (
     BYTES_LITERAL_RULES as NUMERIC_BYTES_LITERAL_RULES,
@@ -32,6 +31,7 @@ from .rule_groups.numeric_constants import (
     CONSTANT_EXPONENT_RULES as NUMERIC_CONSTANT_EXPONENT_RULES,
     DYNAMIC_POW_RULES as NUMERIC_DYNAMIC_POW_RULES,
 )
+from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
 from .rule_registry import (
     ContextRuleRunner,
     RuleContext,
