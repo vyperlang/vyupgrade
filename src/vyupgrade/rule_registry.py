@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
@@ -51,8 +51,8 @@ class RuleContext:
     source: str
     config: Config
     migration: MigrationContext
-    path: Path | None = None
-    rule_changes: Mapping[str, RuleChange] = field(default_factory=dict)
+    path: Path | None
+    rule_changes: Mapping[str, RuleChange]
 
     @cached_property
     def code_mask(self) -> list[bool]:

@@ -40,7 +40,6 @@ from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
 from .rule_registry import (
     ContextRuleRunner,
     RuleContext,
-    is_enabled as _enabled,
     rule_changes,
 )
 from .versions import MigrationContext, infer_pragma
@@ -52,16 +51,16 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     context = MigrationContext.from_specs(
         config.source_version or infer_pragma(source), config.target_version
     )
+    rule_context = RuleContext(source, config, context, path, RULE_CHANGES)
     if context.source_newer_than_target():
         diagnostic = _source_newer_than_target_diagnostic(context)
         return RewriteResult(
             source,
             [],
-            [diagnostic] if _enabled(diagnostic.rule, config, context, RULE_CHANGES) else [],
+            [diagnostic] if rule_context.is_enabled(diagnostic.rule) else [],
         )
 
     current = source
-    rule_context = RuleContext(current, config, context, path, RULE_CHANGES)
     for rule in _runnable_rules():
         current, rule_fixes, rule_diagnostics = rule(rule_context)
         rule_context = rule_context.with_source(current)

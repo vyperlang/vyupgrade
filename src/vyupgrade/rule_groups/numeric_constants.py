@@ -79,12 +79,6 @@ def _integer_value_fits_type(value: int, type_name: str) -> bool:
     return -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
 
 
-def _constant_exponent_literals(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    return _constant_exponent_literals_context(RuleContext(source, config, context))
-
-
 def _constant_exponent_literals_context(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
