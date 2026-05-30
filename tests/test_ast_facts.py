@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from vyupgrade.ast_facts import calls, integer_constants, node_span, root_ast, source_segment
-from vyupgrade.analysis import BUILTIN_INTERFACES, infer_expr_type, parse_source_facts
+from vyupgrade.analysis import infer_expr_type, parse_source_facts
+from vyupgrade.vyper_builtins import BUILTIN_INTERFACES
 
 
 def test_ast_facts_extract_integer_constants() -> None:
