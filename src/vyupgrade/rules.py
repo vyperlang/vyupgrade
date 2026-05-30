@@ -33,7 +33,10 @@ from .rule_registry import (
     ContextRuleRunner,
     Rule,
     RuleContext,
+    any_enabled as _any_enabled,
+    configure_rule_changes,
     crossing,
+    is_enabled as _enabled,
     rule_changes,
     target_floor,
     target_update,
@@ -83,23 +86,6 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     fixes = [fix for fix in fixes if _enabled(fix.rule, config, context)]
     diagnostics = [diag for diag in diagnostics if _enabled(diag.rule, config, context)]
     return RewriteResult(current, fixes, diagnostics)
-
-
-def _enabled(rule: str, config: Config, context: MigrationContext) -> bool:
-    if config.select and rule not in config.select:
-        return False
-    if rule in config.ignore:
-        return False
-    change = RULE_CHANGES.get(rule)
-    if change is None:
-        return True
-    if change.activation in {"target_floor", "target_update"}:
-        return context.target_at_least(change.introduced)
-    return context.crosses(change.introduced)
-
-
-def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> bool:
-    return any(_enabled(rule, config, context) for rule in rules)
 
 
 def _runnable_rules() -> Iterator[ContextRuleRunner]:
@@ -5278,3 +5264,4 @@ RULES = (
 )
 
 RULE_CHANGES = rule_changes(RULES)
+configure_rule_changes(RULE_CHANGES)

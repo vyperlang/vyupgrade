@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -27,6 +27,29 @@ RuleRunner = Callable[
 ]
 PathRuleFactory = Callable[[Path | None], RuleRunner]
 ContextRuleRunner = Callable[["RuleContext"], tuple[str, list[Fix], list[Diagnostic]]]
+_RULE_CHANGES: Mapping[str, RuleChange] = {}
+
+
+def configure_rule_changes(changes: Mapping[str, RuleChange]) -> None:
+    global _RULE_CHANGES
+    _RULE_CHANGES = changes
+
+
+def is_enabled(rule: str, config: Config, context: MigrationContext) -> bool:
+    if config.select and rule not in config.select:
+        return False
+    if rule in config.ignore:
+        return False
+    change = _RULE_CHANGES.get(rule)
+    if change is None:
+        return True
+    if change.activation in {"target_floor", "target_update"}:
+        return context.target_at_least(change.introduced)
+    return context.crosses(change.introduced)
+
+
+def any_enabled(rules: set[str], config: Config, context: MigrationContext) -> bool:
+    return any(is_enabled(rule, config, context) for rule in rules)
 
 
 @dataclass(frozen=True)
