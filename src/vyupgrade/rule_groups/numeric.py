@@ -30,7 +30,7 @@ from ..versions import MigrationContext
 from .numeric_constants import (
     _integer_constant_values,
 )
-from .numeric_signedness import _vars_for_argument
+from .numeric_scope import vars_for_argument as _vars_for_argument
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
