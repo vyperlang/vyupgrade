@@ -64,6 +64,9 @@ class MigrationContext:
             return True
         return self.source_floor < introduced
 
+    def source_newer_than_target(self) -> bool:
+        return self.source_floor is not None and self.source_floor > self.target_version
+
 
 def infer_pragma(source: str) -> str | None:
     match = PRAGMA_RE.search(source)

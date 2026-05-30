@@ -234,3 +234,28 @@ def test_evm_default_diagnostic_tracks_patch_level_default_changes() -> None:
     assert diagnostic is not None
     assert "cancun (source compiler 0.4.2) to prague (target compiler 0.4.3)" in diagnostic.message
     assert _evm_default_diagnostic("0.4.0", "0.4.2") is None
+
+
+def test_source_newer_than_target_skips_compile_and_reports_error(tmp_path: Path) -> None:
+    contract = tmp_path / "newer.vy"
+    contract.write_text(
+        """# pragma version >=0.5.0a1,<0.6.0
+
+@external
+def f() -> uint256:
+    return 1
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--check", "--report-json", str(report)])
+
+    assert code == 5
+    data = json.loads(report.read_text())
+    file_report = data["files"][0]
+    assert file_report["changed"] is False
+    assert file_report["diagnostics"][0]["rule"] == "VYD016"
+    assert file_report["diagnostics"][0]["severity"] == "error"
+    assert file_report["validation"]["source_compile"] == "skipped"
+    assert file_report["validation"]["target_compile"] == "skipped"

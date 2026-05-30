@@ -3431,6 +3431,22 @@ import math
     assert [diag.rule for diag in result.diagnostics] == ["VYD015"]
 
 
+def test_source_newer_than_target_is_error_diagnostic() -> None:
+    source = """# pragma version >=0.5.0a1,<0.6.0
+
+@external
+def f() -> uint256:
+    return 1
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert result.source == source
+    assert result.fixes == []
+    assert [(diag.rule, diag.severity) for diag in result.diagnostics] == [("VYD016", "error")]
+    assert "newer than target 0.4.3" in result.diagnostics[0].message
+
+
 def test_top_level_bare_import_is_not_absolute_relative_diagnostic() -> None:
     source = """# @version 0.4.0
 import sibling

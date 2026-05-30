@@ -170,6 +170,26 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
     for path in files:
         original = path.read_text(encoding="utf-8")
         source_version = config.source_version or infer_pragma(original)
+        context = MigrationContext.from_specs(source_version, config.target_version)
+        if context.source_newer_than_target():
+            rewrite = apply_rules(original, config, path)
+            file_report = FileReport(
+                path=path,
+                changed=False,
+                fixes=rewrite.fixes,
+                diagnostics=rewrite.diagnostics,
+            )
+            rewrites.append(
+                RewriteWork(
+                    path,
+                    original,
+                    rewrite,
+                    file_report,
+                    CompileResult("skipped"),
+                    source_version,
+                )
+            )
+            continue
         source_compile = compile_source_file(path, config, source_version)
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         file_config = replace(
@@ -214,6 +234,8 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
         )
     with target_overlay(target_sources, config.target_version) as overlay:
         for work in rewrites:
+            if any(diagnostic.rule == "VYD016" for diagnostic in work.report.diagnostics):
+                continue
             target_compile = compile_target_source(work.path, work.rewrite.source, config, overlay)
             work.report.target_compile = target_compile.status
             work.report.target_error = (

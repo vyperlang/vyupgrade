@@ -53,6 +53,9 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     context = MigrationContext.from_specs(
         config.source_version or infer_pragma(source), config.target_version
     )
+    if context.source_newer_than_target():
+        diagnostic = _source_newer_than_target_diagnostic(context)
+        return RewriteResult(source, [], [diagnostic] if _enabled(diagnostic.rule, config, context) else [])
 
     current = source
     rule_context = RuleContext(
@@ -105,3 +108,13 @@ RULES = (
 )
 RULE_CHANGES = rule_changes(RULES)
 configure_rule_changes(RULE_CHANGES)
+
+
+def _source_newer_than_target_diagnostic(context: MigrationContext) -> Diagnostic:
+    assert context.source_floor is not None
+    return Diagnostic(
+        "VYD016",
+        1,
+        f"source version {context.source_spec} resolves to {context.source_floor}, which is newer than target {context.target_version}; choose a target >= {context.source_floor}",
+        "error",
+    )
