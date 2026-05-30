@@ -42,9 +42,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-[tool.uv]
-exclude-newer = "2026-05-27T14:26:03.814034Z"
-
 [tool.uv.build-backend]
 source-exclude = [".DS_Store"]
 
