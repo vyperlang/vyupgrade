@@ -7,7 +7,9 @@ from ..analysis import SourceFacts, infer_expr_type, parse_source_facts
 from ..models import Config, Diagnostic, Fix
 from ..rule_helpers import (
     function_body_span as _function_body_span,
+    function_start_at_line as _function_start_at_line,
     find_matching_open as _find_matching_open,
+    strip_arg_comments as _strip_arg_comments,
     insert_import as _insert_import,
     is_attribute_name as _is_attribute_name,
     is_keyword_argument_name as _is_keyword_argument_name,
@@ -267,34 +269,6 @@ def _event_kwargs(
             )
         )
     return apply_edits(source, edits), fixes, []
-
-
-def _strip_arg_comments(raw_args: str) -> str:
-    lines: list[str] = []
-    for raw_line in raw_args.splitlines():
-        line = raw_line
-        mask = code_mask(line)
-        comment_start = next(
-            (
-                index
-                for index, char in enumerate(line)
-                if char == "#" and (index == 0 or mask[index - 1])
-            ),
-            None,
-        )
-        if comment_start is not None:
-            line = line[:comment_start]
-        if line.strip():
-            lines.append(line)
-    return "\n".join(lines)
-
-
-def _has_line_comment(text: str) -> bool:
-    for line in text.splitlines():
-        mask = code_mask(line)
-        if any(char == "#" and (index == 0 or mask[index - 1]) for index, char in enumerate(line)):
-            return True
-    return False
 
 
 def _legacy_maps_and_interfaces(
@@ -882,13 +856,6 @@ def _natspec_strictness(
             fixes.append(Fix("VY058", line_no, "updated NatSpec tag syntax", line, replacement))
         offset += len(raw_line)
     return apply_edits(source, edits), fixes, []
-
-
-def _function_start_at_line(facts: SourceFacts, line_no: int) -> int | None:
-    for start, end in sorted(facts.function_ends.items()):
-        if start <= line_no <= end:
-            return start
-    return None
 
 
 def _function_param_names_at_start(facts: SourceFacts, start: int | None) -> set[str] | None:
