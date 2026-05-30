@@ -99,7 +99,7 @@ def _replace_numeric_not(
     return apply_edits(source, edits), fixes, diagnostics
 
 
-PRE_INTERFACE_RULES = (
+RULES = (
     Rule(
         "pre_04_expression_rewrites",
         runner=_pre_04_expression_rewrites,

@@ -22,7 +22,6 @@ from .rule_groups.legacy import (
 from .rule_groups.legacy_builtins import RULES as LEGACY_BUILTIN_RULES
 from .rule_groups.legacy_diagnostics import RULES as LEGACY_DIAGNOSTIC_RULES
 from .rule_groups.legacy_interfaces import RULES as LEGACY_INTERFACE_RULES
-from .rule_groups.meta import RULES as META_RULES
 from .rule_groups.numeric import (
     INTEGER_DIVISION_RULES as NUMERIC_INTEGER_DIVISION_RULES,
     LATE_RULES as NUMERIC_LATE_RULES,
@@ -35,13 +34,16 @@ from .rule_groups.numeric_constants import (
     DYNAMIC_POW_RULES as NUMERIC_DYNAMIC_POW_RULES,
 )
 from .rule_groups.numeric_context_casts import RULES as NUMERIC_CONTEXT_CAST_RULES
-from .rule_groups.numeric_operators import PRE_INTERFACE_RULES as NUMERIC_PRE_INTERFACE_RULES
+from .rule_groups.numeric_operators import RULES as NUMERIC_OPERATOR_RULES
 from .rule_groups.numeric_ranges import RULES as NUMERIC_RANGE_RULES
 from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
 from .rule_registry import (
+    Rule,
     RuleRunner,
     RuleContext,
+    crossing,
     rule_changes,
+    target_floor,
 )
 from .versions import MigrationContext, infer_pragma
 
@@ -80,6 +82,20 @@ def _runnable_rules() -> Iterator[RuleRunner]:
             yield runner
 
 
+METADATA_RULES = (
+    Rule("interface_split", changes=(target_floor("VY120", (0, 4, 0)),)),
+    Rule(
+        "validation",
+        changes=(
+            crossing("VYD006", (0, 4, 0)),
+            crossing("VYD007", (0, 4, 0)),
+            crossing("VYD008", (0, 4, 0)),
+            crossing("VYD009", (0, 4, 0)),
+            target_floor("VYD016", (0, 1, 0)),
+        ),
+    ),
+)
+
 RULES = (
     *LEGACY_EARLY_RULES,
     *LEGACY_INTERFACE_RULES,
@@ -89,7 +105,7 @@ RULES = (
     *LEGACY_BUILTIN_RULES,
     *COMPARISON_RULES,
     *LEGACY_POST_COMPARISON_RULES,
-    *NUMERIC_PRE_INTERFACE_RULES,
+    *NUMERIC_OPERATOR_RULES,
     *DATA_CONSTRUCTOR_RULES,
     *INTERFACE_RULES,
     *DATA_ENUM_RULES,
@@ -106,7 +122,7 @@ RULES = (
     *DATA_POST_NUMERIC_RULES,
     *NUMERIC_LATE_RULES,
     *DIAGNOSTIC_RULES,
-    *META_RULES,
+    *METADATA_RULES,
 )
 RULE_CHANGES = rule_changes(RULES)
 
