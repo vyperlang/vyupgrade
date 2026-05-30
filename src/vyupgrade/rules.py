@@ -22,7 +22,6 @@ from .rule_groups.numeric import (
     INTEGER_DIVISION_RULES as NUMERIC_INTEGER_DIVISION_RULES,
     LATE_RULES as NUMERIC_LATE_RULES,
     PRE_INTERFACE_RULES as NUMERIC_PRE_INTERFACE_RULES,
-    RANGE_RULES as NUMERIC_RANGE_RULES,
     REDUNDANT_CONVERT_RULES as NUMERIC_REDUNDANT_CONVERT_RULES,
 )
 from .rule_groups.numeric_constants import (
@@ -31,6 +30,7 @@ from .rule_groups.numeric_constants import (
     CONSTANT_EXPONENT_RULES as NUMERIC_CONSTANT_EXPONENT_RULES,
     DYNAMIC_POW_RULES as NUMERIC_DYNAMIC_POW_RULES,
 )
+from .rule_groups.numeric_ranges import RULES as NUMERIC_RANGE_RULES
 from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
 from .rule_registry import (
     ContextRuleRunner,
