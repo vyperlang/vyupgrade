@@ -3,6 +3,33 @@ from __future__ import annotations
 from vyupgrade.rules import apply_rules
 
 
+def test_isqrt_moves_to_math_for_0_5_alpha_target(config) -> None:
+    source = """#pragma version 0.4.3
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x)
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert "import math\n" in result.source
+    assert "return math.isqrt(x)" in result.source
+    assert any(fix.rule == "VY101" for fix in result.fixes)
+
+
+def test_isqrt_does_not_rewrite_before_0_5_alpha_target(config) -> None:
+    source = """#pragma version 0.4.3
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return isqrt(x)" in result.source
+    assert not any(fix.rule == "VY101" for fix in result.fixes)
+
+
 def test_integer_expression_division(config) -> None:
     source = """# @version 0.3.10
 MAX_BPS: constant(uint256) = 10_000

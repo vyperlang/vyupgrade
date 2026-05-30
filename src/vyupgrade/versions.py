@@ -11,6 +11,8 @@ VERSION_RE = re.compile(r"0\.(?:1|2|3|4|5)\.\d+(?:(?:a|b|rc)\d+)?")
 # PyPI has no final 0.1.0 release; these are the installable Vyper releases before 0.2.1.
 LEGACY_PRERELEASE_VERSIONS = tuple(f"0.1.0b{number}" for number in range(1, 18))
 LEGACY_PRERELEASES = frozenset(Version(version) for version in LEGACY_PRERELEASE_VERSIONS)
+ALPHA_RELEASE_VERSIONS = ("0.5.0a1", "0.5.0a2")
+ALPHA_RELEASES = frozenset(Version(version) for version in ALPHA_RELEASE_VERSIONS)
 
 
 VyperVersion = Version
@@ -24,14 +26,15 @@ KNOWN_VERSIONS = tuple(
             for minor, last_patch in ((2, 16), (3, 10), (4, 3))
             for patch in range(1 if minor == 2 else 0, last_patch + 1)
         ),
+        *(Version(version) for version in ALPHA_RELEASE_VERSIONS),
     ]
 )
 
-SUPPORTED_FINAL_VERSIONS = frozenset(
+SUPPORTED_RELEASE_VERSIONS = frozenset(
     Version(f"0.{minor}.{patch}")
     for minor, last_patch in ((2, 16), (3, 10), (4, 3))
     for patch in range(1 if minor == 2 else 0, last_patch + 1)
-)
+) | ALPHA_RELEASES
 
 
 @dataclass(frozen=True)
@@ -149,7 +152,7 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
 
 def is_supported_source_version(version: str | None) -> bool:
     parsed = parse_version(version)
-    return parsed in LEGACY_PRERELEASES or parsed in SUPPORTED_FINAL_VERSIONS
+    return parsed in LEGACY_PRERELEASES or parsed in SUPPORTED_RELEASE_VERSIONS
 
 
 def legacy_prerelease_version(spec: str | None) -> str | None:

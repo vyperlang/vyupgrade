@@ -107,33 +107,44 @@ def _integer_division(
 
 
 def _sqrt(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    return _math_builtin(rule_context, "sqrt", "VY100")
+
+
+def _isqrt(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    return _math_builtin(rule_context, "isqrt", "VY101")
+
+
+def _math_builtin(
+    rule_context: RuleContext, name: str, rule: str
+) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     facts = rule_context.facts
-    if _name_is_user_defined(facts, "sqrt") or _name_is_imported(source, "sqrt"):
+    if _name_is_user_defined(facts, name) or _name_is_imported(source, name):
         return source, [], []
     mask = rule_context.code_mask
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    for match in re.finditer(r"(?<!\.)\bsqrt\s*\(", source):
+    for match in re.finditer(rf"(?<!\.)\b{re.escape(name)}\s*\(", source):
         line_start = source.rfind("\n", 0, match.start()) + 1
         if re.search(r"\bdef\s*$", source[line_start : match.start()]):
             continue
         if not span_is_code(mask, match.start(), match.end()):
             continue
-        edits.append(TextEdit(match.start(), match.start() + 4, "math.sqrt"))
+        after = f"math.{name}"
+        edits.append(TextEdit(match.start(), match.start() + len(name), after))
         fixes.append(
             Fix(
-                "VY100",
+                rule,
                 line_number(source, match.start()),
-                "moved sqrt to math module",
-                "sqrt",
-                "math.sqrt",
+                f"moved {name} to math module",
+                name,
+                after,
             )
         )
     next_source = apply_edits(source, edits)
     if edits and not re.search(r"^\s*import\s+math\s*$", next_source, re.MULTILINE):
         next_source = _insert_import(next_source, "import math\n")
-        fixes.append(Fix("VY100", 1, "added math import", "", "import math"))
+        fixes.append(Fix(rule, 1, "added math import", "", "import math"))
     return next_source, fixes, []
 
 
@@ -623,6 +634,7 @@ REDUNDANT_CONVERT_RULES = (
 
 LATE_RULES = (
     Rule("sqrt", runner=_sqrt, changes=(crossing("VY100", (0, 4, 2)),)),
+    Rule("isqrt", runner=_isqrt, changes=(crossing("VY101", "0.5.0a1"),)),
     Rule(
         "bitwise",
         runner=_bitwise,

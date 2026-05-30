@@ -578,6 +578,84 @@ def _natspec_line_replacement(line: str, params: set[str] | None) -> str | None:
     return line
 
 
+def _docstring_only_bodies(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    lines = source.splitlines(keepends=True)
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
+    mask = rule_context.code_mask
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+
+    for index, line in enumerate(lines):
+        match = re.match(
+            r"(?P<indent>[ \t]*)def\s+[A-Za-z_][A-Za-z0-9_]*\(.*\):\s*(?:#.*)?$",
+            line,
+        )
+        if not match or not _line_match_starts_outside_string(source, mask, offsets[index]):
+            continue
+        def_indent = len(match.group("indent"))
+        doc_index = _next_body_line(lines, index + 1, def_indent)
+        if doc_index is None:
+            continue
+        doc_line = lines[doc_index]
+        doc_stripped = doc_line.strip()
+        quote = doc_stripped[:3]
+        if quote not in {'"""', "'''"}:
+            continue
+        close_index = _docstring_close_line(lines, doc_index, quote)
+        if close_index is None:
+            continue
+        next_statement = _next_body_line(lines, close_index + 1, def_indent)
+        if next_statement is not None:
+            continue
+        insert_at = offsets[close_index] + len(lines[close_index])
+        body_indent = re.match(r"[ \t]*", doc_line).group(0)
+        insertion = (
+            f"{body_indent}pass\n"
+            if lines[close_index].endswith("\n")
+            else f"\n{body_indent}pass"
+        )
+        edits.append(TextEdit(insert_at, insert_at, insertion))
+        fixes.append(
+            Fix(
+                "VY131",
+                close_index + 1,
+                "added pass after docstring-only function body",
+                "",
+                "pass",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _next_body_line(lines: list[str], start: int, def_indent: int) -> int | None:
+    for index in range(start, len(lines)):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(lines[index]) - len(lines[index].lstrip(" \t"))
+        if indent <= def_indent:
+            return None
+        return index
+    return None
+
+
+def _docstring_close_line(lines: list[str], start: int, quote: str) -> int | None:
+    first = lines[start].strip()
+    if first.count(quote) >= 2:
+        return start
+    for index in range(start + 1, len(lines)):
+        if quote in lines[index]:
+            return index
+    return None
+
+
 def _legacy_constructor_locks(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -702,6 +780,11 @@ POST_INTERFACE_RULES = (
 
 POST_DIAGNOSTIC_RULES = (
     Rule("natspec_strictness", runner=_natspec_strictness, changes=(crossing("VY058", (0, 4, 0)),)),
+    Rule(
+        "docstring_only_bodies",
+        runner=_docstring_only_bodies,
+        changes=(crossing("VY131", "0.5.0a2"),),
+    ),
 )
 
 POST_COMPARISON_RULES = (

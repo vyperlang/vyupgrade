@@ -16,8 +16,10 @@ from ..source import (
     apply_edits,
     code_identifiers,
     code_mask,
+    find_matching,
     line_number,
     replace_identifier,
+    split_top_level_arg_spans,
     span_is_code,
 )
 from .external_call_helpers import external_call_matches
@@ -491,6 +493,123 @@ def _absolute_relative_imports(
     return source, [], diagnostics
 
 
+def _implements_tuple(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    lines = source.splitlines(keepends=True)
+    offsets = _line_offsets(source)
+    mask = rule_context.code_mask
+    declarations: list[tuple[int, str, str]] = []
+
+    for index, line in enumerate(lines):
+        match = re.match(r"(?P<indent>[ \t]*)implements:\s*(?P<value>.+?)(?P<newline>\n?)$", line)
+        if not match or not _line_match_starts_outside_string(source, mask, offsets[index]):
+            continue
+        if "#" in match.group("value"):
+            return source, [], []
+        names = _implements_names(match.group("value").strip())
+        if names is None:
+            return source, [], []
+        for name in names:
+            declarations.append((index, match.group("indent"), name))
+
+    if len(declarations) <= 1:
+        return source, [], []
+
+    first_indent = declarations[0][1]
+    if any(indent != first_indent for _index, indent, _name in declarations):
+        return source, [], []
+
+    unique_names = list(dict.fromkeys(name for _index, _indent, name in declarations))
+    after_value = unique_names[0] if len(unique_names) == 1 else f"({', '.join(unique_names)})"
+    first_index = declarations[0][0]
+    first_line = lines[first_index]
+    newline = "\n" if first_line.endswith("\n") else ""
+    replacement = f"{first_indent}implements: {after_value}{newline}"
+    edits = [
+        TextEdit(offsets[first_index], offsets[first_index] + len(first_line), replacement),
+        *(
+            TextEdit(offsets[index], offsets[index] + len(lines[index]), "")
+            for index, _indent, _name in declarations[1:]
+        ),
+    ]
+    return apply_edits(source, edits), [
+        Fix(
+            "VY121",
+            first_index + 1,
+            "merged implements declarations",
+            "implements",
+            replacement.rstrip("\n"),
+        )
+    ], []
+
+
+def _implements_names(value: str) -> list[str] | None:
+    if value.startswith("(") and value.endswith(")"):
+        return None
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", value):
+        return None
+    return [value]
+
+
+def _interface_default_ellipsis(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    lines = source.splitlines(keepends=True)
+    offsets = _line_offsets(source)
+    mask = rule_context.code_mask
+    interface_indent: int | None = None
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+
+    for index, line in enumerate(lines):
+        offset = offsets[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not _line_match_starts_outside_string(source, mask, offset):
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        header = line.split("#", 1)[0].strip()
+        if re.match(r"interface\s+[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?:\s*$", header):
+            interface_indent = indent
+            continue
+        if interface_indent is not None and indent <= interface_indent:
+            interface_indent = None
+        if interface_indent is None or not re.search(r"\bdef\s+[A-Za-z_]", line):
+            continue
+        open_index = source.find("(", offset, offset + len(line))
+        if open_index == -1:
+            continue
+        close_index = find_matching(source, open_index)
+        if close_index is None or close_index > offset + len(line):
+            continue
+        args_start = open_index + 1
+        args = source[args_start:close_index]
+        spans = split_top_level_arg_spans(args)
+        if spans is None:
+            continue
+        for start, end, raw_arg in spans:
+            eq = raw_arg.find("=")
+            if eq == -1 or raw_arg[eq + 1 :].strip() == "...":
+                continue
+            value_start = args_start + start + eq + 1
+            value_end = args_start + end
+            while value_end > value_start and source[value_end - 1].isspace():
+                value_end -= 1
+            edits.append(TextEdit(value_start, value_end, " ..."))
+            fixes.append(
+                Fix(
+                    "VY122",
+                    line_number(source, value_start),
+                    "replaced interface default value with ellipsis",
+                    source[value_start:value_end].strip(),
+                    "...",
+                )
+            )
+    return apply_edits(source, edits), fixes, []
+
+
 RULES = (
     Rule("legacy_constants", runner=_legacy_constants, changes=(crossing("VY012", (0, 4, 0)),)),
     Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
@@ -509,5 +628,11 @@ RULES = (
         "absolute_relative_imports",
         runner=_absolute_relative_imports,
         changes=(crossing("VYD015", (0, 4, 1)),),
+    ),
+    Rule("implements_tuple", runner=_implements_tuple, changes=(crossing("VY121", "0.5.0a1"),)),
+    Rule(
+        "interface_default_ellipsis",
+        runner=_interface_default_ellipsis,
+        changes=(crossing("VY122", "0.5.0a1"),),
     ),
 )

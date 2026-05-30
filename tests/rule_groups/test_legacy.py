@@ -3,6 +3,36 @@ from __future__ import annotations
 from vyupgrade.rules import apply_rules
 
 
+def test_docstring_only_function_body_gets_pass_for_0_5_alpha_target(config) -> None:
+    source = '''#pragma version 0.4.3
+@internal
+def hook():
+    """
+    Optional override point.
+    """
+'''
+
+    result = apply_rules(source, config(target_version="0.5.0a2"))
+
+    assert '    """\n    pass\n' in result.source
+    assert any(fix.rule == "VY131" for fix in result.fixes)
+
+
+def test_docstring_only_function_body_unchanged_before_0_5_alpha_target(config) -> None:
+    source = '''#pragma version 0.4.3
+@internal
+def hook():
+    """
+    Optional override point.
+    """
+'''
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert "pass" not in result.source
+    assert not any(fix.rule == "VY131" for fix in result.fixes)
+
+
 def test_event_logs_rewrite_to_keyword_arguments(config) -> None:
     source = """# @version 0.3.0
 event Transfer:

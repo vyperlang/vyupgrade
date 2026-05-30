@@ -5,8 +5,8 @@ This document maps the syntax history in
 Each source-visible entry is classified as an automated rewrite, a diagnostic,
 an explicit no-op when the historical change only introduced newly accepted
 syntax, or validation-only when surviving obsolete source is left for compiler
-validation. Newer prerelease entries are tracked as planning reference until
-`vyupgrade` supports targeting those compilers.
+validation. Alpha targets are opt-in; the default target remains the latest
+supported final release.
 
 Rules are version-gated. Unless noted as a target-floor rule, a rule runs only
 when the inferred source version is older than the listed change and the target
@@ -22,21 +22,21 @@ modern Python interpreter.
 
 ### v0.5.0a2
 
-- Docstring-only function bodies rejected: validation-only until `0.5.x`
-  targets are supported.
+- Docstring-only function bodies rejected: `VY131` inserts an explicit `pass`
+  after the docstring.
 - Wildcard interface lengths and unbounded length spellings added: no-op. This
   is newly accepted source syntax.
 
 ### v0.5.0a1
 
-- `isqrt` moved into `math`: validation-only until `0.5.x` targets are
-  supported.
+- `isqrt` moved into `math`: `VY101`.
 - Multi-name interface imports added: no-op. This is newly accepted import
   syntax.
 - Multi-interface `implements` added and duplicate `implements` rejected:
-  no-op for the new tuple form; duplicate declarations are validation-only.
+  `VY121` merges repeated declarations and collapses duplicate names.
 - `...` interface default parameter values added: no-op. This is newly
-  accepted interface syntax.
+  accepted interface syntax. `VY122` replaces concrete interface default values
+  with `...`.
 - Numeric literal underscores added: no-op. This is newly accepted literal
   syntax.
 - Abstract module methods added: no-op. This is new opt-in module syntax.

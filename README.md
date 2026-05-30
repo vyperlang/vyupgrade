@@ -5,11 +5,10 @@ versions. It rewrites legacy syntax to a chosen target compiler, then proves the
 rewrite is safe by compiling the source and the result and comparing their ABI,
 method identifiers, and storage layout.
 
-It covers installable Vyper `0.1.0b*` prereleases through `0.4.3`. Rules are
-version-gated: a given rewrite only fires when the migration from the source
-version to the target version actually crosses the compiler release that
-introduced the change. The detailed syntax-history reference tracks `0.1.0b*`
-onward, including newer prerelease syntax for planning.
+It covers installable Vyper `0.1.0b*` prereleases through `0.4.3`, plus opt-in
+`0.5.0a1` and `0.5.0a2` alpha targets. Rules are version-gated: a given rewrite
+only fires when the migration from the source version to the target version
+actually crosses the compiler release that introduced the change.
 
 ## Install
 
@@ -47,7 +46,7 @@ vyupgrade contracts/ --check
 ```
 
 The target defaults to `0.4.3`; pass `--target-version` to migrate to a
-different release.
+different release, including an explicit alpha target such as `0.5.0a2`.
 
 Paths may be files or directories; directories are searched recursively for
 `.vy` and `.vyi` sources. The source version is inferred per file from its

@@ -52,3 +52,33 @@ def x() -> uint256:
         file["path"].rsplit("/", 1)[-1]: file["validation"]["target_compile"]
         for file in data["files"]
     } == {"lib.vy": "passed", "main.vy": "passed"}
+
+
+def test_alpha_target_validation_uses_alpha_compiler(tmp_path: Path) -> None:
+    contract = tmp_path / "sqrt.vy"
+    contract.write_text(
+        """#pragma version 0.4.3
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x)
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--target-version",
+            "0.5.0a2",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 1
+    data = json.loads(report.read_text())
+    file = data["files"][0]
+    assert file["validation"]["target_compile"] == "passed"
+    assert any(fix["rule"] == "VY101" for fix in file["fixes"])

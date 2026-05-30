@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added opt-in support for targeting Vyper `0.5.0a1` and `0.5.0a2`.
+- Added rewrites for `isqrt`, duplicate or repeated `implements` declarations, concrete interface defaults, and docstring-only function bodies when migrating to the alpha targets.
+
 ## 0.2.0
 
 - Added support for validating and migrating older Vyper beta-era contracts.

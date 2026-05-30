@@ -23,14 +23,18 @@ def test_known_versions_cover_full_supported_range() -> None:
     assert all(is_supported_source_version(version) for version in LEGACY_PRERELEASE_VERSIONS)
     assert is_supported_source_version("0.2.1")
     assert is_supported_source_version("0.4.3")
+    assert is_supported_source_version("0.5.0a1")
+    assert is_supported_source_version("0.5.0a2")
     assert not is_supported_source_version("0.1.0")
     assert not is_supported_source_version("0.1.0b18")
     assert not is_supported_source_version("0.1.0b99")
     assert not is_supported_source_version("0.2.0")
     assert not is_supported_source_version("0.4.4")
+    assert not is_supported_source_version("0.5.0")
     assert VyperVersion("0.1.0b1") in known_versions_satisfying(">=0.1.0b1,<0.2.1")
     assert VyperVersion("0.2.1") in known_versions_satisfying(">=0.2.1,<0.2.3")
     assert VyperVersion("0.4.3") in known_versions_satisfying(">=0.4.0")
+    assert VyperVersion("0.5.0a2") in known_versions_satisfying(">=0.5.0a1,<0.5.0")
 
 
 def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
@@ -41,6 +45,8 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert minimum_satisfying_version(">=0.3.4,<0.4.0") == VyperVersion("0.3.4")
     assert minimum_satisfying_version(">0.3.10") == VyperVersion("0.4.0")
     assert compiler_version_for_spec("<=0.3.10") == "0.3.10"
+    assert compiler_version_for_spec(">=0.5.0a1,<0.5.0") == "0.5.0a1"
+    assert compiler_version_for_spec("<=0.5.0a2") == "0.5.0a2"
 
 
 def test_migration_context_tracks_patch_level_crossings() -> None:

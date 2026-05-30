@@ -5,6 +5,52 @@ from pathlib import Path
 from vyupgrade.rules import apply_rules
 
 
+def test_implements_declarations_merge_for_0_5_alpha_target(config) -> None:
+    source = """#pragma version 0.4.3
+implements: IERC20
+implements: IERC4626
+
+@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert "implements: (IERC20, IERC4626)" in result.source
+    assert "implements: IERC20\nimplements: IERC4626" not in result.source
+    assert any(fix.rule == "VY121" for fix in result.fixes)
+
+
+def test_duplicate_implements_declarations_collapse_for_0_5_alpha_target(config) -> None:
+    source = """#pragma version 0.4.3
+implements: IERC20
+implements: IERC20
+
+@external
+def f():
+    pass
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert result.source.count("implements: IERC20") == 1
+    assert any(fix.rule == "VY121" for fix in result.fixes)
+
+
+def test_interface_defaults_become_ellipsis_for_0_5_alpha_target(config) -> None:
+    source = """#pragma version 0.4.3
+interface Vault:
+    def deposit(amount: uint256 = 0, receiver: address = msg.sender): nonpayable
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert "amount: uint256 = ..." in result.source
+    assert "receiver: address = ..." in result.source
+    assert any(fix.rule == "VY122" for fix in result.fixes)
+
+
 def test_modern_erc_interface_imports(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC4626, ERC721
