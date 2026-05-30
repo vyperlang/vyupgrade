@@ -19,6 +19,7 @@ from .rule_groups.legacy import (
     POST_DIAGNOSTIC_RULES as LEGACY_POST_DIAGNOSTIC_RULES,
     POST_INTERFACE_RULES as LEGACY_POST_INTERFACE_RULES,
 )
+from .rule_groups.legacy_builtins import RULES as LEGACY_BUILTIN_RULES
 from .rule_groups.legacy_diagnostics import RULES as LEGACY_DIAGNOSTIC_RULES
 from .rule_groups.legacy_interfaces import RULES as LEGACY_INTERFACE_RULES
 from .rule_groups.meta import RULES as META_RULES
@@ -81,6 +82,7 @@ RULES = (
     *LEGACY_POST_INTERFACE_RULES,
     *LEGACY_DIAGNOSTIC_RULES,
     *LEGACY_POST_DIAGNOSTIC_RULES,
+    *LEGACY_BUILTIN_RULES,
     *COMPARISON_RULES,
     *LEGACY_POST_COMPARISON_RULES,
     *NUMERIC_PRE_INTERFACE_RULES,
