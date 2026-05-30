@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .analysis import SourceFacts
 from .models import Config, Fix
 from .source import TextEdit, apply_edits, code_mask, line_number, span_is_code
 from .versions import MigrationContext, VyperVersion
@@ -42,6 +43,72 @@ def line_offsets(source: str) -> list[int]:
     for match in re.finditer("\n", source):
         offsets.append(match.end())
     return offsets
+
+
+def strip_arg_comments(raw_args: str) -> str:
+    lines: list[str] = []
+    for raw_line in raw_args.splitlines():
+        line = raw_line
+        mask = code_mask(line)
+        comment_start = next(
+            (
+                index
+                for index, char in enumerate(line)
+                if char == "#" and (index == 0 or mask[index - 1])
+            ),
+            None,
+        )
+        if comment_start is not None:
+            line = line[:comment_start]
+        if line.strip():
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def has_line_comment(text: str) -> bool:
+    for line in text.splitlines():
+        mask = code_mask(line)
+        if any(char == "#" and (index == 0 or mask[index - 1]) for index, char in enumerate(line)):
+            return True
+    return False
+
+
+def function_start_at_line(facts: SourceFacts, line_no: int) -> int | None:
+    for start, end in sorted(facts.function_ends.items()):
+        if start <= line_no <= end:
+            return start
+    return None
+
+
+def function_body_span(
+    source: str,
+    line_offsets: list[int],
+    facts: SourceFacts,
+    function_line: int,
+) -> tuple[int, int]:
+    start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
+    end_line = facts.function_ends.get(function_line, len(line_offsets))
+    end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
+    return start, end
+
+
+def is_attribute_name(source: str, start: int) -> bool:
+    i = start - 1
+    while i >= 0 and source[i].isspace() and source[i] != "\n":
+        i -= 1
+    return i >= 0 and source[i] == "."
+
+
+def is_keyword_argument_name(source: str, start: int, end: int) -> bool:
+    i = end
+    while i < len(source) and source[i].isspace() and source[i] != "\n":
+        i += 1
+    if i >= len(source) or source[i] != "=":
+        return False
+    j = start - 1
+    while j >= 0 and source[j].isspace():
+        j -= 1
+    return j >= 0 and source[j] in "(,{"
 
 
 def insert_import(source: str, line: str) -> str:
@@ -150,3 +217,7 @@ def find_matching_open(
             if depth == 0:
                 return index
     return None
+
+
+def literal_integer(value: str) -> bool:
+    return bool(re.fullmatch(r"\s*(?:\d|_)+\s*", value))
