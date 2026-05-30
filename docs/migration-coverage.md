@@ -399,8 +399,9 @@ modern Python interpreter.
 ### v0.1.0-beta.17
 
 - Required `raw_call` and `slice` arguments became positional:
-  validation-only. The `v0.2.1` coverage covers the later `raw_call` `outsize`
-  to `max_outsize` spelling and `slice()` integer-width diagnostics.
+  `VY221` rewrites `slice(data, start=..., len=...)` to positional arguments.
+  The `v0.2.1` coverage covers the later `raw_call` `outsize` to
+  `max_outsize` spelling and `slice()` integer-width diagnostics.
 - NatSpec comments added: no-op for beta targets. `VY058` handles a later
   `0.4.0` NatSpec tag syntax cleanup.
 
@@ -432,7 +433,7 @@ modern Python interpreter.
 
 ### v0.1.0-beta.11
 
-- `sha3()` removed: validation-only.
+- `sha3()` removed: `VY217` rewrites it to `keccak256()`.
 - String and dynamic bytes equality added: no-op. This is newly accepted
   expression syntax.
 
@@ -471,7 +472,8 @@ modern Python interpreter.
   form and `map(...)` to modern `HashMap[...]`.
 - Struct definitions and constructors added: no-op for beta targets. Later
   struct literal syntax is covered by `VY060`.
-- `clear()` replaced `reset()` and `del` was disallowed: validation-only.
+- `clear()` replaced `reset()` and `del` was disallowed: `VY219` rewrites
+  `reset(...)` and simple `del x` statements to `clear(...)`.
 - `EMPTY_BYTES32` added: `VY012` handles the later builtin-constant removal.
 
 ### v0.1.0-beta.5
@@ -483,8 +485,7 @@ modern Python interpreter.
 
 ### v0.1.0-beta.4
 
-- `convert(x, "T")` string type arguments changed to `convert(x, T)`:
-  validation-only.
+- `convert(x, "T")` string type arguments changed to `convert(x, T)`: `VY218`.
 - Custom constants added: no-op for beta targets. Later constant accessor
   collisions are covered by `VY016`.
 - `if` and `assert` became stricter about boolean expressions:
@@ -498,7 +499,7 @@ modern Python interpreter.
   syntax.
 - `not` restricted to boolean values: `VY231` and `VYD013` handle later numeric
   `not` cleanup.
-- `num128` replaced by `int128`: validation-only.
+- `num128` replaced by `int128`: `VY216`.
 
 ### v0.1.0-beta.2
 
@@ -510,7 +511,8 @@ modern Python interpreter.
 
 - Initial beta source forms are validation-only where they predate later
   supported rewrite rules. Later target rules cover major surviving forms:
-  `VY201`, `VY202`, `VY203`, `VY204`, `VY206`, `VY207`, `VY208`, and `VY209`.
+  `VY201`, `VY202`, `VY203`, `VY204`, `VY206`, `VY207`, `VY208`, `VY209`,
+  `VY216`, and `VY221`.
 
 ## Global Diagnostics
 

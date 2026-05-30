@@ -3360,6 +3360,62 @@ def g(items: RLPList(uint256)):
     assert "def f(_value: int128" in result.source
 
 
+def test_early_beta_syntax_cleanup_rewrites_safe_forms() -> None:
+    source = '''# @version 0.1.0b4
+payload: bytes <= 32
+amounts: num[3]
+counter: num256
+signed: signed256
+
+@public
+def f(data: bytes <= 32, amount: num128, target: address) -> uint256:
+    x: uint256 = convert(amount, "uint256")
+    digest: bytes32 = sha3(data)
+    reset(self.counter)
+    del self.signed
+    raw_call(target, data, outsize=32)
+    sliced: bytes <= 4 = slice(data, start=0, len=4)
+    return as_wei_value(1, wei)
+'''
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "payload: Bytes[32]" in result.source
+    assert "amounts: int128[3]" in result.source
+    assert "counter: uint256" in result.source
+    assert "signed: int256" in result.source
+    assert "data: Bytes[32]" in result.source
+    assert "amount: int128" in result.source
+    assert 'convert(amount, "uint256")' not in result.source
+    assert "convert(amount, uint256)" in result.source
+    assert "keccak256(data)" in result.source
+    assert "clear(self.counter)" in result.source
+    assert "clear(self.signed)" in result.source
+    assert "max_outsize=32" in result.source
+    assert "slice(data, 0, 4)" in result.source
+    assert 'as_wei_value(1, "wei")' in result.source
+    assert {fix.rule for fix in result.fixes} >= {"VY216", "VY217", "VY218", "VY219", "VY221"}
+
+
+def test_early_beta_cleanup_skips_comments_strings_and_identifiers() -> None:
+    source = '''# @version 0.1.0b4
+note: String[64] = "sha3 convert(x, \\"uint256\\") reset bytes <= 32"
+# sha3(convert(x, "uint256"))
+
+@public
+def f(num: uint256) -> uint256:
+    return num
+'''
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert '"sha3 convert(x, \\"uint256\\") reset bytes <= 32"' in result.source
+    assert '# sha3(convert(x, "uint256"))' in result.source
+    assert "def f(num: uint256)" in result.source
+    assert "return num" in result.source
+    assert not ({"VY216", "VY217", "VY218", "VY219", "VY221"} & {fix.rule for fix in result.fixes})
+
+
 def test_nested_bare_import_is_diagnostic_when_crossing_0_4_1() -> None:
     source = """# @version 0.4.0
 import sibling

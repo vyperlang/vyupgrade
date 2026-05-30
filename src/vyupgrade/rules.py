@@ -102,6 +102,11 @@ RULE_CHANGES = {
     "VY209": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VY211": RuleChange(VyperVersion(0, 2, 8)),
     "VY210": RuleChange(VyperVersion(0, 2, 16)),
+    "VY216": RuleChange(VyperVersion(0, 2, 1), "target"),
+    "VY217": RuleChange(VyperVersion(0, 2, 1), "target"),
+    "VY218": RuleChange(VyperVersion(0, 2, 1), "target"),
+    "VY219": RuleChange(VyperVersion(0, 2, 1), "target"),
+    "VY221": RuleChange(VyperVersion(0, 2, 1), "target"),
     "VY220": RuleChange(VyperVersion(0, 3, 7)),
     "VY230": RuleChange(VyperVersion(0, 3, 8)),
     "VY231": RuleChange(VyperVersion(0, 3, 8)),
@@ -145,6 +150,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         _legacy_events,
         _event_kwargs,
         _legacy_maps_and_interfaces,
+        _early_beta_syntax,
         _legacy_dynamic_types,
         _reserved_parameter_names,
         _legacy_diagnostics,
@@ -758,6 +764,197 @@ def _legacy_dynamic_types(
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+def _early_beta_syntax(
+    source: str, config: Config, context: MigrationContext
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    rules = {"VY216", "VY217", "VY218", "VY219", "VY221"}
+    if not _any_enabled(rules, config, context) or not _pre_021_context(context):
+        return source, [], []
+    fixes: list[Fix] = []
+    current = source
+    if _enabled("VY216", config, context):
+        current, new_fixes = _rewrite_early_beta_types(current)
+        fixes.extend(new_fixes)
+    if _enabled("VY217", config, context):
+        current, new_fixes = _replace_identifier_call(current, "sha3", "keccak256", "VY217")
+        fixes.extend(new_fixes)
+    if _enabled("VY218", config, context):
+        current, new_fixes = _rewrite_string_convert_types(current)
+        fixes.extend(new_fixes)
+    if _enabled("VY219", config, context):
+        current, new_fixes = _rewrite_early_beta_clear(current)
+        fixes.extend(new_fixes)
+    if _enabled("VY221", config, context):
+        current, new_fixes = _rewrite_early_beta_call_syntax(current)
+        fixes.extend(new_fixes)
+    return current, fixes, []
+
+
+def _rewrite_early_beta_types(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\bbytes\s*<=\s*([A-Za-z_][A-Za-z0-9_]*|\d+)", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        replacement = f"bytes[{match.group(1)}]"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY216",
+                line_number(source, match.start()),
+                "changed early beta bytes bound syntax",
+                match.group(0),
+                replacement,
+            )
+        )
+    type_replacements = {
+        "num128": "int128",
+        "num256": "uint256",
+        "signed256": "int256",
+        "num": "int128",
+    }
+    pattern = re.compile(r"(?P<prefix>(?::|->|\[)\s*)(?P<type>num128|num256|signed256|num)\b")
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        replacement = type_replacements[match.group("type")]
+        edits.append(TextEdit(match.start("type"), match.end("type"), replacement))
+        fixes.append(
+            Fix(
+                "VY216",
+                line_number(source, match.start()),
+                "renamed early beta numeric type",
+                match.group("type"),
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_string_convert_types(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for match, _open_index, close, raw_args in _iter_calls(source, "convert"):
+        args = split_top_level_args(raw_args)
+        if args is None or len(args) != 2:
+            continue
+        target = args[1].strip()
+        target_match = re.fullmatch(r"""(["'])([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\1""", target)
+        if target_match is None:
+            continue
+        replacement = f"convert({args[0].strip()}, {target_match.group(2)})"
+        edits.append(TextEdit(match.start(), close + 1, replacement))
+        fixes.append(
+            Fix(
+                "VY218",
+                line_number(source, match.start()),
+                "changed convert string type argument",
+                source[match.start() : close + 1],
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_early_beta_clear(source: str) -> tuple[str, list[Fix]]:
+    current, fixes = _replace_identifier_call(source, "reset", "clear", "VY219")
+    mask = code_mask(current)
+    edits: list[TextEdit] = []
+    for match in re.finditer(
+        r"^(?P<indent>[ \t]*)del[ \t]+(?P<expr>[^#\n]+?)(?P<trailing>[ \t]*(?:#.*)?)(?=\n|$)",
+        current,
+        re.MULTILINE,
+    ):
+        if not _line_match_starts_outside_string(current, mask, match.start()):
+            continue
+        expr = match.group("expr").strip()
+        replacement = f"{match.group('indent')}clear({expr}){match.group('trailing')}"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY219",
+                line_number(current, match.start()),
+                "changed early beta delete statement",
+                match.group(0),
+                replacement,
+            )
+        )
+    return apply_edits(current, edits), fixes
+
+
+def _rewrite_early_beta_call_syntax(source: str) -> tuple[str, list[Fix]]:
+    current, fixes = _rewrite_as_wei_value_units(source)
+    current, slice_fixes = _rewrite_slice_keyword_args(current)
+    fixes.extend(slice_fixes)
+    return current, fixes
+
+
+def _rewrite_as_wei_value_units(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for match, _open_index, close, raw_args in _iter_calls(source, "as_wei_value"):
+        args = split_top_level_args(raw_args)
+        if args is None or len(args) != 2:
+            continue
+        unit = args[1].strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", unit) is None:
+            continue
+        replacement = f'as_wei_value({args[0].strip()}, "{unit}")'
+        edits.append(TextEdit(match.start(), close + 1, replacement))
+        fixes.append(
+            Fix(
+                "VY221",
+                line_number(source, match.start()),
+                "quoted as_wei_value unit",
+                source[match.start() : close + 1],
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_slice_keyword_args(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for match, _open_index, close, raw_args in _iter_calls(source, "slice"):
+        args = split_top_level_args(raw_args)
+        if args is None or len(args) != 3:
+            continue
+        value_arg: str | None = None
+        start_arg: str | None = None
+        length_arg: str | None = None
+        for arg in args:
+            name, sep, raw_value = arg.partition("=")
+            if not sep:
+                if value_arg is not None:
+                    value_arg = None
+                    break
+                value_arg = arg.strip()
+                continue
+            if name.strip() == "start":
+                start_arg = raw_value.strip()
+            elif name.strip() == "len":
+                length_arg = raw_value.strip()
+            else:
+                value_arg = None
+                break
+        if value_arg is None or start_arg is None or length_arg is None:
+            continue
+        replacement = f"slice({value_arg}, {start_arg}, {length_arg})"
+        edits.append(TextEdit(match.start(), close + 1, replacement))
+        fixes.append(
+            Fix(
+                "VY221",
+                line_number(source, match.start()),
+                "changed slice required keyword arguments",
+                source[match.start() : close + 1],
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes
 
 
 def _reserved_parameter_names(
