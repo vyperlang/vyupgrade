@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import infer_expr_type, parse_source_facts
+from ..analysis import SourceFacts, infer_expr_type
 from ..models import Diagnostic, Fix
 from ..rule_helpers import literal_integer as _literal_integer
 from ..rule_registry import Rule, RuleContext, target_floor
-from ..source import code_mask, find_matching, line_number, split_top_level_args, span_is_code
+from ..source import find_matching, line_number, split_top_level_args, span_is_code
 from ..versions import VyperVersion
 
 
@@ -16,20 +16,20 @@ def _legacy_diagnostics(
     source = rule_context.source
     context = rule_context.migration
     diagnostics: list[Diagnostic] = []
+    mask = rule_context.code_mask
     if rule_context.is_enabled("VYD210"):
-        diagnostics.extend(_byte_string_literal_diagnostics(source))
+        diagnostics.extend(_byte_string_literal_diagnostics(source, mask))
     if rule_context.is_enabled("VYD211") and (
         context.source_floor is None or context.source_floor <= VyperVersion("0.2.1")
     ):
         diagnostics.extend(_reserved_value_parameter_diagnostics(source))
     if rule_context.is_enabled("VYD212"):
-        diagnostics.extend(_slice_uint256_diagnostics(source))
+        diagnostics.extend(_slice_uint256_diagnostics(source, rule_context.facts, mask))
     if rule_context.is_enabled("VYD213"):
         diagnostics.extend(_len_uint256_diagnostics(source))
     if rule_context.is_enabled("VYD214"):
-        diagnostics.extend(_call_kwarg_uint256_diagnostics(source))
+        diagnostics.extend(_call_kwarg_uint256_diagnostics(source, rule_context.facts, mask))
     if rule_context.is_enabled("VYD215"):
-        mask = code_mask(source)
         diagnostics.extend(
             Diagnostic(
                 "VYD215",
@@ -42,9 +42,8 @@ def _legacy_diagnostics(
     return source, [], diagnostics
 
 
-def _byte_string_literal_diagnostics(source: str) -> list[Diagnostic]:
+def _byte_string_literal_diagnostics(source: str, mask: list[bool]) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    mask = code_mask(source)
     patterns = [
         (
             re.compile(r"\bBytes\s*\[[^\]]+\]\s*=\s*(?=\")"),
@@ -86,10 +85,10 @@ def _reserved_value_parameter_diagnostics(source: str) -> list[Diagnostic]:
     return diagnostics
 
 
-def _slice_uint256_diagnostics(source: str) -> list[Diagnostic]:
-    facts = parse_source_facts(source)
+def _slice_uint256_diagnostics(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    mask = code_mask(source)
     for match in re.finditer(r"\bslice\s*\(", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue
@@ -131,10 +130,10 @@ def _len_uint256_diagnostics(source: str) -> list[Diagnostic]:
     return diagnostics
 
 
-def _call_kwarg_uint256_diagnostics(source: str) -> list[Diagnostic]:
-    facts = parse_source_facts(source)
+def _call_kwarg_uint256_diagnostics(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    mask = code_mask(source)
     for match in re.finditer(
         r"(?<![\w.])(?:[A-Za-z_][A-Za-z0-9_]*\([^)\n]*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
         source,

@@ -63,7 +63,7 @@ def _replace_numeric_not(
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     pattern = re.compile(r"\bnot\s+((?:self\.)?[A-Za-z_][A-Za-z0-9_]*)")
     for match in pattern.finditer(source):
         if not span_is_code(mask, match.start(), match.end()):

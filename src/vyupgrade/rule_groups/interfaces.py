@@ -405,7 +405,7 @@ def _interface_imports(
     changed = False
     requested_rewrites: dict[str, str] = {}
     taken = code_identifiers(source)
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     offset = 0
 
     for i, line in enumerate(lines):

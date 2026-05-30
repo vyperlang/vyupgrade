@@ -175,7 +175,7 @@ def _range_bound(
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for match in re.finditer(r"\brange\s*\(", source):
         if not span_is_code(mask, match.start(), match.end()):
             continue

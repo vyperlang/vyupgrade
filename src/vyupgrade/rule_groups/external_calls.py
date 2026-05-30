@@ -175,7 +175,7 @@ def _external_call_keywords_once(
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
-    mask = code_mask(source)
+    mask = rule_context.code_mask
     for start, end, target, method, cast_type in _all_external_call_matches(source, facts):
         if not span_is_code(mask, start, end):
             continue
