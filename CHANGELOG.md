@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Added opt-in support for targeting Vyper `0.5.0a1` and `0.5.0a2`.
 - Added rewrites for `isqrt`, duplicate or repeated `implements` declarations, concrete interface defaults, and docstring-only function bodies when migrating to the alpha targets.
+- Added an error diagnostic when the inferred source version is newer than the requested target.
+- Moved rule gating into descriptors and split rule implementations and tests by rule group for easier maintenance.
+- Isolated compiler-backed CLI tests from fast CLI tests to keep the default suite quick while preserving real compiler coverage.
 
 ## 0.2.0
 
