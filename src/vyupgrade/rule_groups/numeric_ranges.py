@@ -37,8 +37,6 @@ from .numeric_types import (
 def _typed_range_loops(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY070", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     facts = parse_source_facts(source)
@@ -83,8 +81,6 @@ def _typed_range_loops(
 def _integer_assignment_casts(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []

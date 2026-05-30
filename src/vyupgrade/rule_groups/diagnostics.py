@@ -11,8 +11,6 @@ def decimal_diagnostic(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    if not rule_context.is_enabled("VYD001"):
-        return source, [], []
     if re.search(r"\bdecimal\b", source) and not rule_context.config.enable_decimals:
         return (
             source,
@@ -32,8 +30,6 @@ def prevrandao_diagnostic(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    if not rule_context.is_enabled("VYD010"):
-        return source, [], []
     diagnostics = [
         Diagnostic(
             "VYD010",
@@ -49,8 +45,6 @@ def missing_pragma_diagnostic(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    if not rule_context.is_enabled("VYD005"):
-        return source, [], []
     if rule_context.migration.source_spec is None and rule_context.config.source_version is None:
         return (
             source,

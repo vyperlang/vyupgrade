@@ -139,8 +139,6 @@ def _integer_division(
 def _sqrt(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY100", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     if _name_is_user_defined(facts, "sqrt") or _name_is_imported(source, "sqrt"):
         return source, [], []
@@ -602,8 +600,6 @@ def _name_is_imported(source: str, name: str) -> bool:
 def _redundant_integer_convert(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY051", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     facts = parse_source_facts(source)

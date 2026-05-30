@@ -29,8 +29,6 @@ from ..versions import MigrationContext
 def _legacy_constants(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY012", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     current = source
     replacements = {
@@ -60,8 +58,6 @@ def _legacy_constants(
 def _immutable_accessor_collisions(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY013", config, context):
-        return source, [], []
     current, fixes = _accessor_collision_rewrites(
         source,
         r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*immutable\s*\(",
@@ -75,8 +71,6 @@ def _immutable_accessor_collisions(
 def _constant_accessor_collisions(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY016", config, context):
-        return source, [], []
     current, fixes = _accessor_collision_rewrites(
         source,
         r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\(",
@@ -212,8 +206,6 @@ def _is_constant_declaration_name(source: str, start: int) -> bool:
 def _interface_view_mutability(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY014", config, context):
-        return source, [], []
     view_names = _view_implementation_names(source)
     if not view_names:
         return source, [], []
@@ -270,8 +262,6 @@ def _view_implementation_names(source: str) -> set[str]:
 def _pure_immutable_reads(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY015", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     immutable_names = _immutable_names(facts)
     mask = code_mask(source)

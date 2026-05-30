@@ -22,8 +22,6 @@ def ignored_external_call_results(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    if not rule_context.is_enabled("VY057"):
-        return source, [], []
     facts = rule_context.facts
     taken_names = code_identifiers(source)
     edits: list[TextEdit] = []
@@ -271,8 +269,6 @@ def _interface_cast_call_matches(
 def _external_call_subscripts(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY042", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)

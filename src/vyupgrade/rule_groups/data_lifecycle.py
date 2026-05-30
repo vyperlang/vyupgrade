@@ -30,8 +30,6 @@ from ..versions import MigrationContext
 def _constructor_deploy(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY002", config, context):
-        return source, [], []
     current, fixes, insertions = _remove_constructor_decorators(
         source,
         {"@external", "@internal", "@public", "@private"},
@@ -72,8 +70,6 @@ def _abi_builtins(
 def _enum_to_flag(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY030"}, config, context):
-        return source, [], []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     if re.search(r"\benum\s+\w+:", source) is None:
@@ -146,8 +142,6 @@ def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
 def _struct_kwargs(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY060", config, context):
-        return source, [], []
     current = source
     all_fixes: list[Fix] = []
     while True:
@@ -258,8 +252,6 @@ def _ordered_kwarg_string(
 def _create_from_blueprint(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY080", config, context):
-        return source, [], []
     diagnostics: list[Diagnostic] = []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []

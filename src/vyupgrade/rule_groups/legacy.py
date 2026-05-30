@@ -39,8 +39,6 @@ from ..versions import MigrationContext, VyperVersion
 def _pragma(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY001", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     mask = code_mask(source)
     pattern = re.compile(
@@ -78,8 +76,6 @@ def _pragma(
 def _legacy_decorators(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY201", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     replacements = {
         "public": "external",
@@ -111,8 +107,6 @@ def _legacy_decorators(
 def _legacy_type_units(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY202", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
@@ -211,8 +205,6 @@ def _legacy_events(
 def _event_kwargs(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY112", config, context):
-        return source, [], []
     event_fields = _collect_event_fields(source)
     if not event_fields:
         return source, [], []
@@ -259,8 +251,6 @@ def _event_kwargs(
 def _legacy_dynamic_types(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY207", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
@@ -475,8 +465,6 @@ def _rewrite_slice_keyword_args(source: str) -> tuple[str, list[Fix]]:
 def _reserved_parameter_names(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY212", config, context):
-        return source, [], []
     if context.source_floor is not None and context.source_floor > VyperVersion("0.2.1"):
         return source, [], []
     facts = parse_source_facts(source)
@@ -523,8 +511,6 @@ def _reserved_parameter_names(
 def _natspec_strictness(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY058", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -599,8 +585,6 @@ def _natspec_line_replacement(line: str, params: set[str] | None) -> str | None:
 def _legacy_constructor_locks(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY210", config, context):
-        return source, [], []
     current, fixes, insertions = _remove_constructor_decorators(
         source,
         {"@nonreentrant"},

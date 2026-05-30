@@ -11,8 +11,6 @@ def not_in_comparator(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    if not rule_context.is_enabled("VY211"):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
