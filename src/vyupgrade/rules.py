@@ -20,6 +20,11 @@ from .analysis import (
 from .ast_facts import integer_constants as ast_integer_constants
 from .models import Config, Diagnostic, Fix, RewriteResult
 from .rule_groups.comparisons import not_in_comparator
+from .rule_groups.diagnostics import (
+    decimal_diagnostic,
+    missing_pragma_diagnostic,
+    prevrandao_diagnostic,
+)
 from .rule_groups.external_calls import (
     external_call_expression_end,
     ignored_external_call_results,
@@ -3895,56 +3900,6 @@ def _bitwise(
     return current, fixes, diagnostics
 
 
-def _decimal_diagnostic(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VYD001", config, context):
-        return source, [], []
-    if re.search(r"\bdecimal\b", source) and not config.enable_decimals:
-        return (
-            source,
-            [],
-            [
-                Diagnostic(
-                    "VYD001",
-                    1,
-                    "decimal type is used; target compile may require --enable-decimals",
-                )
-            ],
-        )
-    return source, [], []
-
-
-def _prevrandao_diagnostic(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VYD010", config, context):
-        return source, [], []
-    diagnostics = [
-        Diagnostic(
-            "VYD010",
-            line_number(source, match.start()),
-            "block.prevrandao signature changed in 0.4.0; review manually",
-        )
-        for match in re.finditer(r"\bblock\.prevrandao\b", source)
-    ]
-    return source, [], diagnostics
-
-
-def _missing_pragma_diagnostic(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VYD005", config, context):
-        return source, [], []
-    if context.source_spec is None and config.source_version is None:
-        return (
-            source,
-            [],
-            [Diagnostic("VYD005", 1, "source has no version pragma and no --source-version")],
-        )
-    return source, [], []
-
-
 def _read_left_operand(source: str, index: int) -> str:
     i = index - 1
     while i >= 0 and source[i].isspace():
@@ -5307,9 +5262,9 @@ RULES = (
             crossing("VYD012", (0, 4, 2)),
         ),
     ),
-    Rule("decimal_diagnostic", runner=_decimal_diagnostic, changes=(crossing("VYD001", (0, 4, 0)),)),
-    Rule("prevrandao_diagnostic", runner=_prevrandao_diagnostic, changes=(crossing("VYD010", (0, 4, 0)),)),
-    Rule("missing_pragma_diagnostic", runner=_missing_pragma_diagnostic, changes=(crossing("VYD005", (0, 4, 0)),)),
+    Rule("decimal_diagnostic", context_runner=decimal_diagnostic, changes=(crossing("VYD001", (0, 4, 0)),)),
+    Rule("prevrandao_diagnostic", context_runner=prevrandao_diagnostic, changes=(crossing("VYD010", (0, 4, 0)),)),
+    Rule("missing_pragma_diagnostic", context_runner=missing_pragma_diagnostic, changes=(crossing("VYD005", (0, 4, 0)),)),
     Rule("interface_split", changes=(crossing("VY120", (0, 4, 0)),)),
     Rule(
         "validation",
