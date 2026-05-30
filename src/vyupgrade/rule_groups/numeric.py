@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import re
 
 from ..analysis import (
@@ -14,7 +13,6 @@ from ..analysis import (
     parse_source_facts,
     unwrap_type,
 )
-from ..ast_facts import integer_constants as ast_integer_constants
 from ..models import Config, Diagnostic, Fix
 from ..rule_groups.external_calls import _all_external_call_matches
 from ..rule_helpers import (
@@ -26,7 +24,7 @@ from ..rule_helpers import (
     literal_integer as _literal_integer,
     replace_identifier_expr as _replace_identifier_expr,
 )
-from ..rule_registry import Rule, RuleContext, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -38,6 +36,10 @@ from ..source import (
     span_is_code,
 )
 from ..versions import MigrationContext
+from .numeric_constants import (
+    _constant_range_iteration_bound,
+    _integer_constant_values,
+)
 
 
 def _pre_04_expression_rewrites(
@@ -136,242 +138,6 @@ def _integer_division(
                     )
                 )
     return apply_edits(source, edits), fixes, diagnostics
-
-
-def _constant_integer_decl_casts(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
-    facts = parse_source_facts(source)
-    fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    mask = code_mask(source)
-    integer_type = r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)"
-    pattern = re.compile(
-        rf"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\(\s*(?P<type>{integer_type})\s*\)\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
-        re.MULTILINE,
-    )
-    for match in pattern.finditer(source):
-        if not span_is_code(mask, match.start("name"), match.end("value")):
-            continue
-        expected_type = normalize_type(match.group("type"))
-        if expected_type == "uint256":
-            continue
-        value = match.group("value").strip()
-        if value.startswith("convert(") or _literal_integer(value):
-            continue
-        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
-        actual_type = infer_expr_type(value, vars_for_line, facts)
-        if actual_type is not None and normalize_type(actual_type) == expected_type:
-            continue
-        folded = _eval_integer_constant_expr(
-            value, _integer_constant_values(source, config.source_ast)
-        )
-        if folded is None or not _integer_value_fits_type(folded, expected_type):
-            continue
-        before = match.group(0)
-        after = f"{match.group('indent')}{match.group('name')}: constant({expected_type}) = {folded}{match.group('comment')}"
-        edits.append(TextEdit(match.start(), match.end(), after))
-        fixes.append(
-            Fix(
-                "VY052",
-                line_number(source, match.start()),
-                "folded integer constant initializer to declared type",
-                before,
-                after,
-            )
-        )
-    return apply_edits(source, edits), fixes, []
-
-
-def _integer_value_fits_type(value: int, type_name: str) -> bool:
-    match = re.fullmatch(r"(u?)int(\d+)", type_name)
-    if match is None:
-        return False
-    bits = int(match.group(2))
-    if match.group(1):
-        return 0 <= value < 2**bits
-    return -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
-
-
-def _constant_exponent_literals(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    return _constant_exponent_literals_context(RuleContext(source, config, context))
-
-
-def _constant_exponent_literals_context(
-    rule_context: RuleContext,
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    source = rule_context.source
-    config = rule_context.config
-    context = rule_context.migration
-    if not _enabled("VY054", config, context):
-        return source, [], []
-    facts = rule_context.facts
-    mask = rule_context.code_mask
-    edits: list[TextEdit] = []
-    fixes: list[Fix] = []
-    max_int128_re = re.compile(r"(?<![\w])(?:\(\s*)?2\s*\*\*\s*127\s*-\s*1(?:\s*\))?")
-    for match in max_int128_re.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()) or not _int128_literal_context(
-            source, match.start(), facts
-        ):
-            continue
-        replacement = "max_value(int128)"
-        edits.append(TextEdit(match.start(), match.end(), replacement))
-        fixes.append(
-            Fix(
-                "VY054",
-                line_number(source, match.start()),
-                "replaced signed int128 max literal",
-                match.group(0),
-                replacement,
-            )
-        )
-    constant_values = _integer_constant_values(source, config.source_ast)
-    for name, value in constant_values.items():
-        if value < 0:
-            continue
-        name_re = re.compile(rf"\b{re.escape(name)}\b")
-        for name_match in name_re.finditer(source):
-            start = name_match.start()
-            end = name_match.end()
-            if not span_is_code(mask, start, end) or not _inside_exponent(source, start, end):
-                continue
-            replacement = str(value)
-            edits.append(TextEdit(start, end, replacement))
-            fixes.append(
-                Fix(
-                    "VY054",
-                    line_number(source, start),
-                    "folded integer constant in unsigned exponent expression",
-                    name,
-                    replacement,
-                )
-            )
-    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
-    return apply_edits(source, selected_edits), selected_fixes, []
-
-
-def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool:
-    line_no = line_number(source, index)
-    return_type = facts.return_type_at_line(line_no)
-    if normalize_type(return_type or "") == "int128":
-        return True
-    line_start = source.rfind("\n", 0, index) + 1
-    line_end = source.find("\n", index)
-    if line_end == -1:
-        line_end = len(source)
-    line = source[line_start:line_end]
-    vars_for_line = facts.vars_at_line(line_no)
-    return (
-        normalize_type(_lhs_declared_type(line) or _lhs_assigned_type(line, vars_for_line) or "")
-        == "int128"
-    )
-
-
-def _dynamic_pow_mod256(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY055", config, context):
-        return source, [], []
-    fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    mask = code_mask(source)
-    convert_operand = r"convert\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*uint256\s*\)"
-    pattern = re.compile(rf"(?P<left>{convert_operand})\s*\*\*\s*(?P<right>{convert_operand})")
-    for match in pattern.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()) or _top_level_constant_line(
-            source, match.start()
-        ):
-            continue
-        left = match.group("left")
-        right = match.group("right")
-        replacement = f"pow_mod256({left}, {right})"
-        edits.append(TextEdit(match.start(), match.end(), replacement))
-        fixes.append(
-            Fix(
-                "VY055",
-                line_number(source, match.start()),
-                "rewrote dynamic exponentiation to pow_mod256",
-                match.group(0),
-                replacement,
-            )
-        )
-    return apply_edits(source, edits), fixes, []
-
-
-def _eval_integer_constant_expr(expr: str, values: dict[str, int]) -> int | None:
-    try:
-        node = ast.parse(expr.strip(), mode="eval")
-    except SyntaxError:
-        return None
-    return _eval_integer_ast(node.body, values)
-
-
-def _eval_integer_ast(node: ast.AST, values: dict[str, int]) -> int | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, int):
-        return node.value
-    if isinstance(node, ast.Name):
-        return values.get(node.id)
-    if isinstance(node, ast.UnaryOp):
-        operand = _eval_integer_ast(node.operand, values)
-        if operand is None:
-            return None
-        if isinstance(node.op, ast.USub):
-            return -operand
-        if isinstance(node.op, ast.UAdd):
-            return operand
-        return None
-    if isinstance(node, ast.BinOp):
-        left = _eval_integer_ast(node.left, values)
-        right = _eval_integer_ast(node.right, values)
-        if left is None or right is None:
-            return None
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.FloorDiv) and right != 0:
-            return left // right
-        if isinstance(node.op, ast.Mod) and right != 0:
-            return left % right
-        if isinstance(node.op, ast.Pow) and right >= 0:
-            return left**right
-    return None
-
-
-def _inside_exponent(source: str, start: int, end: int) -> bool:
-    before = source[max(0, start - 8) : start]
-    after = source[end : min(len(source), end + 8)]
-    return bool(re.search(r"\*\*\s*$", before) or re.match(r"\s*\*\*", after))
-
-
-def _top_level_constant_line(source: str, index: int) -> bool:
-    line_start = source.rfind("\n", 0, index) + 1
-    return bool(re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*constant\s*\(", source[line_start:]))
-
-
-def _constant_range_iteration_bound(args: str, values: dict[str, int]) -> int | None:
-    parts = split_top_level_args(args)
-    if parts is None:
-        return None
-    if len(parts) == 1:
-        stop = _eval_integer_constant_expr(parts[0], values)
-        if stop is None or stop < 0:
-            return None
-        return stop
-    if len(parts) != 2:
-        return None
-    start = _eval_integer_constant_expr(parts[0], values)
-    stop = _eval_integer_constant_expr(parts[1], values)
-    if start is None or stop is None or stop < start:
-        return None
-    return stop - start
 
 
 def _mixed_signed_unsigned_arithmetic(
@@ -2183,62 +1949,6 @@ def _unsigned_integer_expression(expr: str, vars_for_line: dict[str, str]) -> bo
     )
 
 
-def _integer_constant_values(
-    source: str, source_ast: dict[str, object] | None = None
-) -> dict[str, int]:
-    values: dict[str, int] = ast_integer_constants(source_ast) if source_ast is not None else {}
-    constant_re = re.compile(
-        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\([^#\n=]+\)\s*=\s*(?P<expr>[^\n#]+)",
-        re.MULTILINE,
-    )
-    mask = code_mask(source)
-    for match in constant_re.finditer(source):
-        if span_is_code(mask, match.start(), match.end()):
-            value = _eval_integer_constant_expr(match.group("expr"), values)
-            if value is not None:
-                values[match.group("name")] = value
-    return values
-
-
-def _dynamic_bytes_hex_literals(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY053", config, context):
-        return source, [], []
-    fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    mask = code_mask(source)
-    pattern = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:\s*Bytes\[[^\]]+\]\s*=\s*(0x[0-9A-Fa-f]*)\b")
-    for match in pattern.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        replacement = _hex_literal_to_byte_string(match.group(1))
-        if replacement is None:
-            continue
-        edits.append(TextEdit(match.start(1), match.end(1), replacement))
-        fixes.append(
-            Fix(
-                "VY053",
-                line_number(source, match.start()),
-                "changed dynamic bytes hex literal to byte string literal",
-                match.group(1),
-                replacement,
-            )
-        )
-    return apply_edits(source, edits), fixes, []
-
-
-def _hex_literal_to_byte_string(literal: str) -> str | None:
-    raw = literal.removeprefix("0x")
-    if len(raw) % 2 != 0:
-        return None
-    return (
-        'b"'
-        + "".join(f"\\x{raw[index : index + 2].lower()}" for index in range(0, len(raw), 2))
-        + '"'
-    )
-
-
 def _name_is_user_defined(facts: SourceFacts, name: str) -> bool:
     return (
         name in facts.global_vars
@@ -2403,7 +2113,7 @@ RANGE_RULES = (
     Rule("integer_assignment_casts", runner=_integer_assignment_casts, changes=(crossing("VY052", (0, 4, 0)),)),
 )
 
-POST_EXTERNAL_RULES = (
+INTEGER_DIVISION_RULES = (
     Rule(
         "integer_division",
         runner=_integer_division,
@@ -2412,20 +2122,18 @@ POST_EXTERNAL_RULES = (
             crossing("VYD004", (0, 4, 0)),
         ),
     ),
-    Rule(
-        "constant_exponent_literals",
-        context_runner=_constant_exponent_literals_context,
-        changes=(crossing("VY054", (0, 4, 0)),),
-    ),
+)
+
+SIGNEDNESS_RULES = (
     Rule("mixed_signed_unsigned_arithmetic", runner=_mixed_signed_unsigned_arithmetic),
     Rule("signed_integer_array_constant_types", runner=_signed_integer_array_constant_types),
     Rule("typed_array_literal_arguments", runner=_typed_array_literal_arguments),
     Rule("unsigned_range_bound_signed_constants", runner=_unsigned_range_bound_signed_constants, changes=(crossing("VY056", (0, 4, 0)),)),
     Rule("typed_external_call_arguments", runner=_typed_external_call_arguments),
-    Rule("dynamic_pow_mod256", runner=_dynamic_pow_mod256, changes=(crossing("VY055", (0, 4, 0)),)),
+)
+
+REDUNDANT_CONVERT_RULES = (
     Rule("redundant_integer_convert", runner=_redundant_integer_convert, changes=(crossing("VY051", (0, 4, 0)),)),
-    Rule("constant_integer_decl_casts", runner=_constant_integer_decl_casts),
-    Rule("dynamic_bytes_hex_literals", runner=_dynamic_bytes_hex_literals, changes=(crossing("VY053", (0, 4, 0)),)),
 )
 
 LATE_RULES = (
@@ -2440,4 +2148,3 @@ LATE_RULES = (
         ),
     ),
 )
-

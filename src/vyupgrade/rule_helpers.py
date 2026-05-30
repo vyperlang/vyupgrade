@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .analysis import SourceFacts
+from .analysis import SourceFacts, indexed_value_type
 from .models import Config, Fix
 from .source import TextEdit, apply_edits, code_mask, line_number, span_is_code
 from .versions import MigrationContext, VyperVersion
@@ -221,3 +221,18 @@ def find_matching_open(
 
 def literal_integer(value: str) -> bool:
     return bool(re.fullmatch(r"\s*(?:\d|_)+\s*", value))
+
+
+def lhs_declared_type(line: str) -> str | None:
+    match = re.match(r"\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*([^=]+)=", line)
+    return match.group(1).strip() if match else None
+
+
+def lhs_assigned_type(line: str, vars_for_line: dict[str, str]) -> str | None:
+    match = re.match(r"\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)(\s*\[[^=]+\])?\s*(?:[-+*/%]?=)", line)
+    if not match:
+        return None
+    type_name = vars_for_line.get(match.group(1))
+    if match.group(2):
+        return indexed_value_type(type_name)
+    return type_name
