@@ -56,7 +56,9 @@ from .rule_groups.legacy import (
     _reserved_parameter_names,
 )
 from .rule_groups.external_calls import (
-    external_call_expression_end,
+    _all_external_call_matches,
+    _external_call_keywords,
+    _external_call_subscripts,
     ignored_external_call_results,
 )
 from .rule_registry import (
@@ -879,150 +881,6 @@ def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
                 break
     return "".join(out), fixes
 
-
-def _external_call_keywords(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY040", "VY041", "VYD003"}, config, context):
-        return source, [], []
-    current = source
-    all_fixes: list[Fix] = []
-    diagnostics: list[Diagnostic] = []
-    for _ in range(3):
-        current, fixes, diagnostics = _external_call_keywords_once(current, config, context)
-        all_fixes.extend(fixes)
-        if not fixes:
-            break
-    return current, all_fixes, diagnostics
-
-
-def _external_call_keywords_once(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
-    fixes: list[Fix] = []
-    diagnostics: list[Diagnostic] = []
-    edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for start, end, target, method, cast_type in _all_external_call_matches(source, facts):
-        if not span_is_code(mask, start, end):
-            continue
-        prefix = source[max(0, start - 16) : start]
-        if target == "self" or method in {"append", "pop"}:
-            continue
-        vars_for_line = facts.vars_at_line(line_number(source, start))
-        if target.startswith("self."):
-            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(
-                target, vars_for_line, facts
-            )
-        else:
-            target_type = cast_type or infer_expr_type(target, vars_for_line, facts)
-        mutability = facts.interfaces.get(normalize_type(target_type or ""), {}).get(method)
-        if mutability is None:
-            if _enabled("VYD003", config, context):
-                diagnostics.append(
-                    Diagnostic(
-                        "VYD003",
-                        line_number(source, start),
-                        f"cannot infer mutability for external call {target}.{method}",
-                    )
-                )
-            continue
-        keyword = "staticcall" if mutability in {"view", "pure"} else "extcall"
-        rule = "VY041" if keyword == "staticcall" else "VY040"
-        if not _enabled(rule, config, context):
-            continue
-        existing_keyword = re.search(r"\b(?P<keyword>extcall|staticcall)\s+$", prefix)
-        if existing_keyword is not None:
-            if existing_keyword.group("keyword") == keyword:
-                continue
-            keyword_start = start - (len(prefix) - existing_keyword.start("keyword"))
-            edits.append(
-                TextEdit(
-                    keyword_start, keyword_start + len(existing_keyword.group("keyword")), keyword
-                )
-            )
-            fixes.append(
-                Fix(
-                    rule,
-                    line_number(source, start),
-                    f"changed external call keyword to {keyword}",
-                    existing_keyword.group("keyword"),
-                    keyword,
-                )
-            )
-            continue
-        edits.append(TextEdit(start, start, keyword + " "))
-        fixes.append(
-            Fix(
-                rule,
-                line_number(source, start),
-                f"added {keyword} to {mutability} external call",
-                source[start:end].rstrip(),
-                keyword + " " + source[start:end].rstrip(),
-            )
-        )
-
-    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
-    return apply_edits(source, selected_edits), selected_fixes, diagnostics
-
-
-def _interface_cast_call_matches(
-    source: str, interfaces: dict[str, dict[str, str]]
-) -> list[tuple[int, int, str, str, str]]:
-    matches: list[tuple[int, int, str, str, str]] = []
-    mask = code_mask(source)
-    for interface_name in sorted(interfaces, key=len, reverse=True):
-        for match in re.finditer(rf"(?<![\w.]){re.escape(interface_name)}\s*\(", source):
-            open_index = source.find("(", match.start())
-            close = find_matching(source, open_index)
-            if close is None or not span_is_code(mask, match.start(), min(close + 1, len(source))):
-                continue
-            tail = re.match(r"(?:\s|\\)*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
-            if tail is None:
-                continue
-            end = close + 1 + tail.end()
-            matches.append(
-                (
-                    match.start(),
-                    end,
-                    source[match.start() : close + 1],
-                    tail.group(1),
-                    interface_name,
-                )
-            )
-    return matches
-
-
-def _external_call_subscripts(
-    source: str, config: Config, context: MigrationContext
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY042", config, context):
-        return source, [], []
-    fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    mask = code_mask(source)
-    for match in re.finditer(r"\b(?:staticcall|extcall)\s+", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        expression_end = external_call_expression_end(source, match.end())
-        if expression_end is None:
-            continue
-        if expression_end >= len(source) or source[expression_end] not in "[.":
-            continue
-        before = source[match.start() : expression_end]
-        after = f"({before})"
-        edits.append(TextEdit(match.start(), expression_end, after))
-        fixes.append(
-            Fix(
-                "VY042",
-                line_number(source, match.start()),
-                "parenthesized external call before subscript",
-                before,
-                after,
-            )
-        )
-    return apply_edits(source, edits), fixes, []
 
 def _integer_division(
     source: str, config: Config, context: MigrationContext
@@ -1875,54 +1733,6 @@ def _typed_external_call_arguments(
             cursor = arg_start + len(arg) + 1
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
-
-
-def _all_external_call_matches(
-    source: str, facts: SourceFacts
-) -> list[tuple[int, int, str, str, str | None]]:
-    target_expr = (
-        r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*"
-        r"(?:\[[^\]\n]+\])?"
-        r"(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?)*"
-    )
-    variable_call_re = re.compile(
-        rf"(?<![\w.])(?P<target>{target_expr})\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\("
-    )
-    matches: list[tuple[int, int, str, str, str | None]] = []
-    matches.extend(_interface_cast_call_matches(source, facts.interfaces))
-    matches.extend(_parenthesized_external_call_matches(source))
-    matches.extend(
-        (match.start(), match.end(), match.group("target"), match.group("method"), None)
-        for match in variable_call_re.finditer(source)
-    )
-    return sorted(matches)
-
-
-def _parenthesized_external_call_matches(
-    source: str,
-) -> list[tuple[int, int, str, str, str | None]]:
-    matches: list[tuple[int, int, str, str, str | None]] = []
-    mask = code_mask(source)
-    pattern = re.compile(r"\(\s*(?:staticcall|extcall)\s+")
-    for match in pattern.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        close = find_matching(source, match.start())
-        if close is None:
-            continue
-        tail = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
-        if tail is None:
-            continue
-        matches.append(
-            (
-                match.start(),
-                close + 1 + tail.end(),
-                source[match.start() : close + 1],
-                tail.group(1),
-                None,
-            )
-        )
-    return matches
 
 
 def _vars_for_argument(
