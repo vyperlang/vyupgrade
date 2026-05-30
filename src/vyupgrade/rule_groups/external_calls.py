@@ -353,10 +353,19 @@ RULES = (
         changes=(
             crossing("VY040", (0, 4, 0)),
             crossing("VY041", (0, 4, 0)),
+            crossing("VYD003", (0, 4, 0)),
         ),
     ),
     Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
-    Rule("external_call_keywords_after_subscripts", runner=_external_call_keywords),
+    Rule(
+        "external_call_keywords_after_subscripts",
+        runner=_external_call_keywords,
+        changes=(
+            crossing("VY040", (0, 4, 0)),
+            crossing("VY041", (0, 4, 0)),
+            crossing("VYD003", (0, 4, 0)),
+        ),
+    ),
     Rule(
         "ignored_external_call_results",
         context_runner=ignored_external_call_results,

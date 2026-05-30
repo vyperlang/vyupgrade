@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from vyupgrade.models import Config, Diagnostic, Fix
+from vyupgrade.rule_registry import Rule, RuleContext, crossing
+from vyupgrade.versions import MigrationContext
+
+
+def test_rule_bind_skips_runner_when_descriptor_is_disabled() -> None:
+    calls = 0
+
+    def runner(
+        source: str, config: Config, context: MigrationContext
+    ) -> tuple[str, list[Fix], list[Diagnostic]]:
+        nonlocal calls
+        calls += 1
+        return source + "changed", [], []
+
+    rule = Rule("sample", runner=runner, changes=(crossing("VYX001", (0, 4, 0)),))
+    bound = rule.bind()
+    assert bound is not None
+
+    context = RuleContext(
+        "source",
+        Config(paths=(Path("contract.vy"),), source_version="0.3.10", target_version="0.3.10"),
+        MigrationContext.from_specs("0.3.10", "0.3.10"),
+        Path("contract.vy"),
+        lambda rule_code: rule_code != "VYX001",
+    )
+
+    assert bound(context) == ("source", [], [])
+    assert calls == 0
+
+
+def test_rule_bind_runs_runner_when_any_descriptor_is_enabled() -> None:
+    calls = 0
+
+    def runner(
+        source: str, config: Config, context: MigrationContext
+    ) -> tuple[str, list[Fix], list[Diagnostic]]:
+        nonlocal calls
+        calls += 1
+        return source + " changed", [], []
+
+    rule = Rule(
+        "sample",
+        runner=runner,
+        changes=(crossing("VYX001", (0, 4, 0)), crossing("VYX002", (0, 4, 0))),
+    )
+    bound = rule.bind()
+    assert bound is not None
+
+    context = RuleContext(
+        "source",
+        Config(paths=(Path("contract.vy"),), source_version="0.3.10", target_version="0.4.0"),
+        MigrationContext.from_specs("0.3.10", "0.4.0"),
+        Path("contract.vy"),
+        lambda rule_code: rule_code == "VYX002",
+    )
+
+    assert bound(context) == ("source changed", [], [])
+    assert calls == 1

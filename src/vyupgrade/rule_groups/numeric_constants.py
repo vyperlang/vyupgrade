@@ -6,7 +6,7 @@ import re
 from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts
 from ..ast_facts import integer_constants as ast_integer_constants
 from ..models import Config, Diagnostic, Fix
-from ..rule_registry import Rule, RuleContext, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, crossing
 from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
     lhs_assigned_type as _lhs_assigned_type,
@@ -27,8 +27,6 @@ from ..versions import MigrationContext
 def _constant_integer_decl_casts(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -92,9 +90,6 @@ def _constant_exponent_literals_context(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     config = rule_context.config
-    context = rule_context.migration
-    if not _enabled("VY054", config, context):
-        return source, [], []
     facts = rule_context.facts
     mask = rule_context.code_mask
     edits: list[TextEdit] = []
@@ -161,8 +156,6 @@ def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool
 def _dynamic_pow_mod256(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY055", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
@@ -280,8 +273,6 @@ def _integer_constant_values(
 def _dynamic_bytes_hex_literals(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY053", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
@@ -331,7 +322,11 @@ DYNAMIC_POW_RULES = (
 )
 
 CONSTANT_DECL_RULES = (
-    Rule("constant_integer_decl_casts", runner=_constant_integer_decl_casts),
+    Rule(
+        "constant_integer_decl_casts",
+        runner=_constant_integer_decl_casts,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
 )
 
 BYTES_LITERAL_RULES = (

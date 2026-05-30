@@ -98,17 +98,43 @@ class Rule:
     changes: tuple[CodeChange, ...] = ()
 
     def bind(self) -> ContextRuleRunner | None:
+        runner: ContextRuleRunner | None
         if self.context_runner is not None:
-            return self.context_runner
-        if self.runner is not None:
-            return lambda context: self.runner(
-                context.source, context.config, context.migration
-            )
-        if self.path_runner is not None:
-            return lambda context: self.path_runner(context.path)(
-                context.source, context.config, context.migration
-            )
-        return None
+            runner = self.context_runner
+        elif self.runner is not None:
+            def source_runner(
+                context: RuleContext,
+                self: Rule = self,
+            ) -> tuple[str, list[Fix], list[Diagnostic]]:
+                assert self.runner is not None
+                return self.runner(context.source, context.config, context.migration)
+
+            runner = source_runner
+        elif self.path_runner is not None:
+            def path_runner(
+                context: RuleContext,
+                self: Rule = self,
+            ) -> tuple[str, list[Fix], list[Diagnostic]]:
+                assert self.path_runner is not None
+                return self.path_runner(context.path)(
+                    context.source, context.config, context.migration
+                )
+
+            runner = path_runner
+        else:
+            return None
+
+        def gated_runner(context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+            if not self.is_enabled(context):
+                return context.source, [], []
+            return runner(context)
+
+        return gated_runner
+
+    def is_enabled(self, context: RuleContext) -> bool:
+        if not self.changes:
+            return True
+        return any(context.is_enabled(code) for code, _change in self.changes)
 
 
 def crossing(code: str, version: str | tuple[int, int, int]) -> CodeChange:
@@ -127,7 +153,7 @@ def rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
     changes: dict[str, RuleChange] = {}
     for rule in rules:
         for code, change in rule.changes:
-            if code in changes:
+            if code in changes and changes[code] != change:
                 raise ValueError(f"duplicate rule descriptor for {code}")
             changes[code] = change
     return changes

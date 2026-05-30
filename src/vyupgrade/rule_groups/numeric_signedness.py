@@ -19,7 +19,7 @@ from ..rule_helpers import (
     lhs_assigned_type as _lhs_assigned_type,
     lhs_declared_type as _lhs_declared_type,
 )
-from ..rule_registry import Rule, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -45,8 +45,6 @@ from .numeric_types import (
 def _mixed_signed_unsigned_arithmetic(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     constant_values = _integer_constant_values(source, config.source_ast)
     fixes: list[Fix] = []
@@ -329,8 +327,6 @@ def _mixed_signed_unsigned_arithmetic(
 def _signed_integer_array_constant_types(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = code_mask(source)
@@ -402,8 +398,6 @@ def _widest_unsigned_integer_type(type_names: set[str]) -> str:
 def _typed_array_literal_arguments(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -449,8 +443,6 @@ def _typed_array_literal_arguments(
 def _unsigned_range_bound_signed_constants(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY056", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     mask = code_mask(source)
     fixes: list[Fix] = []
@@ -529,8 +521,6 @@ def _unsigned_range_bound_signed_constants(
 def _typed_external_call_arguments(
     source: str, config: Config, context: MigrationContext
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _enabled("VY052", config, context):
-        return source, [], []
     facts = parse_source_facts(source)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -1128,9 +1118,25 @@ def _inside_attribute_access(source: str, start: int, end: int) -> bool:
 
 
 RULES = (
-    Rule("mixed_signed_unsigned_arithmetic", runner=_mixed_signed_unsigned_arithmetic),
-    Rule("signed_integer_array_constant_types", runner=_signed_integer_array_constant_types),
-    Rule("typed_array_literal_arguments", runner=_typed_array_literal_arguments),
+    Rule(
+        "mixed_signed_unsigned_arithmetic",
+        runner=_mixed_signed_unsigned_arithmetic,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
+    Rule(
+        "signed_integer_array_constant_types",
+        runner=_signed_integer_array_constant_types,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
+    Rule(
+        "typed_array_literal_arguments",
+        runner=_typed_array_literal_arguments,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
     Rule("unsigned_range_bound_signed_constants", runner=_unsigned_range_bound_signed_constants, changes=(crossing("VY056", (0, 4, 0)),)),
-    Rule("typed_external_call_arguments", runner=_typed_external_call_arguments),
+    Rule(
+        "typed_external_call_arguments",
+        runner=_typed_external_call_arguments,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
 )
