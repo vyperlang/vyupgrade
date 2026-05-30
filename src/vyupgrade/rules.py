@@ -57,82 +57,25 @@ class RuleChange:
     mode: str = "crossing"
 
 
-RULE_CHANGES = {
-    "VY001": RuleChange(VyperVersion(0, 3, 10), "target"),
-    "VY002": RuleChange(VyperVersion(0, 4, 0)),
-    "VY010": RuleChange(VyperVersion(0, 4, 0)),
-    "VY011": RuleChange(VyperVersion(0, 4, 0)),
-    "VY012": RuleChange(VyperVersion(0, 4, 0)),
-    "VY013": RuleChange(VyperVersion(0, 4, 0)),
-    "VY014": RuleChange(VyperVersion(0, 4, 0)),
-    "VY015": RuleChange(VyperVersion(0, 4, 0)),
-    "VY016": RuleChange(VyperVersion(0, 4, 0)),
-    "VY020": RuleChange(VyperVersion(0, 4, 0)),
-    "VY030": RuleChange(VyperVersion(0, 4, 0)),
-    "VY040": RuleChange(VyperVersion(0, 4, 0)),
-    "VY041": RuleChange(VyperVersion(0, 4, 0)),
-    "VY042": RuleChange(VyperVersion(0, 4, 0)),
-    "VY050": RuleChange(VyperVersion(0, 4, 0)),
-    "VY051": RuleChange(VyperVersion(0, 4, 0)),
-    "VY052": RuleChange(VyperVersion(0, 4, 0)),
-    "VY053": RuleChange(VyperVersion(0, 4, 0)),
-    "VY054": RuleChange(VyperVersion(0, 4, 0)),
-    "VY055": RuleChange(VyperVersion(0, 4, 0)),
-    "VY056": RuleChange(VyperVersion(0, 4, 0)),
-    "VY057": RuleChange(VyperVersion(0, 4, 0)),
-    "VY058": RuleChange(VyperVersion(0, 4, 0)),
-    "VY060": RuleChange(VyperVersion(0, 4, 0)),
-    "VY070": RuleChange(VyperVersion(0, 4, 0)),
-    "VY071": RuleChange(VyperVersion(0, 4, 0)),
-    "VY080": RuleChange(VyperVersion(0, 4, 0)),
-    "VY090": RuleChange(VyperVersion(0, 4, 0)),
-    "VY100": RuleChange(VyperVersion(0, 4, 2)),
-    "VY110": RuleChange(VyperVersion(0, 4, 2)),
-    "VY111": RuleChange(VyperVersion(0, 4, 2)),
-    "VY112": RuleChange(VyperVersion(0, 4, 1)),
-    "VY120": RuleChange(VyperVersion(0, 4, 0)),
-    "VY201": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY202": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY203": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY204": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY205": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY206": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY207": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY208": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY209": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY211": RuleChange(VyperVersion(0, 2, 8)),
-    "VY210": RuleChange(VyperVersion(0, 2, 16)),
-    "VY216": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY217": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY218": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY219": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY221": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VY220": RuleChange(VyperVersion(0, 3, 7)),
-    "VY230": RuleChange(VyperVersion(0, 3, 8)),
-    "VY231": RuleChange(VyperVersion(0, 3, 8)),
-    "VY212": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VYD001": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD002": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD003": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD004": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD005": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD006": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD007": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD008": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD009": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD010": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD011": RuleChange(VyperVersion(0, 4, 0)),
-    "VYD012": RuleChange(VyperVersion(0, 4, 2)),
-    "VYD013": RuleChange(VyperVersion(0, 3, 8)),
-    "VYD014": RuleChange(VyperVersion(0, 3, 10)),
-    "VYD015": RuleChange(VyperVersion(0, 4, 1)),
-    "VYD210": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VYD211": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VYD212": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VYD213": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VYD214": RuleChange(VyperVersion(0, 2, 1), "target"),
-    "VYD215": RuleChange(VyperVersion(0, 2, 1), "target"),
-}
+RuleRunner = Callable[
+    [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
+]
+PathRuleFactory = Callable[[Path | None], RuleRunner]
+
+
+@dataclass(frozen=True)
+class Rule:
+    name: str
+    runner: RuleRunner | None = None
+    path_runner: PathRuleFactory | None = None
+    changes: tuple[tuple[str, RuleChange], ...] = ()
+
+    def bind(self, path: Path | None) -> RuleRunner | None:
+        if self.runner is not None:
+            return self.runner
+        if self.path_runner is not None:
+            return self.path_runner(path)
+        return None
 
 
 def apply_rules(source: str, config: Config, path: Path | None = None) -> RewriteResult:
@@ -143,60 +86,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     )
 
     current = source
-    for rule in [
-        _pragma,
-        _legacy_decorators,
-        _legacy_type_units,
-        _legacy_events,
-        _event_kwargs,
-        _legacy_maps_and_interfaces,
-        _early_beta_syntax,
-        _legacy_dynamic_types,
-        _reserved_parameter_names,
-        _legacy_diagnostics,
-        _natspec_strictness,
-        _legacy_builtin_calls,
-        _not_in_comparator,
-        _legacy_constructor_locks,
-        _pre_04_expression_rewrites,
-        _constructor_deploy,
-        _abi_builtins,
-        _legacy_constants,
-        _immutable_accessor_collisions,
-        _constant_accessor_collisions,
-        _interface_view_mutability,
-        _pure_immutable_reads,
-        _interface_imports,
-        _absolute_relative_imports(path),
-        _enum_to_flag,
-        _range_bound,
-        _typed_range_loops,
-        _integer_assignment_casts,
-        _external_call_keywords,
-        _external_call_subscripts,
-        # Subscript parenthesizing can expose chained calls on returned interfaces.
-        _external_call_keywords,
-        _ignored_external_call_results,
-        _integer_division,
-        _constant_exponent_literals,
-        _mixed_signed_unsigned_arithmetic,
-        _signed_integer_array_constant_types,
-        _typed_array_literal_arguments,
-        _unsigned_range_bound_signed_constants,
-        _typed_external_call_arguments,
-        _dynamic_pow_mod256,
-        _redundant_integer_convert,
-        _constant_integer_decl_casts,
-        _dynamic_bytes_hex_literals,
-        _struct_kwargs,
-        _create_from_blueprint,
-        _nonreentrant,
-        _sqrt,
-        _bitwise,
-        _decimal_diagnostic,
-        _prevrandao_diagnostic,
-        _missing_pragma_diagnostic,
-    ]:
+    for rule in _runnable_rules(path):
         current, rule_fixes, rule_diagnostics = rule(current, config, context)
         fixes.extend(rule_fixes)
         diagnostics.extend(rule_diagnostics)
@@ -221,6 +111,13 @@ def _enabled(rule: str, config: Config, context: MigrationContext) -> bool:
 
 def _any_enabled(rules: set[str], config: Config, context: MigrationContext) -> bool:
     return any(_enabled(rule, config, context) for rule in rules)
+
+
+def _runnable_rules(path: Path | None) -> Iterator[RuleRunner]:
+    for rule in RULES:
+        runner = rule.bind(path)
+        if runner is not None:
+            yield runner
 
 
 def _line_match_starts_outside_string(source: str, mask: list[bool], start: int) -> bool:
@@ -5419,3 +5316,192 @@ def _integer_constant_values(
             if value is not None:
                 values[match.group("name")] = value
     return values
+
+
+def _rule_change(
+    code: str, version: tuple[int, int, int], mode: str = "crossing"
+) -> tuple[str, RuleChange]:
+    return code, RuleChange(VyperVersion(*version), mode)
+
+
+def _rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
+    changes: dict[str, RuleChange] = {}
+    for rule in rules:
+        for code, change in rule.changes:
+            if code in changes:
+                raise ValueError(f"duplicate rule descriptor for {code}")
+            changes[code] = change
+    return changes
+
+
+RULES = (
+    Rule("pragma", runner=_pragma, changes=(_rule_change("VY001", (0, 3, 10), "target"),)),
+    Rule("legacy_decorators", runner=_legacy_decorators, changes=(_rule_change("VY201", (0, 2, 1), "target"),)),
+    Rule("legacy_type_units", runner=_legacy_type_units, changes=(_rule_change("VY202", (0, 2, 1), "target"),)),
+    Rule(
+        "legacy_events",
+        runner=_legacy_events,
+        changes=(
+            _rule_change("VY203", (0, 2, 1), "target"),
+            _rule_change("VY204", (0, 2, 1), "target"),
+        ),
+    ),
+    Rule("event_kwargs", runner=_event_kwargs, changes=(_rule_change("VY112", (0, 4, 1)),)),
+    Rule(
+        "legacy_maps_and_interfaces",
+        runner=_legacy_maps_and_interfaces,
+        changes=(
+            _rule_change("VY205", (0, 2, 1), "target"),
+            _rule_change("VY206", (0, 2, 1), "target"),
+        ),
+    ),
+    Rule(
+        "early_beta_syntax",
+        runner=_early_beta_syntax,
+        changes=(
+            _rule_change("VY216", (0, 2, 1), "target"),
+            _rule_change("VY217", (0, 2, 1), "target"),
+            _rule_change("VY218", (0, 2, 1), "target"),
+            _rule_change("VY219", (0, 2, 1), "target"),
+            _rule_change("VY221", (0, 2, 1), "target"),
+        ),
+    ),
+    Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(_rule_change("VY207", (0, 2, 1), "target"),)),
+    Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(_rule_change("VY212", (0, 2, 1), "target"),)),
+    Rule(
+        "legacy_diagnostics",
+        runner=_legacy_diagnostics,
+        changes=(
+            _rule_change("VYD210", (0, 2, 1), "target"),
+            _rule_change("VYD211", (0, 2, 1), "target"),
+            _rule_change("VYD212", (0, 2, 1), "target"),
+            _rule_change("VYD213", (0, 2, 1), "target"),
+            _rule_change("VYD214", (0, 2, 1), "target"),
+            _rule_change("VYD215", (0, 2, 1), "target"),
+        ),
+    ),
+    Rule("natspec_strictness", runner=_natspec_strictness, changes=(_rule_change("VY058", (0, 4, 0)),)),
+    Rule(
+        "legacy_builtin_calls",
+        runner=_legacy_builtin_calls,
+        changes=(
+            _rule_change("VY208", (0, 2, 1), "target"),
+            _rule_change("VY209", (0, 2, 1), "target"),
+        ),
+    ),
+    Rule("not_in_comparator", runner=_not_in_comparator, changes=(_rule_change("VY211", (0, 2, 8)),)),
+    Rule("legacy_constructor_locks", runner=_legacy_constructor_locks, changes=(_rule_change("VY210", (0, 2, 16)),)),
+    Rule(
+        "pre_04_expression_rewrites",
+        runner=_pre_04_expression_rewrites,
+        changes=(
+            _rule_change("VY220", (0, 3, 7)),
+            _rule_change("VY230", (0, 3, 8)),
+            _rule_change("VY231", (0, 3, 8)),
+            _rule_change("VYD013", (0, 3, 8)),
+        ),
+    ),
+    Rule("constructor_deploy", runner=_constructor_deploy, changes=(_rule_change("VY002", (0, 4, 0)),)),
+    Rule(
+        "abi_builtins",
+        runner=_abi_builtins,
+        changes=(
+            _rule_change("VY010", (0, 4, 0)),
+            _rule_change("VY011", (0, 4, 0)),
+        ),
+    ),
+    Rule("legacy_constants", runner=_legacy_constants, changes=(_rule_change("VY012", (0, 4, 0)),)),
+    Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(_rule_change("VY013", (0, 4, 0)),)),
+    Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(_rule_change("VY016", (0, 4, 0)),)),
+    Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(_rule_change("VY014", (0, 4, 0)),)),
+    Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(_rule_change("VY015", (0, 4, 0)),)),
+    Rule(
+        "interface_imports",
+        runner=_interface_imports,
+        changes=(
+            _rule_change("VY020", (0, 4, 0)),
+            _rule_change("VYD003", (0, 4, 0)),
+        ),
+    ),
+    Rule(
+        "absolute_relative_imports",
+        path_runner=_absolute_relative_imports,
+        changes=(_rule_change("VYD015", (0, 4, 1)),),
+    ),
+    Rule("enum_to_flag", runner=_enum_to_flag, changes=(_rule_change("VY030", (0, 4, 0)),)),
+    Rule(
+        "range_bound",
+        runner=_range_bound,
+        changes=(
+            _rule_change("VY071", (0, 4, 0)),
+            _rule_change("VYD011", (0, 4, 0)),
+            _rule_change("VYD014", (0, 3, 10)),
+        ),
+    ),
+    Rule("typed_range_loops", runner=_typed_range_loops, changes=(_rule_change("VY070", (0, 4, 0)),)),
+    Rule("integer_assignment_casts", runner=_integer_assignment_casts, changes=(_rule_change("VY052", (0, 4, 0)),)),
+    Rule(
+        "external_call_keywords",
+        runner=_external_call_keywords,
+        changes=(
+            _rule_change("VY040", (0, 4, 0)),
+            _rule_change("VY041", (0, 4, 0)),
+        ),
+    ),
+    Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(_rule_change("VY042", (0, 4, 0)),)),
+    Rule("external_call_keywords_after_subscripts", runner=_external_call_keywords),
+    Rule("ignored_external_call_results", runner=_ignored_external_call_results, changes=(_rule_change("VY057", (0, 4, 0)),)),
+    Rule(
+        "integer_division",
+        runner=_integer_division,
+        changes=(
+            _rule_change("VY050", (0, 4, 0)),
+            _rule_change("VYD004", (0, 4, 0)),
+        ),
+    ),
+    Rule("constant_exponent_literals", runner=_constant_exponent_literals, changes=(_rule_change("VY054", (0, 4, 0)),)),
+    Rule("mixed_signed_unsigned_arithmetic", runner=_mixed_signed_unsigned_arithmetic),
+    Rule("signed_integer_array_constant_types", runner=_signed_integer_array_constant_types),
+    Rule("typed_array_literal_arguments", runner=_typed_array_literal_arguments),
+    Rule("unsigned_range_bound_signed_constants", runner=_unsigned_range_bound_signed_constants, changes=(_rule_change("VY056", (0, 4, 0)),)),
+    Rule("typed_external_call_arguments", runner=_typed_external_call_arguments),
+    Rule("dynamic_pow_mod256", runner=_dynamic_pow_mod256, changes=(_rule_change("VY055", (0, 4, 0)),)),
+    Rule("redundant_integer_convert", runner=_redundant_integer_convert, changes=(_rule_change("VY051", (0, 4, 0)),)),
+    Rule("constant_integer_decl_casts", runner=_constant_integer_decl_casts),
+    Rule("dynamic_bytes_hex_literals", runner=_dynamic_bytes_hex_literals, changes=(_rule_change("VY053", (0, 4, 0)),)),
+    Rule("struct_kwargs", runner=_struct_kwargs, changes=(_rule_change("VY060", (0, 4, 0)),)),
+    Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(_rule_change("VY080", (0, 4, 0)),)),
+    Rule(
+        "nonreentrant",
+        runner=_nonreentrant,
+        changes=(
+            _rule_change("VY090", (0, 4, 0)),
+            _rule_change("VYD002", (0, 4, 0)),
+        ),
+    ),
+    Rule("sqrt", runner=_sqrt, changes=(_rule_change("VY100", (0, 4, 2)),)),
+    Rule(
+        "bitwise",
+        runner=_bitwise,
+        changes=(
+            _rule_change("VY110", (0, 4, 2)),
+            _rule_change("VY111", (0, 4, 2)),
+            _rule_change("VYD012", (0, 4, 2)),
+        ),
+    ),
+    Rule("decimal_diagnostic", runner=_decimal_diagnostic, changes=(_rule_change("VYD001", (0, 4, 0)),)),
+    Rule("prevrandao_diagnostic", runner=_prevrandao_diagnostic, changes=(_rule_change("VYD010", (0, 4, 0)),)),
+    Rule("missing_pragma_diagnostic", runner=_missing_pragma_diagnostic, changes=(_rule_change("VYD005", (0, 4, 0)),)),
+    Rule("interface_split", changes=(_rule_change("VY120", (0, 4, 0)),)),
+    Rule(
+        "validation",
+        changes=(
+            _rule_change("VYD006", (0, 4, 0)),
+            _rule_change("VYD007", (0, 4, 0)),
+            _rule_change("VYD008", (0, 4, 0)),
+            _rule_change("VYD009", (0, 4, 0)),
+        ),
+    ),
+)
+
+RULE_CHANGES = _rule_changes(RULES)
