@@ -34,6 +34,7 @@ from .rule_groups.numeric_constants import (
     CONSTANT_EXPONENT_RULES as NUMERIC_CONSTANT_EXPONENT_RULES,
     DYNAMIC_POW_RULES as NUMERIC_DYNAMIC_POW_RULES,
 )
+from .rule_groups.numeric_context_casts import RULES as NUMERIC_CONTEXT_CAST_RULES
 from .rule_groups.numeric_operators import PRE_INTERFACE_RULES as NUMERIC_PRE_INTERFACE_RULES
 from .rule_groups.numeric_ranges import RULES as NUMERIC_RANGE_RULES
 from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
@@ -97,6 +98,7 @@ RULES = (
     *NUMERIC_INTEGER_DIVISION_RULES,
     *NUMERIC_CONSTANT_EXPONENT_RULES,
     *NUMERIC_SIGNEDNESS_RULES,
+    *NUMERIC_CONTEXT_CAST_RULES,
     *NUMERIC_DYNAMIC_POW_RULES,
     *NUMERIC_REDUNDANT_CONVERT_RULES,
     *NUMERIC_CONSTANT_DECL_RULES,

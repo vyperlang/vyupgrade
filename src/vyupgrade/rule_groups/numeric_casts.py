@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 
 from ..analysis import SourceFacts, infer_expr_type, is_integer_type, normalize_type
 from ..rule_helpers import literal_integer as _literal_integer
@@ -34,5 +35,9 @@ def _cast_integer_arg_to_exact_expected(
         return value
     return f"convert({value}, {normalize_type(expected_type or '')})"
 
+
+def _inside_convert_call(source: str, index: int) -> bool:
+    prefix = source[max(0, index - 24) : index]
+    return bool(re.search(r"\bconvert\s*\([^,\n]*$", prefix))
 
 
