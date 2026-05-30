@@ -61,6 +61,7 @@ class RuleChange:
     activation: Activation = "crossing"
 
 
+CodeChange = tuple[str, RuleChange]
 RuleRunner = Callable[
     [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
 ]
@@ -72,7 +73,7 @@ class Rule:
     name: str
     runner: RuleRunner | None = None
     path_runner: PathRuleFactory | None = None
-    changes: tuple[tuple[str, RuleChange], ...] = ()
+    changes: tuple[CodeChange, ...] = ()
 
     def bind(self, path: Path | None) -> RuleRunner | None:
         if self.runner is not None:
@@ -5322,13 +5323,25 @@ def _integer_constant_values(
     return values
 
 
-def _rule_change(
+def _change(
     code: str,
     version: str | tuple[int, int, int],
     activation: Activation = "crossing",
-) -> tuple[str, RuleChange]:
+) -> CodeChange:
     raw_version = ".".join(str(part) for part in version) if isinstance(version, tuple) else version
     return code, RuleChange(VyperVersion(raw_version), activation)
+
+
+def crossing(code: str, version: str | tuple[int, int, int]) -> CodeChange:
+    return _change(code, version)
+
+
+def target_floor(code: str, version: str | tuple[int, int, int]) -> CodeChange:
+    return _change(code, version, "target_floor")
+
+
+def target_update(code: str, version: str | tuple[int, int, int]) -> CodeChange:
+    return _change(code, version, "target_update")
 
 
 def _rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
@@ -5342,171 +5355,171 @@ def _rule_changes(rules: tuple[Rule, ...]) -> dict[str, RuleChange]:
 
 
 RULES = (
-    Rule("pragma", runner=_pragma, changes=(_rule_change("VY001", (0, 3, 10), "target_update"),)),
-    Rule("legacy_decorators", runner=_legacy_decorators, changes=(_rule_change("VY201", (0, 2, 1), "target_floor"),)),
-    Rule("legacy_type_units", runner=_legacy_type_units, changes=(_rule_change("VY202", (0, 2, 1), "target_floor"),)),
+    Rule("pragma", runner=_pragma, changes=(target_update("VY001", (0, 3, 10)),)),
+    Rule("legacy_decorators", runner=_legacy_decorators, changes=(target_floor("VY201", (0, 2, 1)),)),
+    Rule("legacy_type_units", runner=_legacy_type_units, changes=(target_floor("VY202", (0, 2, 1)),)),
     Rule(
         "legacy_events",
         runner=_legacy_events,
         changes=(
-            _rule_change("VY203", (0, 2, 1), "target_floor"),
-            _rule_change("VY204", (0, 2, 1), "target_floor"),
+            target_floor("VY203", (0, 2, 1)),
+            target_floor("VY204", (0, 2, 1)),
         ),
     ),
-    Rule("event_kwargs", runner=_event_kwargs, changes=(_rule_change("VY112", (0, 4, 1)),)),
+    Rule("event_kwargs", runner=_event_kwargs, changes=(crossing("VY112", (0, 4, 1)),)),
     Rule(
         "legacy_maps_and_interfaces",
         runner=_legacy_maps_and_interfaces,
         changes=(
-            _rule_change("VY205", (0, 2, 1), "target_floor"),
-            _rule_change("VY206", (0, 2, 1), "target_floor"),
+            target_floor("VY205", (0, 2, 1)),
+            target_floor("VY206", (0, 2, 1)),
         ),
     ),
     Rule(
         "early_beta_syntax",
         runner=_early_beta_syntax,
         changes=(
-            _rule_change("VY216", (0, 2, 1), "target_floor"),
-            _rule_change("VY217", (0, 2, 1), "target_floor"),
-            _rule_change("VY218", (0, 2, 1), "target_floor"),
-            _rule_change("VY219", (0, 2, 1), "target_floor"),
-            _rule_change("VY221", (0, 2, 1), "target_floor"),
+            target_floor("VY216", (0, 2, 1)),
+            target_floor("VY217", (0, 2, 1)),
+            target_floor("VY218", (0, 2, 1)),
+            target_floor("VY219", (0, 2, 1)),
+            target_floor("VY221", (0, 2, 1)),
         ),
     ),
-    Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(_rule_change("VY207", (0, 2, 1), "target_floor"),)),
-    Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(_rule_change("VY212", (0, 2, 1), "target_floor"),)),
+    Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(target_floor("VY207", (0, 2, 1)),)),
+    Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(target_floor("VY212", (0, 2, 1)),)),
     Rule(
         "legacy_diagnostics",
         runner=_legacy_diagnostics,
         changes=(
-            _rule_change("VYD210", (0, 2, 1), "target_floor"),
-            _rule_change("VYD211", (0, 2, 1), "target_floor"),
-            _rule_change("VYD212", (0, 2, 1), "target_floor"),
-            _rule_change("VYD213", (0, 2, 1), "target_floor"),
-            _rule_change("VYD214", (0, 2, 1), "target_floor"),
-            _rule_change("VYD215", (0, 2, 1), "target_floor"),
+            target_floor("VYD210", (0, 2, 1)),
+            target_floor("VYD211", (0, 2, 1)),
+            target_floor("VYD212", (0, 2, 1)),
+            target_floor("VYD213", (0, 2, 1)),
+            target_floor("VYD214", (0, 2, 1)),
+            target_floor("VYD215", (0, 2, 1)),
         ),
     ),
-    Rule("natspec_strictness", runner=_natspec_strictness, changes=(_rule_change("VY058", (0, 4, 0)),)),
+    Rule("natspec_strictness", runner=_natspec_strictness, changes=(crossing("VY058", (0, 4, 0)),)),
     Rule(
         "legacy_builtin_calls",
         runner=_legacy_builtin_calls,
         changes=(
-            _rule_change("VY208", (0, 2, 1), "target_floor"),
-            _rule_change("VY209", (0, 2, 1), "target_floor"),
+            target_floor("VY208", (0, 2, 1)),
+            target_floor("VY209", (0, 2, 1)),
         ),
     ),
-    Rule("not_in_comparator", runner=_not_in_comparator, changes=(_rule_change("VY211", (0, 2, 8)),)),
-    Rule("legacy_constructor_locks", runner=_legacy_constructor_locks, changes=(_rule_change("VY210", (0, 2, 16)),)),
+    Rule("not_in_comparator", runner=_not_in_comparator, changes=(crossing("VY211", (0, 2, 8)),)),
+    Rule("legacy_constructor_locks", runner=_legacy_constructor_locks, changes=(crossing("VY210", (0, 2, 16)),)),
     Rule(
         "pre_04_expression_rewrites",
         runner=_pre_04_expression_rewrites,
         changes=(
-            _rule_change("VY220", (0, 3, 7)),
-            _rule_change("VY230", (0, 3, 8)),
-            _rule_change("VY231", (0, 3, 8)),
-            _rule_change("VYD013", (0, 3, 8)),
+            crossing("VY220", (0, 3, 7)),
+            crossing("VY230", (0, 3, 8)),
+            crossing("VY231", (0, 3, 8)),
+            crossing("VYD013", (0, 3, 8)),
         ),
     ),
-    Rule("constructor_deploy", runner=_constructor_deploy, changes=(_rule_change("VY002", (0, 4, 0)),)),
+    Rule("constructor_deploy", runner=_constructor_deploy, changes=(crossing("VY002", (0, 4, 0)),)),
     Rule(
         "abi_builtins",
         runner=_abi_builtins,
         changes=(
-            _rule_change("VY010", (0, 4, 0)),
-            _rule_change("VY011", (0, 4, 0)),
+            crossing("VY010", (0, 4, 0)),
+            crossing("VY011", (0, 4, 0)),
         ),
     ),
-    Rule("legacy_constants", runner=_legacy_constants, changes=(_rule_change("VY012", (0, 4, 0)),)),
-    Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(_rule_change("VY013", (0, 4, 0)),)),
-    Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(_rule_change("VY016", (0, 4, 0)),)),
-    Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(_rule_change("VY014", (0, 4, 0)),)),
-    Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(_rule_change("VY015", (0, 4, 0)),)),
+    Rule("legacy_constants", runner=_legacy_constants, changes=(crossing("VY012", (0, 4, 0)),)),
+    Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
+    Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(crossing("VY016", (0, 4, 0)),)),
+    Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(crossing("VY014", (0, 4, 0)),)),
+    Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
     Rule(
         "interface_imports",
         runner=_interface_imports,
         changes=(
-            _rule_change("VY020", (0, 4, 0)),
-            _rule_change("VYD003", (0, 4, 0)),
+            crossing("VY020", (0, 4, 0)),
+            crossing("VYD003", (0, 4, 0)),
         ),
     ),
     Rule(
         "absolute_relative_imports",
         path_runner=_absolute_relative_imports,
-        changes=(_rule_change("VYD015", (0, 4, 1)),),
+        changes=(crossing("VYD015", (0, 4, 1)),),
     ),
-    Rule("enum_to_flag", runner=_enum_to_flag, changes=(_rule_change("VY030", (0, 4, 0)),)),
+    Rule("enum_to_flag", runner=_enum_to_flag, changes=(crossing("VY030", (0, 4, 0)),)),
     Rule(
         "range_bound",
         runner=_range_bound,
         changes=(
-            _rule_change("VY071", (0, 4, 0)),
-            _rule_change("VYD011", (0, 4, 0)),
-            _rule_change("VYD014", (0, 3, 10)),
+            crossing("VY071", (0, 4, 0)),
+            crossing("VYD011", (0, 4, 0)),
+            crossing("VYD014", (0, 3, 10)),
         ),
     ),
-    Rule("typed_range_loops", runner=_typed_range_loops, changes=(_rule_change("VY070", (0, 4, 0)),)),
-    Rule("integer_assignment_casts", runner=_integer_assignment_casts, changes=(_rule_change("VY052", (0, 4, 0)),)),
+    Rule("typed_range_loops", runner=_typed_range_loops, changes=(crossing("VY070", (0, 4, 0)),)),
+    Rule("integer_assignment_casts", runner=_integer_assignment_casts, changes=(crossing("VY052", (0, 4, 0)),)),
     Rule(
         "external_call_keywords",
         runner=_external_call_keywords,
         changes=(
-            _rule_change("VY040", (0, 4, 0)),
-            _rule_change("VY041", (0, 4, 0)),
+            crossing("VY040", (0, 4, 0)),
+            crossing("VY041", (0, 4, 0)),
         ),
     ),
-    Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(_rule_change("VY042", (0, 4, 0)),)),
+    Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
     Rule("external_call_keywords_after_subscripts", runner=_external_call_keywords),
-    Rule("ignored_external_call_results", runner=_ignored_external_call_results, changes=(_rule_change("VY057", (0, 4, 0)),)),
+    Rule("ignored_external_call_results", runner=_ignored_external_call_results, changes=(crossing("VY057", (0, 4, 0)),)),
     Rule(
         "integer_division",
         runner=_integer_division,
         changes=(
-            _rule_change("VY050", (0, 4, 0)),
-            _rule_change("VYD004", (0, 4, 0)),
+            crossing("VY050", (0, 4, 0)),
+            crossing("VYD004", (0, 4, 0)),
         ),
     ),
-    Rule("constant_exponent_literals", runner=_constant_exponent_literals, changes=(_rule_change("VY054", (0, 4, 0)),)),
+    Rule("constant_exponent_literals", runner=_constant_exponent_literals, changes=(crossing("VY054", (0, 4, 0)),)),
     Rule("mixed_signed_unsigned_arithmetic", runner=_mixed_signed_unsigned_arithmetic),
     Rule("signed_integer_array_constant_types", runner=_signed_integer_array_constant_types),
     Rule("typed_array_literal_arguments", runner=_typed_array_literal_arguments),
-    Rule("unsigned_range_bound_signed_constants", runner=_unsigned_range_bound_signed_constants, changes=(_rule_change("VY056", (0, 4, 0)),)),
+    Rule("unsigned_range_bound_signed_constants", runner=_unsigned_range_bound_signed_constants, changes=(crossing("VY056", (0, 4, 0)),)),
     Rule("typed_external_call_arguments", runner=_typed_external_call_arguments),
-    Rule("dynamic_pow_mod256", runner=_dynamic_pow_mod256, changes=(_rule_change("VY055", (0, 4, 0)),)),
-    Rule("redundant_integer_convert", runner=_redundant_integer_convert, changes=(_rule_change("VY051", (0, 4, 0)),)),
+    Rule("dynamic_pow_mod256", runner=_dynamic_pow_mod256, changes=(crossing("VY055", (0, 4, 0)),)),
+    Rule("redundant_integer_convert", runner=_redundant_integer_convert, changes=(crossing("VY051", (0, 4, 0)),)),
     Rule("constant_integer_decl_casts", runner=_constant_integer_decl_casts),
-    Rule("dynamic_bytes_hex_literals", runner=_dynamic_bytes_hex_literals, changes=(_rule_change("VY053", (0, 4, 0)),)),
-    Rule("struct_kwargs", runner=_struct_kwargs, changes=(_rule_change("VY060", (0, 4, 0)),)),
-    Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(_rule_change("VY080", (0, 4, 0)),)),
+    Rule("dynamic_bytes_hex_literals", runner=_dynamic_bytes_hex_literals, changes=(crossing("VY053", (0, 4, 0)),)),
+    Rule("struct_kwargs", runner=_struct_kwargs, changes=(crossing("VY060", (0, 4, 0)),)),
+    Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
     Rule(
         "nonreentrant",
         runner=_nonreentrant,
         changes=(
-            _rule_change("VY090", (0, 4, 0)),
-            _rule_change("VYD002", (0, 4, 0)),
+            crossing("VY090", (0, 4, 0)),
+            crossing("VYD002", (0, 4, 0)),
         ),
     ),
-    Rule("sqrt", runner=_sqrt, changes=(_rule_change("VY100", (0, 4, 2)),)),
+    Rule("sqrt", runner=_sqrt, changes=(crossing("VY100", (0, 4, 2)),)),
     Rule(
         "bitwise",
         runner=_bitwise,
         changes=(
-            _rule_change("VY110", (0, 4, 2)),
-            _rule_change("VY111", (0, 4, 2)),
-            _rule_change("VYD012", (0, 4, 2)),
+            crossing("VY110", (0, 4, 2)),
+            crossing("VY111", (0, 4, 2)),
+            crossing("VYD012", (0, 4, 2)),
         ),
     ),
-    Rule("decimal_diagnostic", runner=_decimal_diagnostic, changes=(_rule_change("VYD001", (0, 4, 0)),)),
-    Rule("prevrandao_diagnostic", runner=_prevrandao_diagnostic, changes=(_rule_change("VYD010", (0, 4, 0)),)),
-    Rule("missing_pragma_diagnostic", runner=_missing_pragma_diagnostic, changes=(_rule_change("VYD005", (0, 4, 0)),)),
-    Rule("interface_split", changes=(_rule_change("VY120", (0, 4, 0)),)),
+    Rule("decimal_diagnostic", runner=_decimal_diagnostic, changes=(crossing("VYD001", (0, 4, 0)),)),
+    Rule("prevrandao_diagnostic", runner=_prevrandao_diagnostic, changes=(crossing("VYD010", (0, 4, 0)),)),
+    Rule("missing_pragma_diagnostic", runner=_missing_pragma_diagnostic, changes=(crossing("VYD005", (0, 4, 0)),)),
+    Rule("interface_split", changes=(crossing("VY120", (0, 4, 0)),)),
     Rule(
         "validation",
         changes=(
-            _rule_change("VYD006", (0, 4, 0)),
-            _rule_change("VYD007", (0, 4, 0)),
-            _rule_change("VYD008", (0, 4, 0)),
-            _rule_change("VYD009", (0, 4, 0)),
+            crossing("VYD006", (0, 4, 0)),
+            crossing("VYD007", (0, 4, 0)),
+            crossing("VYD008", (0, 4, 0)),
+            crossing("VYD009", (0, 4, 0)),
         ),
     ),
 )
