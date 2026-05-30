@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from .legacy_call_helpers import _iter_calls, _replace_identifier_call
-from ..rule_registry import Rule, any_enabled as _any_enabled, is_enabled as _enabled, target_floor
+from ..rule_registry import Rule, RuleContext, target_floor
 from ..source import (
     TextEdit,
     apply_edits,
@@ -12,17 +12,15 @@ from ..source import (
     split_top_level_arg_spans,
     split_top_level_args,
 )
-from ..versions import MigrationContext
 
 
 def _legacy_builtin_calls(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY208", "VY209"}, config, context):
-        return source, [], []
+    source = rule_context.source
     fixes: list[Fix] = []
     current = source
-    if _enabled("VY208", config, context):
+    if rule_context.is_enabled("VY208"):
         current, new_fixes = _replace_identifier_call(
             current, "create_with_code_of", "create_copy_of", "VY208"
         )
@@ -39,7 +37,7 @@ def _legacy_builtin_calls(
         fixes.extend(new_fixes)
         current, new_fixes = _unwrap_legacy_builtin(current, "as_unitless_number", "VY208")
         fixes.extend(new_fixes)
-    if _enabled("VY209", config, context):
+    if rule_context.is_enabled("VY209"):
         current, new_fixes = _rewrite_method_id_bytes32_comparisons(current)
         fixes.extend(new_fixes)
         current, new_fixes = _rewrite_method_id_shift_output_type(current)
@@ -281,7 +279,7 @@ def _method_id_comparison_operand(
 RULES = (
     Rule(
         "legacy_builtin_calls",
-        runner=_legacy_builtin_calls,
+        context_runner=_legacy_builtin_calls,
         changes=(
             target_floor("VY208", (0, 2, 1)),
             target_floor("VY209", (0, 2, 1)),

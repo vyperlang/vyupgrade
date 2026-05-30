@@ -16,7 +16,7 @@ from ..rule_helpers import (
     line_match_starts_outside_string as _line_match_starts_outside_string,
     literal_integer as _literal_integer,
 )
-from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -168,10 +168,10 @@ def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
 
 
 def _range_bound(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY071", "VYD011", "VYD014"}, config, context):
-        return source, [], []
+    source = rule_context.source
+    config = rule_context.config
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
@@ -190,7 +190,7 @@ def _range_bound(
         if args is None:
             continue
         if len(args) == 1:
-            if not _literal_integer(args[0]) and _enabled("VYD014", config, context):
+            if not _literal_integer(args[0]) and rule_context.is_enabled("VYD014"):
                 diagnostics.append(
                     Diagnostic(
                         "VYD014",
@@ -255,7 +255,7 @@ def _range_bound_literal(value: str, values: dict[str, int]) -> str | None:
 RULES = (
     Rule(
         "range_bound",
-        runner=_range_bound,
+        context_runner=_range_bound,
         changes=(
             crossing("VY071", (0, 4, 0)),
             crossing("VYD011", (0, 4, 0)),

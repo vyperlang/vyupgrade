@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from vyupgrade.models import Config, Diagnostic, Fix
-from vyupgrade.rule_registry import Rule, RuleContext, crossing
+from vyupgrade.rule_registry import Rule, RuleContext, crossing, rule_changes
 from vyupgrade.versions import MigrationContext
 
 
@@ -26,7 +26,7 @@ def test_rule_bind_skips_runner_when_descriptor_is_disabled() -> None:
         Config(paths=(Path("contract.vy"),), source_version="0.3.10", target_version="0.3.10"),
         MigrationContext.from_specs("0.3.10", "0.3.10"),
         Path("contract.vy"),
-        lambda rule_code: rule_code != "VYX001",
+        rule_changes((rule,)),
     )
 
     assert bound(context) == ("source", [], [])
@@ -56,7 +56,7 @@ def test_rule_bind_runs_runner_when_any_descriptor_is_enabled() -> None:
         Config(paths=(Path("contract.vy"),), source_version="0.3.10", target_version="0.4.0"),
         MigrationContext.from_specs("0.3.10", "0.4.0"),
         Path("contract.vy"),
-        lambda rule_code: rule_code == "VYX002",
+        rule_changes((rule,)),
     )
 
     assert bound(context) == ("source changed", [], [])

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import re
 
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     find_matching_open as _find_matching_open,
     insert_import as _insert_import,
     line_match_starts_outside_string as _line_match_starts_outside_string,
     pre_021_context as _pre_021_context,
 )
-from ..rule_registry import Rule, is_enabled as _enabled, target_floor
+from ..rule_registry import Rule, RuleContext, target_floor
 from ..source import (
     TextEdit,
     apply_edits,
@@ -20,7 +20,6 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from ..versions import MigrationContext
 
 
 IMPORT_RENAMES = {
@@ -34,18 +33,20 @@ IMPORT_RENAMES = {
 
 
 def _legacy_maps_and_interfaces(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    context = rule_context.migration
     fixes: list[Fix] = []
     current = source
-    if _enabled("VY205", config, context):
+    if rule_context.is_enabled("VY205"):
         current, map_fixes = _rewrite_map_types(current)
         fixes.extend(map_fixes)
-    if _enabled("VY206", config, context):
+    if rule_context.is_enabled("VY206"):
         legacy_source = _pre_021_context(context)
         if legacy_source:
             current, address_interface_fixes = _rewrite_legacy_address_interface_types(
-                current, config, context
+                current, rule_context
             )
             fixes.extend(address_interface_fixes)
         pattern = re.compile(
@@ -105,8 +106,7 @@ def _legacy_maps_and_interfaces(
 
 def _rewrite_legacy_address_interface_types(
     source: str,
-    config: Config,
-    context: MigrationContext,
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -141,7 +141,7 @@ def _rewrite_legacy_address_interface_types(
                 "address",
             )
         )
-        if new != old and _enabled("VY020", config, context):
+        if new != old and rule_context.is_enabled("VY020"):
             imports[new] = alias
     current = apply_edits(source, edits)
     for name, alias in sorted(imports.items()):
@@ -414,7 +414,7 @@ def _rewrite_legacy_map_type(text: str) -> str:
 RULES = (
     Rule(
         "legacy_maps_and_interfaces",
-        runner=_legacy_maps_and_interfaces,
+        context_runner=_legacy_maps_and_interfaces,
         changes=(
             target_floor("VY205", (0, 2, 1)),
             target_floor("VY206", (0, 2, 1)),

@@ -13,7 +13,7 @@ from ..rule_helpers import (
     remove_constructor_decorators as _remove_constructor_decorators,
     strip_arg_comments as _strip_arg_comments,
 )
-from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -42,15 +42,16 @@ def _constructor_deploy(
 
 
 def _abi_builtins(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     fixes: list[Fix] = []
+    source = rule_context.source
     current = source
     for before, after, rule in [
         ("_abi_encode", "abi_encode", "VY010"),
         ("_abi_decode", "abi_decode", "VY011"),
     ]:
-        if not _enabled(rule, config, context):
+        if not rule_context.is_enabled(rule):
             continue
         next_source, edits = replace_identifier(current, before, after)
         for edit in edits:
@@ -286,10 +287,9 @@ def _create_from_blueprint(
 
 
 def _nonreentrant(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY090", "VYD002"}, config, context):
-        return source, [], []
+    source = rule_context.source
     pattern = re.compile(r"@nonreentrant\(\s*([\"'])(.+?)\1\s*\)")
     locks = [match.group(2) for match in pattern.finditer(source)]
     diagnostics: list[Diagnostic] = []
@@ -306,7 +306,7 @@ def _nonreentrant(
                 "multiple named reentrancy locks found; 0.4.x uses a global lock",
             )
         )
-    if not _enabled("VY090", config, context):
+    if not rule_context.is_enabled("VY090"):
         return source, fixes, diagnostics
     diagnostics.extend(
         Diagnostic(
@@ -339,7 +339,7 @@ CONSTRUCTOR_RULES = (
     Rule("constructor_deploy", runner=_constructor_deploy, changes=(crossing("VY002", (0, 4, 0)),)),
     Rule(
         "abi_builtins",
-        runner=_abi_builtins,
+        context_runner=_abi_builtins,
         changes=(
             crossing("VY010", (0, 4, 0)),
             crossing("VY011", (0, 4, 0)),
@@ -356,11 +356,10 @@ POST_NUMERIC_RULES = (
     Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
     Rule(
         "nonreentrant",
-        runner=_nonreentrant,
+        context_runner=_nonreentrant,
         changes=(
             crossing("VY090", (0, 4, 0)),
             crossing("VYD002", (0, 4, 0)),
         ),
     ),
 )
-

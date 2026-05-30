@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import SourceFacts, infer_expr_type, normalize_type, parse_source_facts, unwrap_type
+from ..analysis import SourceFacts, infer_expr_type, normalize_type, unwrap_type
 from ..models import Config, Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
-from ..rule_registry import Rule, RuleContext, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -153,15 +153,14 @@ def _split_inline_comment_preserving_strings(line: str) -> tuple[str, str]:
 
 
 def _external_call_keywords(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY040", "VY041", "VYD003"}, config, context):
-        return source, [], []
-    current = source
+    current = rule_context.source
     all_fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     for _ in range(3):
-        current, fixes, diagnostics = _external_call_keywords_once(current, config, context)
+        current_context = rule_context.with_source(current)
+        current, fixes, diagnostics = _external_call_keywords_once(current_context)
         all_fixes.extend(fixes)
         if not fixes:
             break
@@ -169,9 +168,10 @@ def _external_call_keywords(
 
 
 def _external_call_keywords_once(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    facts = rule_context.facts
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
@@ -191,7 +191,7 @@ def _external_call_keywords_once(
             target_type = cast_type or infer_expr_type(target, vars_for_line, facts)
         mutability = facts.interfaces.get(normalize_type(target_type or ""), {}).get(method)
         if mutability is None:
-            if _enabled("VYD003", config, context):
+            if rule_context.is_enabled("VYD003"):
                 diagnostics.append(
                     Diagnostic(
                         "VYD003",
@@ -202,7 +202,7 @@ def _external_call_keywords_once(
             continue
         keyword = "staticcall" if mutability in {"view", "pure"} else "extcall"
         rule = "VY041" if keyword == "staticcall" else "VY040"
-        if not _enabled(rule, config, context):
+        if not rule_context.is_enabled(rule):
             continue
         existing_keyword = re.search(r"\b(?P<keyword>extcall|staticcall)\s+$", prefix)
         if existing_keyword is not None:
@@ -345,7 +345,7 @@ def _parenthesized_external_call_matches(
 RULES = (
     Rule(
         "external_call_keywords",
-        runner=_external_call_keywords,
+        context_runner=_external_call_keywords,
         changes=(
             crossing("VY040", (0, 4, 0)),
             crossing("VY041", (0, 4, 0)),
@@ -355,7 +355,7 @@ RULES = (
     Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
     Rule(
         "external_call_keywords_after_subscripts",
-        runner=_external_call_keywords,
+        context_runner=_external_call_keywords,
         changes=(
             crossing("VY040", (0, 4, 0)),
             crossing("VY041", (0, 4, 0)),

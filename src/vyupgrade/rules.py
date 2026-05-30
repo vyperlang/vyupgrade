@@ -40,7 +40,6 @@ from .rule_groups.numeric_signedness import RULES as NUMERIC_SIGNEDNESS_RULES
 from .rule_registry import (
     ContextRuleRunner,
     RuleContext,
-    configure_rule_changes,
     is_enabled as _enabled,
     rule_changes,
 )
@@ -55,20 +54,22 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     )
     if context.source_newer_than_target():
         diagnostic = _source_newer_than_target_diagnostic(context)
-        return RewriteResult(source, [], [diagnostic] if _enabled(diagnostic.rule, config, context) else [])
+        return RewriteResult(
+            source,
+            [],
+            [diagnostic] if _enabled(diagnostic.rule, config, context, RULE_CHANGES) else [],
+        )
 
     current = source
-    rule_context = RuleContext(
-        current, config, context, path, lambda rule: _enabled(rule, config, context)
-    )
+    rule_context = RuleContext(current, config, context, path, RULE_CHANGES)
     for rule in _runnable_rules():
         current, rule_fixes, rule_diagnostics = rule(rule_context)
         rule_context = rule_context.with_source(current)
         fixes.extend(rule_fixes)
         diagnostics.extend(rule_diagnostics)
 
-    fixes = [fix for fix in fixes if _enabled(fix.rule, config, context)]
-    diagnostics = [diag for diag in diagnostics if _enabled(diag.rule, config, context)]
+    fixes = [fix for fix in fixes if rule_context.is_enabled(fix.rule)]
+    diagnostics = [diag for diag in diagnostics if rule_context.is_enabled(diag.rule)]
     return RewriteResult(current, fixes, diagnostics)
 
 
@@ -107,7 +108,6 @@ RULES = (
     *META_RULES,
 )
 RULE_CHANGES = rule_changes(RULES)
-configure_rule_changes(RULE_CHANGES)
 
 
 def _source_newer_than_target_diagnostic(context: MigrationContext) -> Diagnostic:

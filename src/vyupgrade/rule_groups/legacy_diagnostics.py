@@ -3,30 +3,32 @@ from __future__ import annotations
 import re
 
 from ..analysis import infer_expr_type, parse_source_facts
-from ..models import Config, Diagnostic, Fix
+from ..models import Diagnostic, Fix
 from ..rule_helpers import literal_integer as _literal_integer
-from ..rule_registry import Rule, is_enabled as _enabled, target_floor
+from ..rule_registry import Rule, RuleContext, target_floor
 from ..source import code_mask, find_matching, line_number, split_top_level_args, span_is_code
-from ..versions import MigrationContext, VyperVersion
+from ..versions import VyperVersion
 
 
 def _legacy_diagnostics(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    context = rule_context.migration
     diagnostics: list[Diagnostic] = []
-    if _enabled("VYD210", config, context):
+    if rule_context.is_enabled("VYD210"):
         diagnostics.extend(_byte_string_literal_diagnostics(source))
-    if _enabled("VYD211", config, context) and (
+    if rule_context.is_enabled("VYD211") and (
         context.source_floor is None or context.source_floor <= VyperVersion("0.2.1")
     ):
         diagnostics.extend(_reserved_value_parameter_diagnostics(source))
-    if _enabled("VYD212", config, context):
+    if rule_context.is_enabled("VYD212"):
         diagnostics.extend(_slice_uint256_diagnostics(source))
-    if _enabled("VYD213", config, context):
+    if rule_context.is_enabled("VYD213"):
         diagnostics.extend(_len_uint256_diagnostics(source))
-    if _enabled("VYD214", config, context):
+    if rule_context.is_enabled("VYD214"):
         diagnostics.extend(_call_kwarg_uint256_diagnostics(source))
-    if _enabled("VYD215", config, context):
+    if rule_context.is_enabled("VYD215"):
         mask = code_mask(source)
         diagnostics.extend(
             Diagnostic(
@@ -173,7 +175,7 @@ def _is_uint256_expr(expr: str, vars_for_line: dict[str, str]) -> bool:
 RULES = (
     Rule(
         "legacy_diagnostics",
-        runner=_legacy_diagnostics,
+        context_runner=_legacy_diagnostics,
         changes=(
             target_floor("VYD210", (0, 2, 1)),
             target_floor("VYD211", (0, 2, 1)),

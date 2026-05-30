@@ -18,9 +18,8 @@ from ..rule_helpers import (
 )
 from ..rule_registry import (
     Rule,
-    any_enabled as _any_enabled,
+    RuleContext,
     crossing,
-    is_enabled as _enabled,
     target_floor,
     target_update,
 )
@@ -173,14 +172,15 @@ def _legacy_timestamp_type_edits(source: str, mask: list[bool]) -> list[TextEdit
 
 
 def _legacy_events(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     fixes: list[Fix] = []
     current = source
-    if _enabled("VY203", config, context):
+    if rule_context.is_enabled("VY203"):
         current, event_fixes = _rewrite_legacy_event_declarations(current)
         fixes.extend(event_fixes)
-    if _enabled("VY204", config, context):
+    if rule_context.is_enabled("VY204"):
         pattern = re.compile(r"\blog\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
         edits: list[TextEdit] = []
         mask = code_mask(current)
@@ -272,26 +272,28 @@ def _legacy_dynamic_types(
 
 
 def _early_beta_syntax(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    context = rule_context.migration
     rules = {"VY216", "VY217", "VY218", "VY219", "VY221"}
-    if not _any_enabled(rules, config, context) or not _pre_021_context(context):
+    if not rule_context.any_enabled(rules) or not _pre_021_context(context):
         return source, [], []
     fixes: list[Fix] = []
     current = source
-    if _enabled("VY216", config, context):
+    if rule_context.is_enabled("VY216"):
         current, new_fixes = _rewrite_early_beta_types(current)
         fixes.extend(new_fixes)
-    if _enabled("VY217", config, context):
+    if rule_context.is_enabled("VY217"):
         current, new_fixes = _replace_identifier_call(current, "sha3", "keccak256", "VY217")
         fixes.extend(new_fixes)
-    if _enabled("VY218", config, context):
+    if rule_context.is_enabled("VY218"):
         current, new_fixes = _rewrite_string_convert_types(current)
         fixes.extend(new_fixes)
-    if _enabled("VY219", config, context):
+    if rule_context.is_enabled("VY219"):
         current, new_fixes = _rewrite_early_beta_clear(current)
         fixes.extend(new_fixes)
-    if _enabled("VY221", config, context):
+    if rule_context.is_enabled("VY221"):
         current, new_fixes = _rewrite_early_beta_call_syntax(current)
         fixes.extend(new_fixes)
     return current, fixes, []
@@ -678,7 +680,7 @@ EARLY_RULES = (
     Rule("legacy_type_units", runner=_legacy_type_units, changes=(target_floor("VY202", (0, 2, 1)),)),
     Rule(
         "legacy_events",
-        runner=_legacy_events,
+        context_runner=_legacy_events,
         changes=(
             target_floor("VY203", (0, 2, 1)),
             target_floor("VY204", (0, 2, 1)),
@@ -690,7 +692,7 @@ EARLY_RULES = (
 POST_INTERFACE_RULES = (
     Rule(
         "early_beta_syntax",
-        runner=_early_beta_syntax,
+        context_runner=_early_beta_syntax,
         changes=(
             target_floor("VY216", (0, 2, 1)),
             target_floor("VY217", (0, 2, 1)),

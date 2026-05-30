@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
@@ -26,29 +26,24 @@ RuleRunner = Callable[
     [str, Config, MigrationContext], tuple[str, list[Fix], list[Diagnostic]]
 ]
 ContextRuleRunner = Callable[["RuleContext"], tuple[str, list[Fix], list[Diagnostic]]]
-_RULE_CHANGES: Mapping[str, RuleChange] = {}
 
 
-def configure_rule_changes(changes: Mapping[str, RuleChange]) -> None:
-    global _RULE_CHANGES
-    _RULE_CHANGES = changes
-
-
-def is_enabled(rule: str, config: Config, context: MigrationContext) -> bool:
+def is_enabled(
+    rule: str,
+    config: Config,
+    context: MigrationContext,
+    changes: Mapping[str, RuleChange],
+) -> bool:
     if config.select and rule not in config.select:
         return False
     if rule in config.ignore:
         return False
-    change = _RULE_CHANGES.get(rule)
+    change = changes.get(rule)
     if change is None:
         return True
     if change.activation in {"target_floor", "target_update"}:
         return context.target_at_least(change.introduced)
     return context.crosses(change.introduced)
-
-
-def any_enabled(rules: set[str], config: Config, context: MigrationContext) -> bool:
-    return any(is_enabled(rule, config, context) for rule in rules)
 
 
 @dataclass(frozen=True)
@@ -57,7 +52,7 @@ class RuleContext:
     config: Config
     migration: MigrationContext
     path: Path | None = None
-    _is_enabled: Callable[[str], bool] | None = None
+    rule_changes: Mapping[str, RuleChange] = field(default_factory=dict)
 
     @cached_property
     def code_mask(self) -> list[bool]:
@@ -79,13 +74,14 @@ class RuleContext:
         if source == self.source:
             return self
         return RuleContext(
-            source, self.config, self.migration, self.path, self._is_enabled
+            source, self.config, self.migration, self.path, self.rule_changes
         )
 
     def is_enabled(self, rule: str) -> bool:
-        if self._is_enabled is None:
-            return True
-        return self._is_enabled(rule)
+        return is_enabled(rule, self.config, self.migration, self.rule_changes)
+
+    def any_enabled(self, rules: set[str]) -> bool:
+        return any(self.is_enabled(rule) for rule in rules)
 
 
 @dataclass(frozen=True)

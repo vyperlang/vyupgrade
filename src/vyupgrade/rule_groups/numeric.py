@@ -17,7 +17,7 @@ from ..rule_helpers import (
     line_match_starts_outside_string as _line_match_starts_outside_string,
     replace_identifier_expr as _replace_identifier_expr,
 )
-from ..rule_registry import Rule, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -39,12 +39,13 @@ from .numeric_types import (
 
 
 def _pre_04_expression_rewrites(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
     current = source
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
-    if _enabled("VY220", config, context):
+    if rule_context.is_enabled("VY220"):
         current, new_fixes = _replace_identifier_expr(
             current,
             "block.difficulty",
@@ -53,22 +54,22 @@ def _pre_04_expression_rewrites(
             "renamed block.difficulty to block.prevrandao",
         )
         fixes.extend(new_fixes)
-    if _enabled("VY230", config, context):
+    if rule_context.is_enabled("VY230"):
         current, new_fixes = _remove_unary_plus(current)
         fixes.extend(new_fixes)
-    if _any_enabled({"VY231", "VYD013"}, config, context):
-        current, new_fixes, new_diagnostics = _replace_numeric_not(current, config, context)
+    if rule_context.any_enabled({"VY231", "VYD013"}):
+        current_context = rule_context.with_source(current)
+        current, new_fixes, new_diagnostics = _replace_numeric_not(current_context)
         fixes.extend(new_fixes)
         diagnostics.extend(new_diagnostics)
     return current, fixes, diagnostics
 
 
 def _integer_division(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY050", "VYD004"}, config, context):
-        return source, [], []
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    facts = rule_context.facts
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
@@ -112,7 +113,7 @@ def _integer_division(
                 and "decimal" not in line
             )
         ):
-            if not _enabled("VY050", config, context):
+            if not rule_context.is_enabled("VY050"):
                 continue
             edits.append(TextEdit(match.start(), match.end(), "//"))
             fixes.append(
@@ -125,7 +126,7 @@ def _integer_division(
                 )
             )
         else:
-            if _enabled("VYD004", config, context):
+            if rule_context.is_enabled("VYD004"):
                 diagnostics.append(
                     Diagnostic(
                         "VYD004",
@@ -169,14 +170,13 @@ def _sqrt(
 
 
 def _bitwise(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY110", "VY111", "VYD012"}, config, context):
-        return source, [], []
+    source = rule_context.source
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     current = source
-    if _enabled("VY110", config, context):
+    if rule_context.is_enabled("VY110"):
         for name, operator, unary in [
             ("bitwise_and", "&", False),
             ("bitwise_or", "|", False),
@@ -185,8 +185,9 @@ def _bitwise(
         ]:
             current, new_fixes = _replace_builtin_call(current, name, operator, unary, "VY110")
             fixes.extend(new_fixes)
-    if _any_enabled({"VY111", "VYD012"}, config, context):
-        current, new_fixes, new_diagnostics = _replace_shift_builtin(current, config, context)
+    if rule_context.any_enabled({"VY111", "VYD012"}):
+        current_context = rule_context.with_source(current)
+        current, new_fixes, new_diagnostics = _replace_shift_builtin(current_context)
         fixes.extend(new_fixes)
         diagnostics.extend(new_diagnostics)
     return current, fixes, diagnostics
@@ -356,11 +357,10 @@ def _remove_unary_plus(source: str) -> tuple[str, list[Fix]]:
 
 
 def _replace_numeric_not(
-    source: str,
-    config: Config,
-    context: MigrationContext,
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    facts = parse_source_facts(source)
+    source = rule_context.source
+    facts = rule_context.facts
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
@@ -375,7 +375,7 @@ def _replace_numeric_not(
         expr_type = facts.storage_vars.get(expr[5:]) if expr.startswith("self.") else None
         expr_type = expr_type or infer_expr_type(expr, vars_for_line)
         if expr_type is None:
-            if _enabled("VYD013", config, context):
+            if rule_context.is_enabled("VYD013"):
                 diagnostics.append(
                     Diagnostic(
                         "VYD013", line, f"cannot infer whether 'not {expr}' is numeric or boolean"
@@ -385,7 +385,7 @@ def _replace_numeric_not(
         if not is_integer_type(expr_type):
             continue
         replacement = f"{expr} == 0"
-        if not _enabled("VY231", config, context):
+        if not rule_context.is_enabled("VY231"):
             continue
         edits.append(TextEdit(match.start(), match.end(), replacement))
         fixes.append(
@@ -435,16 +435,14 @@ def _replace_builtin_call(
 
 
 def _replace_shift_builtin(
-    source: str,
-    config: Config,
-    context: MigrationContext,
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    current = source
+    current = rule_context.source
     all_fixes: list[Fix] = []
     all_diagnostics: list[Diagnostic] = []
     while True:
         mask = code_mask(current)
-        constant_values = _integer_constant_values(current, config.source_ast)
+        constant_values = _integer_constant_values(current, rule_context.config.source_ast)
         facts = parse_source_facts(current)
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []
@@ -497,16 +495,16 @@ def _replace_shift_builtin(
             ):
                 replacement = f"({value} << convert({positive_convert.group(1).strip()}, uint256))"
             else:
-                if _enabled("VYD012", config, context):
+                if rule_context.is_enabled("VYD012"):
                     diagnostics.append(
                         Diagnostic(
                             "VYD012",
                             line_number(current, match.start()),
                             "shift() with non-literal amount needs manual << or >> review",
                         )
-                    )
+                )
                 continue
-            if not _enabled("VY111", config, context):
+            if not rule_context.is_enabled("VY111"):
                 continue
             edits.append(TextEdit(match.start(), close + 1, replacement))
             fixes.append(
@@ -702,7 +700,7 @@ def _expression_has_signed_integer(expr: str, vars_for_line: dict[str, str]) -> 
 PRE_INTERFACE_RULES = (
     Rule(
         "pre_04_expression_rewrites",
-        runner=_pre_04_expression_rewrites,
+        context_runner=_pre_04_expression_rewrites,
         changes=(
             crossing("VY220", (0, 3, 7)),
             crossing("VY230", (0, 3, 8)),
@@ -717,7 +715,7 @@ PRE_INTERFACE_RULES = (
 INTEGER_DIVISION_RULES = (
     Rule(
         "integer_division",
-        runner=_integer_division,
+        context_runner=_integer_division,
         changes=(
             crossing("VY050", (0, 4, 0)),
             crossing("VYD004", (0, 4, 0)),
@@ -735,7 +733,7 @@ LATE_RULES = (
     Rule("sqrt", runner=_sqrt, changes=(crossing("VY100", (0, 4, 2)),)),
     Rule(
         "bitwise",
-        runner=_bitwise,
+        context_runner=_bitwise,
         changes=(
             crossing("VY110", (0, 4, 2)),
             crossing("VY111", (0, 4, 2)),

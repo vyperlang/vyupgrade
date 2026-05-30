@@ -12,7 +12,7 @@ from ..rule_helpers import (
     line_offsets as _line_offsets,
     nested_under_config_path as _nested_under_config_path,
 )
-from ..rule_registry import Rule, RuleContext, any_enabled as _any_enabled, crossing, is_enabled as _enabled
+from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
@@ -396,10 +396,9 @@ def _function_body_span(
 
 
 def _interface_imports(
-    source: str, config: Config, context: MigrationContext
+    rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
-    if not _any_enabled({"VY020", "VYD003"}, config, context):
-        return source, [], []
+    source = rule_context.source
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     lines = source.splitlines(keepends=True)
@@ -416,7 +415,7 @@ def _interface_imports(
             continue
         imports = [part.strip() for part in match.group(2).split(",")]
         mapped = [IMPORT_RENAMES.get(name, name) for name in imports]
-        if mapped != imports and _enabled("VY020", config, context):
+        if mapped != imports and rule_context.is_enabled("VY020"):
             import_entries: list[str] = []
             for old, new in zip(imports, mapped, strict=True):
                 if old == new:
@@ -440,7 +439,7 @@ def _interface_imports(
             )
             changed = True
         elif "vyper.interfaces" in line:
-            if _enabled("VYD003", config, context):
+            if rule_context.is_enabled("VYD003"):
                 diagnostics.append(
                     Diagnostic(
                         "VYD003", i + 1, "unknown built-in interface import; review manually"
@@ -500,7 +499,7 @@ RULES = (
     Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
     Rule(
         "interface_imports",
-        runner=_interface_imports,
+        context_runner=_interface_imports,
         changes=(
             crossing("VY020", (0, 4, 0)),
             crossing("VYD003", (0, 4, 0)),
