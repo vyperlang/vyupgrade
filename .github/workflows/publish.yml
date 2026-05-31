@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
-      - run: uv run --locked ruff check src tests scripts/corpus.py
+      - run: uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py
       - run: uv run --locked pytest
       - run: scripts/smoke-wheel.sh
       - uses: actions/upload-artifact@v7.0.1
@@ -40,3 +40,23 @@ jobs:
           name: dist
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - run: python scripts/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
+      - run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
