@@ -102,6 +102,80 @@ def __init__():
     assert json.loads(second_report.read_text())["files"][0]["changed"] is False
 
 
+def test_write_mode_reports_missing_mamushi_formatter(
+    tmp_path: Path, monkeypatch, capsys, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        """# @version 0.3.10
+@external
+def __init__():
+    pass
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    def fake_run(command, **kwargs):
+        raise FileNotFoundError(command[0])
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    code = main([str(contract), "--write", "--format", "mamushi", "--report-json", str(report)])
+
+    assert code == 6
+    assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is True
+    assert data["formatter_status"] == "failed"
+    assert data["formatter_output"] == "mamushi executable not found"
+    assert data["test_status"] == "skipped"
+    assert "formatter: failed" in capsys.readouterr().out
+
+
+def test_write_mode_reports_failing_mamushi_formatter(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        """# @version 0.3.10
+@external
+def __init__():
+    pass
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "mamushi"
+        return cli.subprocess.CompletedProcess(command, 2, "formatted stdout", "formatted stderr")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--format",
+            "mamushi",
+            "--test-command",
+            "should-not-run",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 6
+    data = json.loads(report.read_text())
+    assert data["formatter_command"].startswith("mamushi ")
+    assert data["formatter_status"] == "failed"
+    assert data["formatter_output"] == (
+        "mamushi exited with status 2\nformatted stdout\nformatted stderr"
+    )
+    assert data["test_status"] == "skipped"
+
+
 def test_write_mode_does_not_write_when_target_compile_fails(
     tmp_path: Path, failing_target_compiler
 ) -> None:

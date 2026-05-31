@@ -146,6 +146,10 @@ def _render_text_summary(report: RunReport) -> str:
     ]
     if not report.write_requested and report.changed_count:
         lines.append("run with --write to apply these changes")
+    if report.formatter_command:
+        lines.append(f"formatter: {report.formatter_status}")
+        if report.formatter_output:
+            lines.append(report.formatter_output.rstrip())
     if report.test_command:
         lines.append(f"test command: {report.test_status}")
         if report.test_output:
@@ -167,6 +171,14 @@ def _render_summary(console: Console, report: RunReport) -> None:
     )
     if not report.write_requested and report.changed_count:
         console.print(Text("run with --write to apply these changes", style="vy.muted"))
+    if report.formatter_command:
+        console.print(
+            _label_value(
+                "formatter", report.formatter_status, _status_style(report.formatter_status)
+            )
+        )
+        if report.formatter_output:
+            console.print(report.formatter_output.rstrip())
     if report.test_command:
         console.print(
             _label_value("test command", report.test_status, _status_style(report.test_status))

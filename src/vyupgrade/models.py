@@ -89,6 +89,9 @@ class RunReport:
     files: list[FileReport]
     write_requested: bool = False
     wrote_changes: bool = False
+    formatter_command: str | None = None
+    formatter_status: str = "skipped"
+    formatter_output: str | None = None
     test_command: str | None = None
     test_status: str = "skipped"
     test_output: str | None = None
@@ -132,6 +135,9 @@ class RunReport:
                 }
                 for file in self.files
             ],
+            "formatter_command": self.formatter_command,
+            "formatter_status": self.formatter_status,
+            "formatter_output": self.formatter_output,
             "test_command": self.test_command,
             "test_status": self.test_status,
             "test_output": self.test_output,

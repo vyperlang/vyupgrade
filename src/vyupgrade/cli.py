@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -142,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         if config.format == "mamushi" and write_back:
             _run_mamushi([path for path, _ in write_back], run_report)
 
-    if config.test_command and config.write and not any_target_failed:
+    formatter_failed = run_report.formatter_status == "failed"
+
+    if config.test_command and config.write and not any_target_failed and not formatter_failed:
         proc = subprocess.run(
             config.test_command, shell=True, capture_output=True, text=True, timeout=600
         )
@@ -157,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if any_target_failed:
         return 2
+    if formatter_failed:
+        return 6
     if any_source_failed:
         return 3
     if config.check and any(file.changed for file in reports):
@@ -452,12 +457,48 @@ def _evm_default_diagnostic(source_version: str | None, target_version: str) -> 
 
 
 def _run_mamushi(paths: list[Path], report: RunReport) -> None:
-    proc = subprocess.run(
-        ["mamushi", *map(str, paths)], capture_output=True, text=True, timeout=120
-    )
+    command = ["mamushi", *map(str, paths)]
+    report.formatter_command = shlex.join(command)
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    except FileNotFoundError:
+        report.formatter_status = "failed"
+        report.formatter_output = "mamushi executable not found"
+        return
+    except subprocess.TimeoutExpired as exc:
+        report.formatter_status = "failed"
+        output = _command_output(exc.stdout, exc.stderr)
+        report.formatter_output = "\n".join(
+            part for part in (f"mamushi timed out after {exc.timeout:g} seconds", output) if part
+        )
+        return
+    except OSError as exc:
+        report.formatter_status = "failed"
+        report.formatter_output = f"mamushi failed to start: {exc}"
+        return
+
+    report.formatter_status = "passed" if proc.returncode == 0 else "failed"
+    output = _command_output(proc.stdout, proc.stderr)
     if proc.returncode != 0:
-        report.test_status = "failed"
-        report.test_output = (proc.stdout + proc.stderr).strip()
+        report.formatter_output = "\n".join(
+            part for part in (f"mamushi exited with status {proc.returncode}", output) if part
+        )
+    else:
+        report.formatter_output = output or None
+
+
+def _command_output(stdout: str | bytes | None, stderr: str | bytes | None) -> str:
+    return "\n".join(
+        text for text in (_decode_output(stdout), _decode_output(stderr)) if text
+    ).strip()
+
+
+def _decode_output(output: str | bytes | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output
 
 
 if __name__ == "__main__":
