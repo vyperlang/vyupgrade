@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Fixed `--format mamushi` write runs so missing, timed out, or failing formatter executions are captured in report output instead of crashing.
+
 ## 0.3.0
 
 - Added opt-in support for targeting Vyper `0.5.0a1` and `0.5.0a2`.
