@@ -47,6 +47,20 @@ def _safe_send_ether(to: address, value: uint256):
     assert any(fix.rule == "VY208" for fix in result.fixes)
 
 
+def test_raw_call_max_outsize_uint_bound_folds_to_literal(config) -> None:
+    source = """# @version 0.3.7
+@external
+def f(target: address, data: Bytes[1024]) -> Bytes[255]:
+    return raw_call(target, data, max_outsize=max_value(uint8))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "max_outsize=255" in result.source
+    assert "max_value(uint8)" not in result.source
+    assert any(fix.rule == "VY208" for fix in result.fixes)
+
+
 def test_legacy_method_id_bytes4_output_type_is_preserved(config) -> None:
     source = """# @version 0.2.1
 SIG: constant(bytes4) = method_id("transfer(address,uint256)", output_type=bytes4)

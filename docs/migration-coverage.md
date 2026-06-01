@@ -397,6 +397,8 @@ modern Python interpreter.
   value kwarg when `is_delegate_call=True`.
 - `raw_call` calldata must be dynamic bytes: `VY208` rewrites
   `empty(bytes32)` calldata to `b""`.
+- `raw_call` `max_outsize=` must be `uint256`: `VY208` folds
+  `max_value(uintN)` bounds to integer literals.
 - `extract32` kwarg `type` renamed: `VY208`.
 - Public array getter indexes use `uint256`: no-op. This is ABI shape, not a
   source rewrite.
