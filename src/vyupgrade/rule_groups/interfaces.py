@@ -878,6 +878,67 @@ def _interface_default_ellipsis(
     return apply_edits(source, edits), fixes, []
 
 
+def _interface_default_function(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    lines = source.splitlines(keepends=True)
+    offsets = _line_offsets(source)
+    interface_indent: int | None = None
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        header = line.split("#", 1)[0].strip()
+        if re.match(r"interface\s+[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?:\s*$", header):
+            interface_indent = indent
+            index += 1
+            continue
+        if interface_indent is not None and indent <= interface_indent:
+            interface_indent = None
+        if interface_indent is None or not re.match(r"def\s+__default__\s*\(", stripped):
+            index += 1
+            continue
+
+        start_index = index
+        header_lines = [line]
+        index += 1
+        while index < len(lines) and not _interface_header_complete("".join(header_lines)):
+            header_lines.append(lines[index])
+            index += 1
+        start = offsets[start_index]
+        end = offsets[index] if index < len(offsets) else len(source)
+        before = source[start:end].rstrip()
+        edits.append(TextEdit(start, end, ""))
+        fixes.append(
+            Fix(
+                "VY123",
+                start_index + 1,
+                "removed interface default function",
+                before,
+                "",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _interface_header_complete(header: str) -> bool:
+    depth = 0
+    for char in header:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+    return depth == 0 and bool(re.search(r":[ \t]*(?:\w+\s*)?(?:#.*)?$", header.rstrip()))
+
+
 RULES = (
     Rule("legacy_constants", runner=_legacy_constants, changes=(crossing("VY012", (0, 4, 0)),)),
     Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
@@ -913,5 +974,10 @@ RULES = (
         "interface_default_ellipsis",
         runner=_interface_default_ellipsis,
         changes=(crossing("VY122", "0.5.0a1"),),
+    ),
+    Rule(
+        "interface_default_function",
+        runner=_interface_default_function,
+        changes=(crossing("VY123", (0, 4, 0)),),
     ),
 )

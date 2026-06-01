@@ -51,6 +51,20 @@ interface Vault:
     assert any(fix.rule == "VY122" for fix in result.fixes)
 
 
+def test_interface_default_function_removed_for_0_4_target(config) -> None:
+    source = """#pragma version ^0.3.0
+interface PayableReceiver:
+    def __default__(): payable
+    def ping() -> bool: view
+"""
+
+    result = apply_rules(source, config(source_version="0.3.0", target_version="0.4.3"))
+
+    assert "def __default__" not in result.source
+    assert "def ping() -> bool: view" in result.source
+    assert any(fix.rule == "VY123" for fix in result.fixes)
+
+
 def test_modern_erc_interface_imports(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC4626, ERC721
