@@ -209,14 +209,10 @@ def _mixed_signed_unsigned_arithmetic(
                     or _is_unsigned_integer_type(lhs_type)
                 ):
                     continue
-                target_type = (
-                    _signed_comparison_target_type_at(source, start, name, vars_for_line)
-                    or _unsigned_name_signed_division_target_type(
-                        _local_expression(source, start), name, vars_for_line, facts
-                    )
-                    or _unsigned_name_signed_arithmetic_target_type(
-                        _local_expression(source, start), name, lhs_type, vars_for_line, facts
-                    )
+                target_type = _signed_comparison_target_type_at(
+                    source, start, name, vars_for_line
+                ) or _unsigned_name_signed_arithmetic_target_type(
+                    _local_expression(source, start), name, lhs_type, vars_for_line, facts
                 )
                 if target_type is None:
                     continue
