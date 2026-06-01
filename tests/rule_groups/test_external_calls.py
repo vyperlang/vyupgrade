@@ -487,6 +487,29 @@ def run(user: address):
     assert "extcall Controller(self.controller).liquidate(user)" in result.source
 
 
+def test_inline_interface_method_comment_keeps_call_keyword_inference(config) -> None:
+    source = """# @version 0.3.10
+struct Slot:
+    tick: int24
+
+interface Pool:
+    def tickSpacing() -> int24: view # v3 tick spacing
+    def slot0() -> Slot: view # v3 slot data
+
+@external
+@view
+def f(target: address) -> int24:
+    pool: Pool = Pool(target)
+    slot: Slot = pool.slot0()
+    return slot.tick + pool.tickSpacing()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "slot: Slot = staticcall pool.slot0()" in result.source
+    assert "return slot.tick + staticcall pool.tickSpacing()" in result.source
+
+
 def test_chained_call_after_staticcall_gets_keyword(config) -> None:
     source = """# pragma version 0.3.10
 interface Bridger:

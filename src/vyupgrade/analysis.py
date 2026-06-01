@@ -209,14 +209,15 @@ def parse_source_facts(source: str) -> SourceFacts:
                         )
                     pending_interface_header = []
                 continue
-            def_match = DEF_RE.match(stripped)
+            header_line = _strip_inline_comment(stripped).strip()
+            def_match = DEF_RE.match(header_line)
             if def_match:
                 method_name = _record_interface_method(facts, current_interface, def_match)
                 pending_interface_method = method_name if def_match.group(4) is None else None
                 continue
-            multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
+            multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", header_line)
             if multiline_def:
-                pending_interface_header = [_strip_inline_comment(stripped).strip()]
+                pending_interface_header = [header_line]
             continue
 
         decorator_match = re.match(r"@([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
