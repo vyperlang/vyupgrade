@@ -792,6 +792,11 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                     "slot": 3,
                     "type": "HashMap[address, interface IFactory]",
                 },
+                "loan": {
+                    "location": "storage",
+                    "slot": 4,
+                    "type": "HashMap[address, Loan declaration object]",
+                },
             }
         },
     )
@@ -806,6 +811,11 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                     "factories": {
                         "slot": 3,
                         "type": "HashMap[address, IFactory]",
+                        "n_slots": 1,
+                    },
+                    "loan": {
+                        "slot": 4,
+                        "type": "HashMap[address, Loan]",
                         "n_slots": 1,
                     },
                 },
@@ -850,6 +860,39 @@ def test_compare_artifacts_flags_real_storage_slot_shift() -> None:
     assert compare_artifacts(source, target) == (None, None, False)
 
 
+def test_compare_artifacts_normalizes_storage_nonreentrant_lock_names() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                },
+                "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "$.nonreentrant_key": {
+                        "slot": 0,
+                        "type": "nonreentrant lock",
+                        "n_slots": 1,
+                    },
+                    "balance": {"slot": 1, "type": "uint256", "n_slots": 1},
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
 def test_compare_artifact_details_reports_nonreentrant_lock_moved_to_transient_storage() -> None:
     source = CompileResult(
         "passed",
@@ -881,7 +924,7 @@ def test_compare_artifact_details_reports_nonreentrant_lock_moved_to_transient_s
     _abi_diff, _method_diff, storage_diff = compare_artifact_details(source, target)
 
     assert storage_diff == [
-        "moved storage to transient: nonreentrant.lock slot 0 nonreentrant lock -> $.nonreentrant_key slot 0 nonreentrant lock",
+        "moved storage to transient: $nonreentrant:0 slot 0 nonreentrant lock -> $nonreentrant:0 slot 0 nonreentrant lock",
         "changed storage: balance slot 1 uint256 -> 0 uint256",
     ]
 

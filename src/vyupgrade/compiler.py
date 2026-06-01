@@ -522,7 +522,9 @@ def _normalize_layout_entries(
         type_name = value.get("type")
         if not isinstance(slot, int) or not isinstance(type_name, str):
             continue
-        normalized[name] = (slot, _canonical_storage_type(type_name))
+        canonical_type = _canonical_storage_type(type_name)
+        normalized_name = f"$nonreentrant:{slot}" if canonical_type == "nonreentrant lock" else name
+        normalized[normalized_name] = (slot, canonical_type)
     return normalized
 
 
@@ -530,6 +532,7 @@ def _canonical_storage_type(type_name: str) -> str:
     type_name = type_name.rsplit("/", 1)[-1]
     type_name = type_name.removesuffix(".vyi")
     type_name = type_name.replace("interface ", "")
+    type_name = type_name.replace(" declaration object", "")
     if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
         return type_name[1:]
     return type_name
@@ -673,7 +676,7 @@ def _moved_nonreentrant_locks(
     for name, value in sorted(source.items()):
         if name in target:
             continue
-        if not name.startswith("nonreentrant.") or value[1] != "nonreentrant lock":
+        if not name.startswith("$nonreentrant:") or value[1] != "nonreentrant lock":
             continue
         moved[name] = target_name
     return moved
