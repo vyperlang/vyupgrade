@@ -416,6 +416,7 @@ def infer_expr_type(
         "block.prevhash",
         "chain.id",
         "msg.value",
+        "self.balance",
     }:
         return "uint256"
     convert_match = re.fullmatch(
@@ -484,7 +485,7 @@ def _infer_external_call_type(
 ) -> str | None:
     expr = re.sub(r"^(?:staticcall|extcall)\s+", "", expr.strip())
     match = re.fullmatch(
-        r"(?:(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\(.+\)|(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*))\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)",
+        r"(?:(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\(.+\)|(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)",
         expr,
         re.DOTALL,
     )

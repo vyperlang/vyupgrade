@@ -151,6 +151,132 @@ def f(pool: Pool, asset: uint256, rate: uint256) -> uint256:
     )
 
 
+def test_struct_attribute_external_call_integer_division_operand(config) -> None:
+    source = """# @version 0.3.7
+interface Pool:
+    def price_oracle(asset: uint256) -> uint256: view
+
+struct SwapData:
+    pool: Pool
+    j: int128
+
+ONE: constant(uint256) = 10 ** 18
+
+@external
+def f(swap_data: SwapData, price: uint256) -> uint256:
+    return price * swap_data.pool.price_oracle(convert(swap_data.j, uint256) - 1) / ONE
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return price * staticcall swap_data.pool.price_oracle("
+        "convert(swap_data.j, uint256) - 1) // ONE"
+    ) in result.source
+
+
+def test_indexed_right_operand_integer_division_inside_external_call(config) -> None:
+    source = """# @version 0.3.1
+interface Curve:
+    def calc_withdraw_one_coin(amount: uint256, i: int128) -> uint256: view
+
+N_COINS: constant(uint256) = 2
+PRECISION: constant(uint256) = 10 ** 18
+
+@external
+def f(pool: address, dy: uint256, rates: uint256[N_COINS]) -> uint256:
+    return Curve(pool).calc_withdraw_one_coin(dy * PRECISION / rates[1], 0)
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "staticcall Curve(pool).calc_withdraw_one_coin("
+        "dy * PRECISION // rates[1], convert(0, int128))"
+        in result.source
+    )
+
+
+def test_min_internal_call_integer_division_operand(config) -> None:
+    source = """# @version 0.3.10
+MAX_EXP: constant(uint256) = 10 ** 18
+rate0: public(uint256)
+
+@internal
+@view
+def exp(power: int256) -> uint256:
+    return MAX_EXP
+
+@external
+@view
+def f(power: int256) -> uint256:
+    return self.rate0 * min(self.exp(power), MAX_EXP) / 10**18
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return self.rate0 * min(self.exp(power), MAX_EXP) // 10**18" in result.source
+
+
+def test_cast_external_call_integer_division_operand(config) -> None:
+    source = """# @version 0.3.10
+interface CurveToken:
+    def totalSupply() -> uint256: view
+
+D: public(uint256)
+
+@internal
+@view
+def get_xcp(d: uint256) -> uint256:
+    return d
+
+@external
+@view
+def f(token: address) -> uint256:
+    return 10**18 * self.get_xcp(self.D) / CurveToken(token).totalSupply()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return 10**18 * self.get_xcp(self.D) // staticcall CurveToken(token).totalSupply()" in result.source
+
+
+def test_self_balance_integer_division_operand(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(amount: uint256, total_liquidity: uint256) -> uint256:
+    return amount * self.balance / total_liquidity
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return amount * self.balance // total_liquidity" in result.source
+
+
+def test_parenthesized_internal_call_integer_division_operand(config) -> None:
+    source = """# @version 0.3.10
+balances: HashMap[address, uint256]
+user_reward_per_token_paid: HashMap[address, uint256]
+
+@internal
+@view
+def reward_per_token() -> uint256:
+    return 10**18
+
+@external
+@view
+def f(account: address) -> uint256:
+    return self.balances[account] * (self.reward_per_token() - self.user_reward_per_token_paid[account]) / 10**18
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return self.balances[account] * "
+        "(self.reward_per_token() - self.user_reward_per_token_paid[account]) // 10**18"
+    ) in result.source
+
+
 def test_internal_call_integer_division_operand(config) -> None:
     source = """# @version 0.2.11
 scale: uint256

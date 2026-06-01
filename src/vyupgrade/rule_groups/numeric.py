@@ -184,17 +184,17 @@ def _read_left_operand(source: str, index: int) -> str:
         if open_index is not None:
             start = _read_indexed_expression_start(source, open_index)
             if start < open_index:
-                return source[start : i + 1].replace("self.", "")
+                return source[start : i + 1]
             return source[open_index : i + 1]
     if i >= 0 and source[i] == "]":
         open_index = _find_matching_open(source, i, open_char="[", close_char="]")
         if open_index is not None:
             start = _read_indexed_expression_start(source, open_index)
-            return source[start : i + 1].replace("self.", "")
+            return source[start : i + 1]
     end = i + 1
     while i >= 0 and re.match(r"[A-Za-z0-9_.$]", source[i]):
         i -= 1
-    return source[i + 1 : end].replace("self.", "")
+    return source[i + 1 : end]
 
 
 def _read_indexed_expression_start(source: str, open_index: int) -> int:
@@ -213,19 +213,42 @@ def _read_right_operand(source: str, index: int) -> str:
         i = source.find(" ", i) + 1
         while i < len(source) and source[i].isspace():
             i += 1
-    while i < len(source) and re.match(r"[A-Za-z0-9_.$\[]", source[i]):
-        i += 1
-    if i < len(source) and source[i] == "(":
-        close = find_matching(source, i)
-        if close is not None:
+    i = _read_chained_expression_end(source, i)
+    return source[start:i]
+
+
+def _read_chained_expression_end(source: str, index: int) -> int:
+    i = index
+    while i < len(source):
+        start = i
+        continue_chain = False
+        while i < len(source) and re.match(r"[A-Za-z0-9_.$]", source[i]):
+            i += 1
+        while i < len(source) and source[i] in "([":
+            close = (
+                find_matching(source, i)
+                if source[i] == "("
+                else find_matching(source, i, open_char="[", close_char="]")
+            )
+            if close is None:
+                return i
             i = close + 1
-    return source[start:i].replace("self.", "")
+            if i < len(source) and source[i] == ".":
+                i += 1
+                continue_chain = True
+                break
+        if continue_chain:
+            continue
+        if i == start or (i < len(source) and source[i] not in "([."):
+            return i
+    return i
 
 
 def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None) -> bool:
     expr = expr.split("#", 1)[0]
     if facts is not None:
         expr = _replace_integerish_subexpressions(expr, vars_for_line, facts)
+    expr = re.sub(r"\bself\.balance\b", "1", expr)
     expr = expr.replace("self.", "")
     expr = re.sub(
         r"\b(?:block\.(?:timestamp|number|difficulty|basefee|prevhash)|chain\.id|msg\.value)\b",
@@ -275,6 +298,7 @@ def _replace_integerish_subexpressions(expr: str, vars_for_line: dict[str, str],
     for pattern in [
         r"\bisqrt\s*\(",
         r"(?:staticcall|extcall)\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
+        r"(?<!\.)\b(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\s*\(",
         r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])+(?:\.[A-Za-z_][A-Za-z0-9_]*)?",
         r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*",
     ]:
@@ -288,9 +312,18 @@ def _replace_integerish_subexpressions(expr: str, vars_for_line: dict[str, str],
             candidate = expr[match.start() : end]
             if is_integer_type(infer_expr_type(candidate, vars_for_line, facts)):
                 edits.append(TextEdit(match.start(), end, "1"))
-    return apply_edits(
-        expr, _innermost_non_overlapping(edits, [Fix("VY050", 1, "", "", "") for _ in edits])[0]
-    )
+    return apply_edits(expr, _outermost_non_overlapping_edits(edits))
+
+
+def _outermost_non_overlapping_edits(edits: list[TextEdit]) -> list[TextEdit]:
+    selected: list[TextEdit] = []
+    for edit in sorted(edits, key=lambda item: (item.start, -(item.end - item.start))):
+        if any(edit.start >= kept.start and edit.end <= kept.end for kept in selected):
+            continue
+        if any(edit.start < kept.end and kept.start < edit.end for kept in selected):
+            continue
+        selected.append(edit)
+    return sorted(selected, key=lambda item: item.start)
 
 
 def _multiline_integer_division_context(source: str, line_start: int) -> bool:
