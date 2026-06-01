@@ -374,6 +374,12 @@ def _target_validation_source(
         return f"{match.group(1)}#pragma version {target_version}"
 
     rewritten = pattern.sub(replacement, source)
+    rewritten = re.sub(
+        r"^[ \t]*#[ \t]*pragma[ \t]+solidity\b.*(?:\n|$)",
+        "",
+        rewritten,
+        flags=re.MULTILINE,
+    )
     rewritten = _target_validation_dependency_source(rewritten)
     if is_interface:
         return _target_validation_interface_source(rewritten)

@@ -494,7 +494,7 @@ def test_target_validation_source_removes_duplicate_vyper_pragmas() -> None:
 
     result = _target_validation_source(source, "0.4.3")
 
-    assert result == "#pragma version 0.4.3\n\n# pragma solidity ^0.8.0\n"
+    assert result == "#pragma version 0.4.3\n\n"
 
 
 def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:
