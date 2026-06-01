@@ -241,6 +241,7 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
     for token in tokens:
         if token in {
             "convert",
+            "isqrt",
             "max",
             "min",
             "pow_mod256",
@@ -270,6 +271,7 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
 def _replace_integerish_subexpressions(expr: str, vars_for_line: dict[str, str], facts) -> str:
     edits: list[TextEdit] = []
     for pattern in [
+        r"\bisqrt\s*\(",
         r"(?:staticcall|extcall)\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
         r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])+(?:\.[A-Za-z_][A-Za-z0-9_]*)?",
         r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*",

@@ -393,6 +393,8 @@ def infer_expr_type(
     bounds_match = re.fullmatch(r"(?:max_value|min_value)\s*\(\s*(u?int(?:\d+)?)\s*\)", expr)
     if bounds_match:
         return bounds_match.group(1)
+    if re.fullmatch(r"isqrt\s*\(.+\)", expr, re.DOTALL):
+        return "uint256"
     empty_match = re.fullmatch(r"empty\s*\(\s*(.+?)\s*\)", expr)
     if empty_match:
         return empty_match.group(1).strip()

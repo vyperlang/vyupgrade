@@ -151,6 +151,29 @@ def f(pool: Pool, asset: uint256, rate: uint256) -> uint256:
     )
 
 
+def test_isqrt_integer_division_operand(config) -> None:
+    source = """# @version 0.3.10
+virtual_price: uint256
+
+@internal
+@view
+def price_oracle() -> uint256:
+    return 10**18
+
+@external
+@view
+def lp_price() -> uint256:
+    return 2 * self.virtual_price * isqrt(self.price_oracle() * 10**18) / 10**18
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return 2 * self.virtual_price * isqrt(self.price_oracle() * 10**18) // 10**18"
+        in result.source
+    )
+
+
 def test_multiline_return_internal_call_integer_division(config) -> None:
     source = """# @version 0.2.12
 totalSupply: public(uint256)
