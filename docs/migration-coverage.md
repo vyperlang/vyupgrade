@@ -147,7 +147,9 @@ modern Python interpreter.
   rewrites the literal to a byte string form accepted by modern Vyper.
 - Exponentiation typing became stricter: `VY054` folds known integer constants
   used as operands in unsigned exponent expressions, and `VY055` rewrites
-  dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`.
+  dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`. `VY054` also
+  rewrites signed integer boundary literals behind signed annotations to
+  `min_value(...)` or `max_value(...)`.
 - Range bounds are type-checked against annotated loop variables: `VY056`
   converts signed integer constants inside `range(...)` when the loop variable
   has an unsigned integer annotation, and adds a literal `bound=` when the

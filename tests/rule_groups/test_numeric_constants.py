@@ -36,6 +36,35 @@ def neg(i: int128) -> int128:
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
+def test_signed_boundary_default_literals_rewrite_to_min_max_value(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(lower: int256=-2**255, upper: int256 = (2 ** 255 - 1)) -> int256:
+    return lower + upper
+"""
+
+    result = apply_rules(source, config())
+
+    assert "lower: int256=min_value(int256)" in result.source
+    assert "upper: int256 = max_value(int256)" in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
+
+
+def test_signed_boundary_assignment_literals_rewrite_to_min_max_value(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> int128:
+    lower: int128 = (-2**127)
+    upper: int128 = 2 ** 127 - 1
+    return lower + upper
+"""
+
+    result = apply_rules(source, config())
+
+    assert "lower: int128 = min_value(int128)" in result.source
+    assert "upper: int128 = max_value(int128)" in result.source
+
+
 def test_one_base_exponent_literal_folds_to_one(config) -> None:
     source = """# @version 0.2.12
 RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * (1 ** 10)

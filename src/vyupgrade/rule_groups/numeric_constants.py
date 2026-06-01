@@ -19,6 +19,9 @@ from ..source import (
 )
 from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 
+_INTEGER_BITS = "|".join(str(bits) for bits in range(8, 257, 8))
+_SIGNED_INTEGER_TYPE = rf"int(?:{_INTEGER_BITS})"
+
 
 def _constant_integer_decl_casts(
     rule_context: RuleContext,
@@ -116,6 +119,26 @@ def _constant_exponent_literals_context(
                 replacement,
             )
         )
+    signed_boundary_re = re.compile(
+        rf":\s*(?P<type>{_SIGNED_INTEGER_TYPE})\s*=\s*"
+        r"(?P<expr>(?:\(\s*)?-?\s*2\s*\*\*\s*[0-9][0-9_]*\s*(?:-\s*1)?(?:\s*\))?)"
+    )
+    for match in signed_boundary_re.finditer(source):
+        if not span_is_code(mask, match.start("expr"), match.end("expr")):
+            continue
+        replacement = _signed_boundary_literal_replacement(match.group("type"), match.group("expr"))
+        if replacement is None:
+            continue
+        edits.append(TextEdit(match.start("expr"), match.end("expr"), replacement))
+        fixes.append(
+            Fix(
+                "VY054",
+                line_number(source, match.start()),
+                "replaced signed integer boundary literal",
+                match.group("expr"),
+                replacement,
+            )
+        )
     constant_values = integer_constant_values(source, config.source_ast)
     for name, value in constant_values.items():
         if value < 0:
@@ -156,6 +179,22 @@ def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool
         normalize_type(_lhs_declared_type(line) or _lhs_assigned_type(line, vars_for_line) or "")
         == "int128"
     )
+
+
+def _signed_boundary_literal_replacement(type_name: str, expr: str) -> str | None:
+    type_name = normalize_type(type_name)
+    match = re.fullmatch(r"int(\d+)", type_name)
+    if match is None:
+        return None
+    bits = int(match.group(1))
+    literal = re.sub(r"\s+", "", expr.strip())
+    if literal.startswith("(") and literal.endswith(")"):
+        literal = literal[1:-1]
+    if literal == f"-2**{bits - 1}":
+        return f"min_value({type_name})"
+    if literal == f"2**{bits - 1}-1":
+        return f"max_value({type_name})"
+    return None
 
 
 def _dynamic_pow_mod256(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
