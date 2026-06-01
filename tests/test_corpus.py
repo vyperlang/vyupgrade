@@ -241,7 +241,10 @@ def test_import_chainsecurity_preserves_standard_json_source_tree(tmp_path: Path
                 "content": "# @version 0.4.1\nfrom interfaces import Foo\nx: uint256\n"
             },
         },
-        "settings": {"outputSelection": {"contracts/Main.vy": ["abi"]}},
+        "settings": {
+            "outputSelection": {"contracts/Main.vy": ["abi"]},
+            "search_paths": [".", "interfaces"],
+        },
         "compiler_version": "v0.4.1+commit.8a93dd27",
     }
     (export / "1_0x0000000000000000000000000000000000000001.json").write_text(
@@ -258,6 +261,10 @@ def test_import_chainsecurity_preserves_standard_json_source_tree(tmp_path: Path
     assert item["chain"] == "1"
     assert item["address"] == "0x0000000000000000000000000000000000000001"
     assert item["pragma"] == "0.4.1"
+    assert item["compiler_search_paths"] == [
+        str(Path(item["corpus_repo_root"])),
+        str(Path(item["corpus_repo_root"], "interfaces")),
+    ]
     assert Path(item["corpus_repo_root"], "interfaces", "Foo.vyi").exists()
 
 
@@ -379,6 +386,60 @@ def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Pat
     assert seen["source_version"] == "0.3.0"
     assert result["source_compile"] == "passed"
     assert result["target_compile"] == "passed"
+
+
+def test_smoke_uses_standard_json_search_paths(monkeypatch, tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    root = tmp_path / "corpus" / "chainsecurity" / "1_0xabc"
+    contract = root / "main.vy"
+    module_dir = root / "tests" / "integration" / "network" / "sepolia"
+    module_dir.mkdir(parents=True)
+    contract.write_text("import module_lib\n", encoding="utf-8")
+    standard_json = tmp_path / "export" / "1_0xabc.json"
+    standard_json.parent.mkdir()
+    standard_json.write_text(
+        json.dumps(
+            {
+                "settings": {
+                    "search_paths": [".", "tests/integration/network/sepolia", "../unsafe"]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    item = {
+        "repo": "chainsecurity",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(root),
+        "pragma": "0.4.3",
+        "standard_json": str(standard_json),
+    }
+    seen: dict[str, tuple[Path, ...]] = {}
+
+    def fake_apply_rules(source, config, path):
+        seen["rewrite_paths"] = config.compiler_search_paths
+        return SimpleNamespace(source=source, fixes=[], diagnostics=[])
+
+    def fake_compile_source_file(path, config, source_version):
+        seen["source_paths"] = config.compiler_search_paths
+        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+
+    monkeypatch.setattr(corpus, "apply_rules", fake_apply_rules)
+    monkeypatch.setattr(corpus, "compile_source_file", fake_compile_source_file)
+    monkeypatch.setattr(
+        corpus,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    expected = (root, module_dir)
+    assert seen["source_paths"] == expected
+    assert seen["rewrite_paths"] == expected
+    assert result["source_compile"] == "passed"
 
 
 def test_error_excerpt_keeps_nested_compiler_messages() -> None:

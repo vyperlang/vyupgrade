@@ -607,6 +607,7 @@ def import_chainsecurity(source: Path, output: Path) -> dict[str, Any]:
             counts["json_sources_written"] += 1
 
         selected_sources = _chainsecurity_output_sources(payload, written_sources)
+        compiler_search_paths = _standard_json_compiler_search_paths(payload, package_root)
         for source_name in selected_sources:
             corpus_path = written_sources.get(source_name)
             if corpus_path is None or corpus_path.suffix != ".vy":
@@ -634,6 +635,7 @@ def import_chainsecurity(source: Path, output: Path) -> dict[str, Any]:
                 "sha256": _source_hash(source_text),
                 "chain": chain,
                 "address": address,
+                "compiler_search_paths": [str(path) for path in compiler_search_paths],
                 "standard_json": str(metadata_path),
             }
             items.append(item)
@@ -963,11 +965,12 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
     started = time.time()
     try:
         original = path.read_text(encoding="utf-8")
+        compiler_search_paths = _item_compiler_search_paths(item)
         config = Config(
             paths=(path,),
             target_version=target_version,
             source_version=item["pragma"],
-            compiler_search_paths=(Path(item["corpus_repo_root"]),),
+            compiler_search_paths=compiler_search_paths,
         )
         source_compile = compile_source_file(path, config, item["pragma"])
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
@@ -1238,6 +1241,56 @@ def _standard_json_source_content(source_info: object) -> str | None:
         return None
     content = source_info.get("content")
     return content if isinstance(content, str) else None
+
+
+def _item_compiler_search_paths(item: dict[str, Any]) -> tuple[Path, ...]:
+    paths: list[Path] = [Path(item["corpus_repo_root"])]
+    paths.extend(Path(path) for path in item.get("compiler_search_paths", []) if path)
+    standard_json = item.get("standard_json")
+    if isinstance(standard_json, str):
+        try:
+            payload = json.loads(Path(standard_json).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            paths.extend(
+                _standard_json_compiler_search_paths(payload, Path(item["corpus_repo_root"]))
+            )
+    return _unique_paths(paths)
+
+
+def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: Path) -> tuple[Path, ...]:
+    settings = payload.get("settings")
+    if not isinstance(settings, dict):
+        return ()
+    raw_paths = settings.get("search_paths")
+    if not isinstance(raw_paths, list):
+        return ()
+    paths: list[Path] = []
+    for raw_path in raw_paths:
+        if not isinstance(raw_path, str):
+            continue
+        path = _standard_json_search_path(package_root, raw_path)
+        if path is not None:
+            paths.append(path)
+    return _unique_paths(paths)
+
+
+def _standard_json_search_path(package_root: Path, raw_path: str) -> Path | None:
+    path = Path(raw_path)
+    parts = [part for part in path.parts if part not in {"", "."}]
+    if path.is_absolute() or any(part == ".." for part in parts):
+        return None
+    if not parts:
+        return package_root
+    return package_root.joinpath(*(_safe_filename(part) for part in parts))
+
+
+def _unique_paths(paths: list[Path]) -> tuple[Path, ...]:
+    unique: dict[str, Path] = {}
+    for path in paths:
+        unique.setdefault(str(path), path)
+    return tuple(unique.values())
 
 
 def _chainsecurity_id(path: Path) -> tuple[str | None, str | None]:
