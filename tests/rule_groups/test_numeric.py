@@ -151,6 +151,26 @@ def f(pool: Pool, asset: uint256, rate: uint256) -> uint256:
     )
 
 
+def test_internal_call_integer_division_operand(config) -> None:
+    source = """# @version 0.2.11
+scale: uint256
+
+@internal
+@view
+def getBalance(wallet: address) -> uint256:
+    return 10**18
+
+@external
+@view
+def balanceOf(wallet: address) -> uint256:
+    return self.getBalance(wallet) / self.scale
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return self.getBalance(wallet) // self.scale" in result.source
+
+
 def test_isqrt_integer_division_operand(config) -> None:
     source = """# @version 0.3.10
 virtual_price: uint256

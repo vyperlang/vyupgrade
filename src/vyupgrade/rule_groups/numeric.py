@@ -182,6 +182,9 @@ def _read_left_operand(source: str, index: int) -> str:
     if i >= 0 and source[i] == ")":
         open_index = _find_matching_open(source, i)
         if open_index is not None:
+            start = _read_indexed_expression_start(source, open_index)
+            if start < open_index:
+                return source[start : i + 1].replace("self.", "")
             return source[open_index : i + 1]
     if i >= 0 and source[i] == "]":
         open_index = _find_matching_open(source, i, open_char="[", close_char="]")
