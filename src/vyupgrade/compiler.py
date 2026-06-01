@@ -529,6 +529,7 @@ def _normalize_layout_entries(
 def _canonical_storage_type(type_name: str) -> str:
     type_name = type_name.rsplit("/", 1)[-1]
     type_name = type_name.removesuffix(".vyi")
+    type_name = type_name.replace("interface ", "")
     if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
         return type_name[1:]
     return type_name

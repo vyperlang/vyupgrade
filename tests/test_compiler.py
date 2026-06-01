@@ -786,6 +786,12 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
             "layout": {
                 "token": {"location": "storage", "slot": 0, "type": "ERC20"},
                 "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+                "pool": {"location": "storage", "slot": 2, "type": "interface IPool"},
+                "factories": {
+                    "location": "storage",
+                    "slot": 3,
+                    "type": "HashMap[address, interface IFactory]",
+                },
             }
         },
     )
@@ -796,6 +802,12 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                 "storage_layout": {
                     "token": {"slot": 0, "type": "/tmp/IERC20.vyi", "n_slots": 1},
                     "balance": {"slot": 1, "type": "uint256", "n_slots": 1},
+                    "pool": {"slot": 2, "type": "IPool", "n_slots": 1},
+                    "factories": {
+                        "slot": 3,
+                        "type": "HashMap[address, IFactory]",
+                        "n_slots": 1,
+                    },
                 },
                 "transient_storage_layout": {
                     "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock"},
