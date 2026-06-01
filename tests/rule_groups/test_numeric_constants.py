@@ -65,6 +65,23 @@ def f() -> int128:
     assert "upper: int128 = max_value(int128)" in result.source
 
 
+def test_bytes32_convert_exponent_max_literal_is_folded(config) -> None:
+    source = """# @version 0.3.7
+@external
+def f() -> Bytes[64]:
+    return concat(
+        convert(2 ** 128 - 1, bytes32),
+        convert(2 ** 128 - 1, bytes32)
+    )
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "convert(340282366920938463463374607431768211455, bytes32)" in result.source
+    assert "2 ** 128 - 1" not in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
+
+
 def test_one_base_exponent_literal_folds_to_one(config) -> None:
     source = """# @version 0.2.12
 RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * (1 ** 10)

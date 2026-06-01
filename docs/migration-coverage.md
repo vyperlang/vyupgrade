@@ -150,7 +150,8 @@ modern Python interpreter.
   used as operands in unsigned exponent expressions, and `VY055` rewrites
   dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`. `VY054` also
   rewrites signed integer boundary literals behind signed annotations to
-  `min_value(...)` or `max_value(...)`.
+  `min_value(...)` or `max_value(...)`, and folds exponent max literals inside
+  `bytes32` conversions.
 - Range bounds are type-checked against annotated loop variables: `VY056`
   converts signed integer constants inside `range(...)` when the loop variable
   has an unsigned integer annotation, and adds a literal `bound=` when the

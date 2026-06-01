@@ -14,7 +14,9 @@ from ..rule_helpers import (
 from ..source import (
     TextEdit,
     apply_edits,
+    find_matching,
     line_number,
+    split_top_level_arg_spans,
     span_is_code,
 )
 from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
@@ -139,6 +141,32 @@ def _constant_exponent_literals_context(
                 replacement,
             )
         )
+    for match in re.finditer(r"\bconvert\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        close = find_matching(source, match.end() - 1)
+        if close is None:
+            continue
+        arg_spans = split_top_level_arg_spans(source[match.end() : close])
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        expr_start, expr_end, expr = arg_spans[0]
+        _target_start, _target_end, target_type = arg_spans[1]
+        if target_type.strip() != "bytes32":
+            continue
+        replacement = _positive_exponent_max_literal(expr)
+        if replacement is None:
+            continue
+        edits.append(TextEdit(match.end() + expr_start, match.end() + expr_end, replacement))
+        fixes.append(
+            Fix(
+                "VY054",
+                line_number(source, match.start()),
+                "folded bytes32 convert exponent literal",
+                expr,
+                replacement,
+            )
+        )
     constant_values = integer_constant_values(source, config.source_ast)
     for name, value in constant_values.items():
         if value < 0:
@@ -195,6 +223,19 @@ def _signed_boundary_literal_replacement(type_name: str, expr: str) -> str | Non
     if literal == f"2**{bits - 1}-1":
         return f"max_value({type_name})"
     return None
+
+
+def _positive_exponent_max_literal(expr: str) -> str | None:
+    normalized = re.sub(r"\s+", "", expr.strip())
+    if normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1]
+    match = re.fullmatch(r"2\*\*(?P<bits>\d+)-1", normalized)
+    if match is None:
+        return None
+    bits = int(match.group("bits"))
+    if not (0 <= bits <= 256):
+        return None
+    return str(2**bits - 1)
 
 
 def _dynamic_pow_mod256(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
