@@ -29,6 +29,8 @@ def _legacy_builtin_calls(
             current, "raw_call", "outsize", "max_outsize", "VY208"
         )
         fixes.extend(new_fixes)
+        current, new_fixes = _rewrite_empty_bytes32_raw_call_data(current)
+        fixes.extend(new_fixes)
         current, new_fixes = _remove_delegate_raw_call_value(current)
         fixes.extend(new_fixes)
         current, new_fixes = _replace_call_keyword(
@@ -70,6 +72,32 @@ def _replace_call_keyword(
                 f"renamed {call_name} keyword {before}",
                 before,
                 after,
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _rewrite_empty_bytes32_raw_call_data(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for _match, open_index, _close, raw_args in iter_calls(source, "raw_call"):
+        spans = split_top_level_arg_spans(raw_args)
+        if spans is None or len(spans) < 2:
+            continue
+        start, end, arg = spans[1]
+        if re.fullmatch(r"empty\s*\(\s*bytes32\s*\)", arg.strip()) is None:
+            continue
+        edit_start = open_index + 1 + start
+        edit_end = open_index + 1 + end
+        replacement = 'b""'
+        edits.append(TextEdit(edit_start, edit_end, replacement))
+        fixes.append(
+            Fix(
+                "VY208",
+                line_number(source, edit_start),
+                "rewrote empty bytes32 raw_call calldata",
+                source[edit_start:edit_end],
+                replacement,
             )
         )
     return apply_edits(source, edits), fixes

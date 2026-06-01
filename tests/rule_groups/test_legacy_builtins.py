@@ -31,6 +31,22 @@ def create() -> address:
     assert any(fix.rule == "VY208" for fix in result.fixes)
 
 
+def test_empty_bytes32_raw_call_data_rewrites_to_empty_bytes(config) -> None:
+    source = """# @version 0.3.7
+@internal
+def _safe_send_ether(to: address, value: uint256):
+    response: Bytes[32] = raw_call(
+        to, empty(bytes32), value=value, max_outsize=32
+    )
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert 'to, b"", value=value, max_outsize=32' in result.source
+    assert "empty(bytes32)" not in result.source
+    assert any(fix.rule == "VY208" for fix in result.fixes)
+
+
 def test_legacy_method_id_bytes4_output_type_is_preserved(config) -> None:
     source = """# @version 0.2.1
 SIG: constant(bytes4) = method_id("transfer(address,uint256)", output_type=bytes4)
