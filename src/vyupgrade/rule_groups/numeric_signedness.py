@@ -210,6 +210,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
                     or _is_unsigned_integer_type(lhs_type)
+                    or _unsigned_internal_call_arg_context(source, start, facts)
                 ):
                     continue
                 local_expr = _local_expression(source, start)
@@ -588,6 +589,33 @@ def _signed_internal_call_arg_target_type(
         return None
     target_type = list(params.values())[arg_index]
     return normalize_type(target_type) if _is_signed_integer_type(target_type) else None
+
+
+def _unsigned_internal_call_arg_context(source: str, index: int, facts: SourceFacts) -> bool:
+    line_start = source.rfind("\n", 0, index) + 1
+    line_end = source.find("\n", index)
+    if line_end == -1:
+        line_end = len(source)
+    for relative_open in reversed([match.start() for match in re.finditer(r"\(", source[line_start:index])]):
+        open_index = line_start + relative_open
+        close = find_matching(source, open_index)
+        if close is None or not (open_index < index < close) or close > line_end:
+            continue
+        func_match = re.search(
+            r"(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*$", source[line_start:open_index]
+        )
+        if func_match is None:
+            continue
+        params = facts.function_params.get(func_match.group(1))
+        if not params:
+            continue
+        raw_args = source[open_index + 1 : close]
+        arg_index = _top_level_arg_index(raw_args, index - open_index - 1)
+        if arg_index is None or arg_index >= len(params):
+            continue
+        target_type = list(params.values())[arg_index]
+        return _is_unsigned_integer_type(target_type)
+    return False
 
 
 def _signed_external_call_arg_target_type(

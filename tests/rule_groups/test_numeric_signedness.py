@@ -291,6 +291,27 @@ def f(p: uint256, debt: uint256) -> int256:
     assert "convert(COLLATERAL_PRECISION, int256)" not in result.source
 
 
+def test_unsigned_expression_nested_in_uint_internal_arg_stays_unsigned(config) -> None:
+    source = """# @version 0.3.10
+LOGN_A_RATIO: immutable(int256)
+
+@deploy
+def __init__():
+    A: uint256 = 100
+    LOGN_A_RATIO = self.wad_ln(unsafe_div(A * 10**18, unsafe_sub(A, 1)))
+
+@internal
+@pure
+def wad_ln(x: uint256) -> int256:
+    return convert(x, int256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "LOGN_A_RATIO = self.wad_ln(unsafe_div(A * 10**18, unsafe_sub(A, 1)))" in result.source
+    assert "convert(A, int256)" not in result.source
+
+
 def test_unsigned_array_literal_expression_keeps_unsigned_constants(config) -> None:
     source = """# @version 0.2.16
 N_COINS: constant(int128) = 2
