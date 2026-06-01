@@ -201,7 +201,7 @@ def f(p: int256) -> int256:
     assert "convert(sigma, uint256)" not in result.source
 
 
-def test_unsigned_constant_is_not_converted_in_signed_integer_division(config) -> None:
+def test_unsigned_constant_folds_in_signed_integer_division(config) -> None:
     source = """# @version 0.2.4
 MAXTIME: constant(uint256) = 4 * 365 * 86400
 
@@ -219,7 +219,8 @@ def f(old_locked: LockedBalance):
 
     result = apply_rules(source, config())
 
-    assert "u_old.slope = old_locked.amount // MAXTIME" in result.source
+    assert "u_old.slope = old_locked.amount // 126144000" in result.source
+    assert "convert(MAXTIME, int128)" not in result.source
 
 
 def test_unsigned_constant_converted_in_signed_param_comparison(config) -> None:

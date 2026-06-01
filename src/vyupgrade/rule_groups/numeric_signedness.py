@@ -175,7 +175,10 @@ def _mixed_signed_unsigned_arithmetic(
                 )
                 if target_type is None:
                     continue
-                replacement = f"convert({name}, {target_type})"
+                literal = _signed_division_unsigned_constant_literal(
+                    _local_expression(source, start), name, target_type, constant_values
+                )
+                replacement = literal or f"convert({name}, {target_type})"
                 edits.append(TextEdit(start, end, replacement))
                 fixes.append(
                     Fix(
@@ -209,14 +212,25 @@ def _mixed_signed_unsigned_arithmetic(
                     or _is_unsigned_integer_type(lhs_type)
                 ):
                     continue
-                target_type = _signed_comparison_target_type_at(
+                local_expr = _local_expression(source, start)
+                comparison_target = _signed_comparison_target_type_at(
                     source, start, name, vars_for_line
-                ) or _unsigned_name_signed_arithmetic_target_type(
-                    _local_expression(source, start), name, lhs_type, vars_for_line, facts
                 )
+                arithmetic_target = _unsigned_name_signed_arithmetic_target_type(
+                    local_expr, name, lhs_type, vars_for_line, facts
+                )
+                division_target = _unsigned_name_signed_division_target_type(
+                    local_expr, name, vars_for_line, facts
+                )
+                target_type = comparison_target or arithmetic_target or division_target
                 if target_type is None:
                     continue
-                replacement = f"convert({name}, {target_type})"
+                literal = _signed_division_unsigned_constant_literal(
+                    local_expr, name, target_type, constant_values
+                )
+                if literal is None and division_target is not None:
+                    continue
+                replacement = literal or f"convert({name}, {target_type})"
                 edits.append(TextEdit(start, end, replacement))
                 fixes.append(
                     Fix(
@@ -403,6 +417,27 @@ def _signed_comparison_target_type(
     else:
         return None
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _signed_division_unsigned_constant_literal(
+    expr: str, name: str, target_type: str, constant_values: dict[str, int]
+) -> str | None:
+    if "/" not in expr:
+        return None
+    value = constant_values.get(name)
+    if value is None or not _integer_value_fits_type(value, target_type):
+        return None
+    return str(value)
+
+
+def _integer_value_fits_type(value: int, type_name: str) -> bool:
+    match = re.fullmatch(r"(u?)int(\d+)", normalize_type(type_name))
+    if match is None:
+        return False
+    bits = int(match.group(2))
+    if match.group(1):
+        return 0 <= value < 2**bits
+    return -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
 
 
 def _unsigned_name_signed_division_target_type(
