@@ -42,10 +42,6 @@ def _legacy_builtin_calls(
         fixes.extend(new_fixes)
         current, new_fixes = _rewrite_method_id_shift_output_type(current)
         fixes.extend(new_fixes)
-        current, new_fixes = _remove_call_keyword_arg(
-            current, "method_id", "output_type", "bytes4", "VY209"
-        )
-        fixes.extend(new_fixes)
     return current, fixes, []
 
 

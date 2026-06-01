@@ -12,7 +12,7 @@ def f() -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert 'method_id("callback(address)")' in result.source
+    assert 'method_id("callback(address)", output_type=bytes4)' in result.source
     assert "output_type=bytes32" not in result.source
 
 
@@ -31,16 +31,30 @@ def create() -> address:
     assert any(fix.rule == "VY208" for fix in result.fixes)
 
 
-def test_legacy_method_id_output_type_is_removed(config) -> None:
+def test_legacy_method_id_bytes4_output_type_is_preserved(config) -> None:
     source = """# @version 0.2.1
 SIG: constant(bytes4) = method_id("transfer(address,uint256)", output_type=bytes4)
 """
 
     result = apply_rules(source, config(target_version="0.2.1"))
 
-    assert 'method_id("transfer(address,uint256)")' in result.source
-    assert "output_type=bytes4" not in result.source
-    assert any(fix.rule == "VY209" for fix in result.fixes)
+    assert 'method_id("transfer(address,uint256)", output_type=bytes4)' in result.source
+
+
+def test_method_id_bytes4_return_preserves_output_type(config) -> None:
+    source = """# @version 0.3.10
+@view
+@external
+def onERC721Received() -> bytes4:
+    return method_id("onERC721Received(address,address,uint256,bytes)", output_type=bytes4)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert (
+        'return method_id("onERC721Received(address,address,uint256,bytes)", output_type=bytes4)'
+        in result.source
+    )
 
 
 def test_legacy_method_id_bytes32_comparison_converts_to_bytes4(config) -> None:
@@ -53,7 +67,7 @@ def f(return_value: bytes32):
     result = apply_rules(source, config(target_version="0.2.1"))
 
     assert (
-        'assert convert(return_value, bytes4) == method_id("onERC721Received(address,address,uint256,bytes)")'
+        'assert convert(return_value, bytes4) == method_id("onERC721Received(address,address,uint256,bytes)", output_type=bytes4)'
         in result.source
     )
-    assert "output_type=" not in result.source
+    assert "output_type=bytes32" not in result.source
