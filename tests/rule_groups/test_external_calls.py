@@ -407,6 +407,54 @@ def f(user: address) -> uint256:
     assert "return staticcall token.balanceOf(user)" in result.source
 
 
+def test_external_call_on_aliased_builtin_interface_cast(config) -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC20Detailed as ERC20
+
+@external
+def f(token: address) -> uint8:
+    return ERC20(token).decimals()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC20Detailed as ERC20" in result.source
+    assert "return staticcall ERC20(token).decimals()" in result.source
+
+
+def test_external_call_on_lowercase_storage_interface(config) -> None:
+    source = """# @version 0.3.7
+interface iHoloYield:
+    def balanceOf(owner: address) -> uint256: view
+
+holoyield: iHoloYield
+
+@external
+def f() -> uint256:
+    return self.holoyield.balanceOf(self)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall self.holoyield.balanceOf(self)" in result.source
+
+
+def test_external_call_interface_method_with_space_before_params(config) -> None:
+    source = """# @version 0.3.7
+interface Tax:
+    def allowance (_spender: address, _to: address) -> uint256 : view
+
+@internal
+def allowance_bnb(_to: address) -> uint256:
+    abi: Tax = Tax(0x64544969ed7EBf5f083679233325356EbE738930)
+    return abi.allowance(_to, self)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall abi.allowance(_to, self)" in result.source
+
+
 def test_struct_literal_field_does_not_shadow_interface_local(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC20

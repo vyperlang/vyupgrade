@@ -17,7 +17,7 @@ INT_TYPE_RE = re.compile(
 )
 TYPE_NAME_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 DEF_RE = re.compile(
-    r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\((.*?)\)(?:\s*->\s*([^:]+?))?\s*:\s*(\w+)?\s*$"
+    r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)(?:\s*->\s*([^:]+?))?\s*:\s*(\w+)?\s*$"
 )
 INTERFACE_RE = re.compile(r"^interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*$")
 STRUCT_RE = re.compile(r"^struct\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
@@ -148,11 +148,12 @@ def parse_source_facts(source: str) -> SourceFacts:
                 pending_function_header = []
             continue
 
-        import_match = re.match(r"from\s+vyper\.interfaces\s+import\s+(.+)$", stripped)
+        import_match = re.match(r"from\s+(?:vyper\.interfaces|ethereum\.ercs)\s+import\s+(.+)$", stripped)
         if import_match:
-            for name in [part.strip() for part in import_match.group(1).split(",")]:
+            for name, alias in _parse_imported_names(import_match.group(1)):
                 if name in {"ERC20", "ERC20Detailed"}:
-                    facts.imported_interfaces[name] = "I" + name
+                    facts.imported_interfaces[alias] = "I" + name
+                _record_builtin_interface_import(facts, name, alias)
             continue
 
         interface_match = INTERFACE_RE.match(header)
@@ -176,7 +177,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             continue
 
         if current_struct:
-            decl = _parse_var_decl(stripped)
+            decl = _parse_var_decl(stripped, _known_type_names(facts))
             if decl is not None:
                 name, type_name = decl
                 facts.struct_fields[current_struct][name] = type_name
@@ -259,13 +260,13 @@ def parse_source_facts(source: str) -> SourceFacts:
                 )
                 continue
 
-        decl = _parse_var_decl(stripped)
+        decl = _parse_var_decl(stripped, _known_type_names(facts))
         if decl is None:
             continue
         name, type_name = decl
         if current_function_line is None:
             facts.global_vars[name] = type_name
-            storage_type = _unwrap_public_or_constant(type_name)
+            storage_type = _unwrap_public_or_constant(type_name, _known_type_names(facts))
             if storage_type:
                 facts.storage_vars[name] = storage_type
         else:
@@ -305,6 +306,38 @@ def _record_interface_method(facts: SourceFacts, interface: str, def_match: re.M
     if def_match.group(3):
         facts.interface_returns[interface][method_name] = def_match.group(3).strip()
     return method_name
+
+
+def _parse_imported_names(imports: str) -> list[tuple[str, str]]:
+    names: list[tuple[str, str]] = []
+    for part in imports.strip().removeprefix("(").removesuffix(")").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        alias_match = re.match(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$", item
+        )
+        if alias_match:
+            names.append((alias_match.group(1), alias_match.group(2)))
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item):
+            names.append((item, item))
+    return names
+
+
+def _record_builtin_interface_import(facts: SourceFacts, name: str, alias: str) -> None:
+    if name not in facts.interfaces:
+        return
+    if alias != name:
+        facts.interfaces[alias] = facts.interfaces[name].copy()
+        facts.interface_returns[alias] = facts.interface_returns.get(name, {}).copy()
+        facts.interface_params[alias] = {
+            method: params.copy()
+            for method, params in facts.interface_params.get(name, {}).items()
+        }
+
+
+def _known_type_names(facts: SourceFacts) -> set[str]:
+    return facts.interfaces.keys() | facts.structs | facts.flags_or_enums
 
 
 def _line_starts_inside_string(source: str, mask: list[bool], line_start: int) -> bool:
@@ -581,14 +614,14 @@ def _parse_params(params: str) -> dict[str, str]:
     return parsed
 
 
-def _parse_var_decl(line: str) -> tuple[str, str] | None:
+def _parse_var_decl(line: str, known_types: set[str] | None = None) -> tuple[str, str] | None:
     if line.startswith(("event ", "struct ", "interface ", "flag ", "enum ", "implements:")):
         return None
     match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^=#]+)", line)
     if not match:
         return None
     type_name = _strip_default(match.group(2).strip().rstrip(","))
-    if not _looks_like_type(type_name):
+    if not _looks_like_type(type_name, known_types or set()):
         return None
     return match.group(1), type_name
 
@@ -605,19 +638,21 @@ def _header_fragment(line: str) -> str:
     return line.rstrip("\\").strip()
 
 
-def _unwrap_public_or_constant(type_name: str) -> str | None:
+def _unwrap_public_or_constant(type_name: str, known_types: set[str] | None = None) -> str | None:
     match = TYPE_WRAPPER_RE.match(type_name)
     if match:
         return match.group(1).strip()
-    if TYPE_NAME_RE.fullmatch(type_name):
+    if TYPE_NAME_RE.fullmatch(type_name) or type_name in (known_types or set()):
         return type_name
     return None
 
 
-def _looks_like_type(type_name: str) -> bool:
+def _looks_like_type(type_name: str, known_types: set[str]) -> bool:
     if TYPE_WRAPPER_RE.fullmatch(type_name):
         return True
     if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):
+        return True
+    if type_name in known_types:
         return True
     return bool(
         re.fullmatch(
