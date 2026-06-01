@@ -143,6 +143,7 @@ def main() -> int:
     smoke.add_argument("--target-version", default="0.4.3")
     smoke.add_argument("--workers", type=int, default=4)
     smoke.add_argument("--limit", type=int, default=0)
+    smoke.add_argument("--path", action="append", type=Path, dest="paths")
 
     args = parser.parse_args()
     if args.command == "build":
@@ -179,7 +180,7 @@ def main() -> int:
         return 0
     if args.command == "smoke":
         summary = smoke_corpus(
-            args.manifest, args.output, args.target_version, args.workers, args.limit
+            args.manifest, args.output, args.target_version, args.workers, args.limit, args.paths
         )
         print(json.dumps(summary, indent=2))
         return 0
@@ -917,10 +918,15 @@ def _collect_codeslaw_matches(
 
 
 def smoke_corpus(
-    manifest_path: Path, output_path: Path, target_version: str, workers: int, limit: int
+    manifest_path: Path,
+    output_path: Path,
+    target_version: str,
+    workers: int,
+    limit: int,
+    paths: list[Path] | None = None,
 ) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    items = manifest["items"][: limit or None]
+    items = _smoke_items(manifest["items"], paths, limit)
     started = time.time()
     results: list[dict[str, Any]] = []
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -935,6 +941,16 @@ def smoke_corpus(
     summary = _smoke_summary(results, manifest_path, output_path, time.time() - started)
     _summary_path(output_path).write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
+
+
+def _smoke_items(
+    manifest_items: list[dict[str, Any]], paths: list[Path] | None, limit: int
+) -> list[dict[str, Any]]:
+    if paths:
+        wanted = {str(path) for path in paths}
+        wanted.update(str(path.resolve()) for path in paths if path.exists())
+        return [item for item in manifest_items if item.get("corpus_path") in wanted]
+    return manifest_items[: limit or None]
 
 
 def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:

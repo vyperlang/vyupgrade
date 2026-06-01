@@ -317,6 +317,33 @@ def test_smoke_summary_groups_failures_and_rules(tmp_path: Path) -> None:
     assert summary["top_diagnostics"] == [("VYD001", 1)]
 
 
+def test_smoke_items_filters_by_corpus_path_when_paths_are_given(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    first = tmp_path / "contracts" / "a.vy"
+    second = tmp_path / "contracts" / "b.vy"
+    first.parent.mkdir(parents=True)
+    first.write_text("x: uint256\n", encoding="utf-8")
+    second.write_text("y: uint256\n", encoding="utf-8")
+    items = [
+        {"corpus_path": str(first), "repo": "a"},
+        {"corpus_path": str(second), "repo": "b"},
+    ]
+
+    selected = corpus._smoke_items(items, [first], 0)
+
+    assert selected == [items[0]]
+
+
+def test_smoke_items_keeps_limit_for_unfiltered_runs() -> None:
+    corpus = _load_corpus_module()
+    items = [
+        {"corpus_path": "a.vy", "repo": "a"},
+        {"corpus_path": "b.vy", "repo": "b"},
+    ]
+
+    assert corpus._smoke_items(items, None, 1) == [items[0]]
+
+
 def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     contract = tmp_path / "contracts" / "old_vyper_bug" / "ethereum" / "0xdef.vy"
