@@ -225,6 +225,27 @@ def _g():
     }
 
 
+def test_delegate_raw_call_value_kwarg_removed(config) -> None:
+    source = """# pragma version ^0.3.10
+@external
+@payable
+def f(target: address, data: Bytes[32]) -> Bytes[32]:
+    success: bool = False
+    raw_data: Bytes[32] = b""
+    success, raw_data = raw_call(target, data, max_outsize=32,\\
+                                 value=msg.value, is_delegate_call=True, revert_on_failure=False)
+    assert success
+    return raw_data
+"""
+
+    result = apply_rules(source, config())
+
+    assert "value=msg.value" not in result.source
+    assert "is_delegate_call=True" in result.source
+    assert "revert_on_failure=False" in result.source
+    assert any(fix.rule == "VY208" for fix in result.fixes)
+
+
 def test_legacy_event_after_blank_line_does_not_add_blank_field_lines(config) -> None:
     source = """# @version 0.2.1
 

@@ -29,6 +29,8 @@ def _legacy_builtin_calls(
             current, "raw_call", "outsize", "max_outsize", "VY208"
         )
         fixes.extend(new_fixes)
+        current, new_fixes = _remove_delegate_raw_call_value(current)
+        fixes.extend(new_fixes)
         current, new_fixes = _replace_call_keyword(
             current, "extract32", "type", "output_type", "VY208"
         )
@@ -71,6 +73,55 @@ def _replace_call_keyword(
             )
         )
     return apply_edits(source, edits), fixes
+
+
+def _remove_delegate_raw_call_value(source: str) -> tuple[str, list[Fix]]:
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for _match, open_index, _close, raw_args in iter_calls(source, "raw_call"):
+        spans = split_top_level_arg_spans(raw_args)
+        if spans is None:
+            continue
+        if not any(
+            re.fullmatch(r"is_delegate_call\s*=\s*True", _normalized_raw_call_arg(arg))
+            for _start, _end, arg in spans
+        ):
+            continue
+        value_index = next(
+            (
+                index
+                for index, (_start, _end, arg) in enumerate(spans)
+                if re.match(r"value\s*=", _normalized_raw_call_arg(arg))
+            ),
+            None,
+        )
+        if value_index is None:
+            continue
+        start, end, _arg = spans[value_index]
+        if value_index + 1 < len(spans):
+            remove_start = open_index + 1 + start
+            remove_end = open_index + 1 + spans[value_index + 1][0]
+        elif value_index > 0:
+            remove_start = open_index + 1 + spans[value_index - 1][1]
+            remove_end = open_index + 1 + end
+        else:
+            remove_start = open_index + 1 + start
+            remove_end = open_index + 1 + end
+        edits.append(TextEdit(remove_start, remove_end, ""))
+        fixes.append(
+            Fix(
+                "VY208",
+                line_number(source, remove_start),
+                "removed value kwarg from delegate raw_call",
+                source[remove_start:remove_end],
+                "",
+            )
+        )
+    return apply_edits(source, edits), fixes
+
+
+def _normalized_raw_call_arg(arg: str) -> str:
+    return arg.strip().lstrip("\\").strip()
 
 
 def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:

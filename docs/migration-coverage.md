@@ -385,6 +385,8 @@ modern Python interpreter.
 - `len()` returns `uint256`: `VYD213`.
 - External-call `value=` and `gas=` kwargs must be `uint256`: `VYD214`.
 - `raw_call` kwarg `outsize` renamed: `VY208`.
+- `raw_call` delegate calls cannot also pass `value=`: `VY208` removes the
+  value kwarg when `is_delegate_call=True`.
 - `extract32` kwarg `type` renamed: `VY208`.
 - Public array getter indexes use `uint256`: no-op. This is ABI shape, not a
   source rewrite.
