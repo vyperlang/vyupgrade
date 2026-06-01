@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import infer_expr_type, is_integer_type, iterable_element_type, normalize_type
+from ..analysis import (
+    SourceFacts,
+    infer_expr_type,
+    indexed_key_type,
+    indexed_value_type,
+    is_integer_type,
+    iterable_element_type,
+    normalize_type,
+)
 from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, RuleContext, crossing
@@ -16,6 +24,7 @@ from ..source import (
     span_is_code,
 )
 from .external_call_helpers import external_call_matches
+from .legacy_call_helpers import iter_calls
 from .numeric_casts import (
     cast_integer_arg_to_exact_expected,
     cast_integer_arg_to_expected,
@@ -286,6 +295,70 @@ def _typed_external_call_arguments(
     return apply_edits(source, selected_edits), selected_fixes, []
 
 
+def _unsafe_subscript_index_arguments(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = rule_context.code_mask
+    for _match, open_index, _close, raw_args in iter_calls(source, "unsafe_sub", mask):
+        line_no = line_number(source, open_index)
+        vars_for_line = facts.vars_at_line(line_no)
+        target_type = _unsigned_subscript_index_type(source, open_index, vars_for_line, facts)
+        if target_type is None:
+            continue
+        arg_spans = split_top_level_arg_spans(raw_args)
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        for start, end, arg in arg_spans:
+            arg_type = infer_expr_type(arg, vars_for_line, facts)
+            if not _is_signed_integer_type(arg_type) or inside_convert_call(
+                source, open_index + 1 + start
+            ):
+                continue
+            replacement = f"convert({arg.strip()}, {target_type})"
+            edits.append(TextEdit(open_index + 1 + start, open_index + 1 + end, replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_no,
+                    "converted unsafe_sub array index operand to unsigned type",
+                    arg,
+                    replacement,
+                )
+            )
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _unsigned_subscript_index_type(
+    source: str, index: int, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("[", line_start, index)
+    if open_index == -1:
+        return None
+    close_index = find_matching(source, open_index, "[", "]")
+    if close_index is None or not (open_index < index < close_index):
+        return None
+    root_match = re.search(
+        r"((?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*$",
+        source[line_start:open_index],
+    )
+    if root_match is None:
+        return None
+    root = root_match.group(1)
+    root_type = infer_expr_type(root, vars_for_line, facts)
+    key_type = indexed_key_type(root_type)
+    if _is_unsigned_integer_type(key_type):
+        return normalize_type(key_type)
+    if indexed_value_type(root_type) is not None:
+        return "uint256"
+    return None
+
+
 RULES = (
     Rule(
         "signed_integer_array_constant_types",
@@ -305,6 +378,11 @@ RULES = (
     Rule(
         "typed_external_call_arguments",
         runner=_typed_external_call_arguments,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
+    Rule(
+        "unsafe_subscript_index_arguments",
+        runner=_unsafe_subscript_index_arguments,
         changes=(crossing("VY052", (0, 4, 0)),),
     ),
 )

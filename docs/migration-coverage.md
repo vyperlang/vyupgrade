@@ -142,7 +142,8 @@ modern Python interpreter.
   in constant initializers.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
-  arithmetic expressions.
+  arithmetic expressions. It also casts signed operands of `unsafe_sub(...)`
+  when the call is used as an unsigned array index.
 - Dynamic `Bytes[N]` declarations initialized from hex byte literals: `VY053`
   rewrites the literal to a byte string form accepted by modern Vyper.
 - Exponentiation typing became stricter: `VY054` folds known integer constants

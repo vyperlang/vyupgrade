@@ -622,6 +622,28 @@ def f(pool: address) -> uint256:
     assert "staticcall Curve(pool).price_scale(k)" in result.source
 
 
+def test_unsafe_sub_array_index_operands_cast_to_unsigned_context(config) -> None:
+    source = """# @version 0.3.10
+MAX_TICKS: constant(int256) = 5
+MAX_TICKS_UINT: constant(uint256) = 5
+
+struct Swap:
+    ticks_in: DynArray[uint256, MAX_TICKS_UINT]
+
+@external
+def f(n_diff: int256) -> uint256:
+    out: Swap = empty(Swap)
+    total: uint256 = 0
+    for k in range(MAX_TICKS):
+        total += out.ticks_in[unsafe_sub(n_diff, k)]
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "out.ticks_in[unsafe_sub(convert(n_diff, uint256), convert(k, uint256))]" in result.source
+
+
 def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name(config) -> None:
     source = """# @version 0.2.4
 N_COINS: constant(int128) = 2
