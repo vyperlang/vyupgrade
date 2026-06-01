@@ -28,6 +28,9 @@ from .versions import (
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 COMPILE_TIMEOUT_SECONDS = 120
+COMMON_IMPORT_DEPENDENCIES = {
+    "snekmate": "snekmate",
+}
 
 
 @dataclass
@@ -658,7 +661,8 @@ def _command_with_missing_module_dependency(
         return None
     pyproject = _nearest_pyproject(path.parent)
     dependencies = _pyproject_dependencies(pyproject) if pyproject is not None else {}
-    package = dependencies.get(missing.split(".", 1)[0])
+    root = missing.split(".", 1)[0]
+    package = dependencies.get(root) or COMMON_IMPORT_DEPENDENCIES.get(root)
     if package is None:
         return None
     retry_command = _uv_command_with_packages(command, (package,))
@@ -724,10 +728,12 @@ def _project_import_packages(path: Path) -> tuple[str, ...]:
     if not imports:
         return ()
     pyproject = _nearest_pyproject(path.parent)
-    if pyproject is None:
-        return ()
-    dependencies = _pyproject_dependencies(pyproject)
-    return tuple(dependencies[name] for name in imports if name in dependencies)
+    dependencies = _pyproject_dependencies(pyproject) if pyproject is not None else {}
+    return tuple(
+        package
+        for name in imports
+        if (package := dependencies.get(name) or COMMON_IMPORT_DEPENDENCIES.get(name)) is not None
+    )
 
 
 def _vyper_import_roots(source: str) -> tuple[str, ...]:

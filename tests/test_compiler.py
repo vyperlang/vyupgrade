@@ -342,6 +342,28 @@ curve-std = {git = "https://github.com/curvefi/curve-std.git", rev = "09ad21756c
     assert "curve-std @ git+https://github.com/curvefi/curve-std.git@09ad21756cd573cd6ac7afb32fb299fef32429cc" in calls[1]
 
 
+def test_compile_installs_common_import_dependency_without_pyproject(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contracts" / "contract.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.3\nfrom snekmate.tokens import erc721\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="[]\n{}\n{}\n", stderr="")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["/tmp/uv", "run", "--no-project", "--python", "3.11", "--with", "vyper==0.4.3", "vyper"],
+        contract,
+        Config(paths=(contract,)),
+    )
+
+    assert result.status == "passed"
+    assert "snekmate" in calls[0]
+
+
 def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.4.3\n", encoding="utf-8")

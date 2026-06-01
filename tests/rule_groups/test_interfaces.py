@@ -84,6 +84,19 @@ def f(token: address) -> uint256:
     assert "IERC20(token).decimals" in result.source
 
 
+def test_modern_erc_interface_imports_preserve_existing_alias(config) -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC20 as ERC20Spec
+
+implements: ERC20Spec
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC20 as ERC20Spec" in result.source
+    assert "implements: ERC20Spec" in result.source
+
+
 def test_erc4626_builtin_calls(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC4626

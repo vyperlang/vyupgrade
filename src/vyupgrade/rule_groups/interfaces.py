@@ -416,12 +416,16 @@ def _interface_imports(
             offset += len(line)
             continue
         imports = [part.strip() for part in match.group(2).split(",")]
-        mapped = [IMPORT_RENAMES.get(name, name) for name in imports]
-        if mapped != imports and rule_context.is_enabled("VY020"):
+        parsed_imports = [_split_import_alias(entry) for entry in imports]
+        mapped = [IMPORT_RENAMES.get(name, name) for name, _alias in parsed_imports]
+        names = [name for name, _alias in parsed_imports]
+        if mapped != names and rule_context.is_enabled("VY020"):
             import_entries: list[str] = []
-            for old, new in zip(imports, mapped, strict=True):
+            for entry, (old, alias), new in zip(imports, parsed_imports, mapped, strict=True):
                 if old == new:
-                    import_entries.append(new)
+                    import_entries.append(entry)
+                elif alias is not None:
+                    import_entries.append(f"{new} as {alias}")
                 elif new in taken:
                     import_entries.append(f"{new} as {old}")
                 else:
@@ -464,6 +468,15 @@ def _interface_imports(
             )
         current = next_source
     return current, fixes, diagnostics
+
+
+def _split_import_alias(entry: str) -> tuple[str, str | None]:
+    match = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?", entry
+    )
+    if match is None:
+        return entry, None
+    return match.group(1), match.group(2)
 
 
 def _absolute_relative_imports(
