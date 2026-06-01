@@ -119,6 +119,16 @@ def main() -> int:
     )
     vyper_2026.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
 
+    chainsecurity = subparsers.add_parser(
+        "chainsecurity", help="import the local ChainSecurity Vyper contract export"
+    )
+    chainsecurity.add_argument(
+        "--source",
+        type=Path,
+        default=Path("~/dev/chainsecurity/vyper-contracts").expanduser(),
+    )
+    chainsecurity.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+
     dedupe = subparsers.add_parser(
         "dedupe", help="merge manifests and dedupe source items by sha256"
     )
@@ -157,6 +167,10 @@ def main() -> int:
         return 0
     if args.command == "vyper-2026":
         manifest = import_vyper_2026(args.source, args.output)
+        print(json.dumps(_build_summary(manifest), indent=2))
+        return 0
+    if args.command == "chainsecurity":
+        manifest = import_chainsecurity(args.source, args.output)
         print(json.dumps(_build_summary(manifest), indent=2))
         return 0
     if args.command == "dedupe":
@@ -534,6 +548,150 @@ def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
     return _write_manifest(manifest_path, manifest)
 
 
+def import_chainsecurity(source: Path, output: Path) -> dict[str, Any]:
+    root = source.expanduser()
+    export_dir = root / "export" if (root / "export").exists() else root
+    contracts_dir = output / "contracts"
+    counts: Counter[str] = Counter()
+    by_repo: Counter[str] = Counter()
+    by_compiler: Counter[str] = Counter()
+    items: list[dict[str, Any]] = []
+    json_stems: set[str] = set()
+
+    for metadata_path in sorted(export_dir.glob("*.json")):
+        counts["json_seen"] += 1
+        json_stems.add(metadata_path.stem)
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            counts["json_read_error"] += 1
+            continue
+        if payload.get("language") != "Vyper":
+            counts["non_vyper_json"] += 1
+            continue
+
+        compiler_raw = payload.get("compiler_version")
+        compiler = compiler_version_for_spec(compiler_raw)
+        if compiler is None or not is_supported_source_version(compiler):
+            counts["unsupported_compiler"] += 1
+            continue
+
+        sources = payload.get("sources")
+        if not isinstance(sources, dict) or not sources:
+            counts["json_missing_sources"] += 1
+            continue
+
+        chain, address = _chainsecurity_id(metadata_path)
+        package_id = f"{chain}_{address}" if chain and address else metadata_path.stem
+        corpus_repo = "chainsecurity"
+        package_root = contracts_dir / corpus_repo / package_id
+        written_sources: dict[str, Path] = {}
+        for source_name, source_info in sources.items():
+            content = _standard_json_source_content(source_info)
+            if content is None:
+                counts["json_source_missing_content"] += 1
+                continue
+            safe_source = Path(*(_safe_filename(part) for part in Path(str(source_name)).parts))
+            relpath = Path(package_id) / safe_source
+            digest = _source_hash(content)
+            corpus_path = _write_corpus_source(
+                content, contracts_dir / corpus_repo / relpath, digest, counts
+            )
+            written_sources[str(source_name)] = corpus_path
+            counts["json_sources_written"] += 1
+
+        selected_sources = _chainsecurity_output_sources(payload, written_sources)
+        for source_name in selected_sources:
+            corpus_path = written_sources.get(source_name)
+            if corpus_path is None or corpus_path.suffix != ".vy":
+                continue
+            try:
+                source_text = corpus_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                counts["read_error"] += 1
+                continue
+            source_spec = infer_pragma(source_text) or compiler
+            if not is_supported_source_version(source_spec):
+                counts["unsupported_pragma"] += 1
+                continue
+            item = {
+                "source_path": str(metadata_path),
+                "repo_root": str(root),
+                "repo": corpus_repo,
+                "relpath": str(Path(package_id) / source_name),
+                "corpus_path": str(corpus_path),
+                "corpus_repo_root": str(package_root),
+                "pragma": source_spec,
+                "source_pragma": infer_pragma(source_text),
+                "source_compiler": compiler_version_for_spec(source_spec),
+                "compiler_version": compiler_raw,
+                "sha256": _source_hash(source_text),
+                "chain": chain,
+                "address": address,
+                "standard_json": str(metadata_path),
+            }
+            items.append(item)
+            counts["applicable"] += 1
+            by_repo[corpus_repo] += 1
+            if item["source_compiler"] is not None:
+                by_compiler[item["source_compiler"]] += 1
+
+    for source_path in sorted(export_dir.glob("*.vy")):
+        counts["flat_seen"] += 1
+        if source_path.stem in json_stems:
+            counts["flat_with_json_companion"] += 1
+        try:
+            source_text = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            counts["read_error"] += 1
+            continue
+        source_spec = infer_pragma(source_text)
+        if source_spec is None:
+            counts["missing_pragma"] += 1
+            continue
+        if not is_supported_source_version(source_spec):
+            counts["unsupported_pragma"] += 1
+            continue
+        chain, address = _chainsecurity_id(source_path)
+        corpus_repo = "chainsecurity_flat"
+        relpath = Path(source_path.name)
+        digest = _source_hash(source_text)
+        corpus_path = _write_corpus_source(
+            source_text, contracts_dir / corpus_repo / relpath, digest, counts
+        )
+        compiler = compiler_version_for_spec(source_spec)
+        item = {
+            "source_path": str(source_path),
+            "repo_root": str(root),
+            "repo": corpus_repo,
+            "relpath": str(relpath),
+            "corpus_path": str(corpus_path),
+            "corpus_repo_root": str(contracts_dir / corpus_repo),
+            "pragma": source_spec,
+            "source_compiler": compiler,
+            "sha256": digest,
+            "chain": chain,
+            "address": address,
+        }
+        items.append(item)
+        counts["applicable"] += 1
+        by_repo[corpus_repo] += 1
+        if compiler is not None:
+            by_compiler[compiler] += 1
+
+    manifest_path = output / "chainsecurity-manifest.json"
+    manifest = {
+        "manifest": str(manifest_path),
+        "roots": [str(root)],
+        "output": str(output),
+        "counts": dict(counts),
+        "by_repo": by_repo.most_common(),
+        "by_source_compiler": by_compiler.most_common(),
+        "items": items,
+    }
+    return _write_manifest(manifest_path, manifest)
+
+
 def dedupe_manifests(manifest_paths: list[Path] | None, output_path: Path) -> dict[str, Any]:
     if manifest_paths is None:
         corpus_root = output_path.parent
@@ -834,6 +992,23 @@ def _smoke_summary(
         for item in results
         if item["source_compile"] != "passed" or item["target_compile"] != "passed"
     )
+    source_errors = Counter(
+        item.get("source_error")
+        for item in results
+        if item.get("source_error") and item["source_compile"] != "passed"
+    )
+    target_errors = Counter(
+        item.get("target_error")
+        for item in results
+        if item.get("target_error") and item["target_compile"] != "passed"
+    )
+    failed_compilers = Counter(
+        item.get("source_compiler") or item.get("pragma") or "unknown"
+        for item in results
+        if item["source_compile"] != "passed" or item["target_compile"] != "passed"
+    )
+    fixes = Counter(fix for item in results for fix in item.get("fixes", []))
+    diagnostics = Counter(diag for item in results for diag in item.get("diagnostics", []))
     return {
         "manifest": str(manifest_path),
         "results": str(output_path),
@@ -849,6 +1024,11 @@ def _smoke_summary(
         "storage_layout_changed": sum(
             1 for item in results if item.get("storage_layout_equal") is False
         ),
+        "failed_compilers": failed_compilers.most_common(20),
+        "top_source_errors": source_errors.most_common(20),
+        "top_target_errors": target_errors.most_common(20),
+        "top_fixes": fixes.most_common(20),
+        "top_diagnostics": diagnostics.most_common(20),
     }
 
 
@@ -1027,6 +1207,35 @@ def _standard_json_sources(payload: dict[str, Any]) -> list[tuple[str, str]]:
         ):
             extracted.append((str(name), content))
     return extracted
+
+
+def _standard_json_source_content(source_info: object) -> str | None:
+    if not isinstance(source_info, dict):
+        return None
+    content = source_info.get("content")
+    return content if isinstance(content, str) else None
+
+
+def _chainsecurity_id(path: Path) -> tuple[str | None, str | None]:
+    match = re.match(r"(?P<chain>\d+)_(?P<address>0x[a-fA-F0-9]{40})$", path.stem)
+    if match is None:
+        return None, None
+    return match.group("chain"), match.group("address").lower()
+
+
+def _chainsecurity_output_sources(
+    payload: dict[str, Any], written_sources: dict[str, Path]
+) -> tuple[str, ...]:
+    output_selection = payload.get("settings", {}).get("outputSelection")
+    if not isinstance(output_selection, dict):
+        return tuple(name for name, path in written_sources.items() if path.suffix == ".vy")
+    selected: list[str] = []
+    for source_name in output_selection:
+        if source_name == "*":
+            return tuple(name for name, path in written_sources.items() if path.suffix == ".vy")
+        if source_name in written_sources:
+            selected.append(source_name)
+    return tuple(dict.fromkeys(selected))
 
 
 def _duplicate_source(item: dict[str, Any], manifest_path: Path) -> dict[str, Any]:

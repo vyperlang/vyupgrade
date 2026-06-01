@@ -228,6 +228,95 @@ def test_import_vyper_2026_keeps_metadata_when_source_is_not_local(tmp_path: Pat
     assert manifest["by_metadata_compiler"] == [("0.3.7", 1)]
 
 
+def test_import_chainsecurity_preserves_standard_json_source_tree(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    source = tmp_path / "vyper-contracts"
+    export = source / "export"
+    export.mkdir(parents=True)
+    metadata = {
+        "language": "Vyper",
+        "sources": {
+            "interfaces/Foo.vyi": {"content": "# @version 0.4.1\n@external\ndef f(): ...\n"},
+            "contracts/Main.vy": {
+                "content": "# @version 0.4.1\nfrom interfaces import Foo\nx: uint256\n"
+            },
+        },
+        "settings": {"outputSelection": {"contracts/Main.vy": ["abi"]}},
+        "compiler_version": "v0.4.1+commit.8a93dd27",
+    }
+    (export / "1_0x0000000000000000000000000000000000000001.json").write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
+
+    manifest = corpus.import_chainsecurity(source, tmp_path / "corpus" / "vyper")
+
+    assert manifest["counts"]["json_sources_written"] == 2
+    assert manifest["counts"]["applicable"] == 1
+    item = manifest["items"][0]
+    assert item["repo"] == "chainsecurity"
+    assert item["chain"] == "1"
+    assert item["address"] == "0x0000000000000000000000000000000000000001"
+    assert item["pragma"] == "0.4.1"
+    assert Path(item["corpus_repo_root"], "interfaces", "Foo.vyi").exists()
+
+
+def test_import_chainsecurity_uses_flat_sources_with_pragmas(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    source = tmp_path / "vyper-contracts"
+    export = source / "export"
+    export.mkdir(parents=True)
+    (export / "10_0x0000000000000000000000000000000000000002.vy").write_text(
+        "# @version 0.3.10\nx: uint256\n",
+        encoding="utf-8",
+    )
+
+    manifest = corpus.import_chainsecurity(source, tmp_path / "corpus" / "vyper")
+
+    assert manifest["counts"]["flat_seen"] == 1
+    assert manifest["counts"]["applicable"] == 1
+    item = manifest["items"][0]
+    assert item["repo"] == "chainsecurity_flat"
+    assert item["source_compiler"] == "0.3.10"
+    assert item["chain"] == "10"
+
+
+def test_smoke_summary_groups_failures_and_rules(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    summary = corpus._smoke_summary(
+        [
+            {
+                "repo": "chainsecurity",
+                "source_compiler": "0.3.10",
+                "source_compile": "passed",
+                "target_compile": "failed",
+                "target_error": "target failed",
+                "fixes": ["VY001"],
+                "diagnostics": ["VYD001"],
+            },
+            {
+                "repo": "chainsecurity",
+                "source_compiler": "0.2.16",
+                "source_compile": "failed",
+                "target_compile": "failed",
+                "source_error": "source failed",
+                "target_error": "target failed",
+                "fixes": [],
+                "diagnostics": [],
+            },
+        ],
+        tmp_path / "manifest.json",
+        tmp_path / "results.json",
+        1.2,
+    )
+
+    assert summary["failed_compilers"] == [("0.3.10", 1), ("0.2.16", 1)]
+    assert summary["top_target_errors"] == [("target failed", 2)]
+    assert summary["top_source_errors"] == [("source failed", 1)]
+    assert summary["top_fixes"] == [("VY001", 1)]
+    assert summary["top_diagnostics"] == [("VYD001", 1)]
+
+
 def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     contract = tmp_path / "contracts" / "old_vyper_bug" / "ethereum" / "0xdef.vy"
