@@ -704,6 +704,40 @@ def test_compare_artifacts_canonicalizes_abi_constructor_and_gas() -> None:
     assert compare_artifacts(source, target) == (True, True, None)
 
 
+def test_compare_artifacts_treats_pure_and_view_as_readonly_abi() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "target",
+                    "stateMutability": "pure",
+                    "inputs": [],
+                    "outputs": [{"type": "address", "name": ""}],
+                }
+            ]
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "target",
+                    "stateMutability": "view",
+                    "inputs": [],
+                    "outputs": [{"type": "address", "name": ""}],
+                }
+            ]
+        },
+    )
+
+    assert compare_artifacts(source, target) == (True, None, None)
+    assert compare_artifact_details(source, target)[0] == []
+
+
 def test_compare_artifact_details_ignores_constructor_selector() -> None:
     source = CompileResult(
         "passed",

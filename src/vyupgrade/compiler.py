@@ -465,13 +465,19 @@ def _canonical_abi(abi: object) -> object:
 def _strip_abi_metadata(value: object) -> object:
     if isinstance(value, dict):
         return {
-            key: _strip_abi_metadata(item)
+            key: _canonical_abi_value(key, item)
             for key, item in sorted(value.items())
             if key not in {"gas"}
         }
     if isinstance(value, list):
         return [_strip_abi_metadata(item) for item in value]
     return value
+
+
+def _canonical_abi_value(key: str, value: object) -> object:
+    if key == "stateMutability" and value == "pure":
+        return "view"
+    return _strip_abi_metadata(value)
 
 
 def _abi_sort_key(entry: dict[str, object]) -> tuple[object, ...]:
