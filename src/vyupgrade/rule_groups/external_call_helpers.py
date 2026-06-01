@@ -19,12 +19,69 @@ def external_call_matches(
     )
     matches: list[tuple[int, int, str, str, str | None]] = []
     matches.extend(_interface_cast_call_matches(source, facts.interfaces))
+    matches.extend(_internal_call_result_matches(source, facts))
+    matches.extend(_parenthesized_target_call_matches(source))
     matches.extend(_parenthesized_external_call_matches(source))
     matches.extend(
         (match.start(), match.end(), match.group("target"), match.group("method"), None)
         for match in variable_call_re.finditer(source)
     )
     return sorted(matches)
+
+
+def _internal_call_result_matches(
+    source: str, facts: SourceFacts
+) -> list[tuple[int, int, str, str, str | None]]:
+    matches: list[tuple[int, int, str, str, str | None]] = []
+    mask = code_mask(source)
+    for name, return_type in sorted(
+        facts.function_return_names.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        for match in re.finditer(rf"(?<![\w.])(?:self\.)?{re.escape(name)}\s*\(", source):
+            open_index = source.find("(", match.start())
+            close = find_matching(source, open_index)
+            if close is None or not span_is_code(mask, match.start(), min(close + 1, len(source))):
+                continue
+            tail = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
+            if tail is None:
+                continue
+            matches.append(
+                (
+                    match.start(),
+                    close + 1 + tail.end(),
+                    source[match.start() : close + 1],
+                    tail.group(1),
+                    return_type,
+                )
+            )
+    return matches
+
+
+def _parenthesized_target_call_matches(
+    source: str,
+) -> list[tuple[int, int, str, str, str | None]]:
+    matches: list[tuple[int, int, str, str, str | None]] = []
+    mask = code_mask(source)
+    for match in re.finditer(r"\(", source):
+        close = find_matching(source, match.start())
+        if close is None or not span_is_code(mask, match.start(), min(close + 1, len(source))):
+            continue
+        inner = source[match.start() + 1 : close].strip()
+        if inner.startswith(("staticcall ", "extcall ")):
+            continue
+        tail = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
+        if tail is None:
+            continue
+        matches.append(
+            (
+                match.start(),
+                close + 1 + tail.end(),
+                source[match.start() : close + 1],
+                tail.group(1),
+                None,
+            )
+        )
+    return matches
 
 
 def _interface_cast_call_matches(

@@ -455,6 +455,42 @@ def allowance_bnb(_to: address) -> uint256:
     assert "return staticcall abi.allowance(_to, self)" in result.source
 
 
+def test_external_call_on_internal_call_returning_interface(config) -> None:
+    source = """# @version 0.3.10
+interface Staking:
+    def getNodeRPLStake(node: address) -> uint256: view
+
+@internal
+def _staking() -> Staking:
+    return Staking(0x0000000000000000000000000000000000000001)
+
+@external
+def f(node: address) -> uint256:
+    return self._staking().getNodeRPLStake(node)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return staticcall self._staking().getNodeRPLStake(node)" in result.source
+
+
+def test_external_call_on_parenthesized_storage_interface(config) -> None:
+    source = """# @version 0.3.10
+interface ControlTower:
+    def isStakingContract(addr: address) -> bool: view
+
+control_tower: public(ControlTower)
+
+@external
+def f(addr: address):
+    assert (self.control_tower).isStakingContract(addr)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "assert staticcall (self.control_tower).isStakingContract(addr)" in result.source
+
+
 def test_struct_literal_field_does_not_shadow_interface_local(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC20

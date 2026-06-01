@@ -71,25 +71,45 @@ def ignored_external_call_results(
 
 
 def external_call_expression_end(source: str, start: int) -> int | None:
+    if source[start] == "(":
+        target_close = find_matching(source, start)
+        if target_close is not None:
+            chained_end = _chained_call_end(source, target_close)
+            if chained_end is not None:
+                return chained_end
+
     cast_match = re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*\(", source[start:])
     if cast_match is not None:
-        cast_open = start + cast_match.end() - 1
-        cast_close = find_matching(source, cast_open)
-        if cast_close is not None:
-            method_match = re.match(
-                r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[cast_close + 1 :]
-            )
-            if method_match is not None:
-                method_open = cast_close + 1 + method_match.end() - 1
-                method_close = find_matching(source, method_open)
-                if method_close is not None:
-                    return method_close + 1
+        target_open = start + cast_match.end() - 1
+        target_close = find_matching(source, target_open)
+        if target_close is not None:
+            chained_end = _chained_call_end(source, target_close)
+            if chained_end is not None:
+                return chained_end
+
+    call_match = re.match(r"self\.[A-Za-z_][A-Za-z0-9_]*\s*\(", source[start:])
+    if call_match is not None:
+        target_open = start + call_match.end() - 1
+        target_close = find_matching(source, target_open)
+        if target_close is not None:
+            chained_end = _chained_call_end(source, target_close)
+            if chained_end is not None:
+                return chained_end
 
     open_index = source.find("(", start)
     if open_index == -1:
         return None
     close = find_matching(source, open_index)
     return None if close is None else close + 1
+
+
+def _chained_call_end(source: str, target_close: int) -> int | None:
+    method_match = re.match(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[target_close + 1 :])
+    if method_match is None:
+        return None
+    method_open = target_close + 1 + method_match.end() - 1
+    method_close = find_matching(source, method_open)
+    return None if method_close is None else method_close + 1
 
 
 def _delimiter_depth_before(source: str, end: int) -> int:
