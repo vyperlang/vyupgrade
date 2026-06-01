@@ -10,6 +10,7 @@ from vyupgrade.compiler import (
     _compiler_command,
     _run_compile,
     _supports_warning_policy,
+    _target_validation_source,
     _uv_bin,
     compare_artifact_details,
     compare_artifacts,
@@ -485,6 +486,14 @@ def test_compile_target_source_bumps_temp_pragma_for_validation(monkeypatch, tmp
     assert result.status == "passed"
     assert "#pragma version 0.4.3" in calls["source"]
     assert "#pragma version 0.2.11" not in calls["source"]
+
+
+def test_target_validation_source_removes_duplicate_vyper_pragmas() -> None:
+    source = "# @version 0.3.10\n# \u00a0@version ^0.2.11\n# pragma solidity ^0.8.0\n"
+
+    result = _target_validation_source(source, "0.4.3")
+
+    assert result == "#pragma version 0.4.3\n\n# pragma solidity ^0.8.0\n"
 
 
 def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:

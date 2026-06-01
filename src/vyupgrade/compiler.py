@@ -223,9 +223,16 @@ def compare_artifact_details(
 
 def _target_validation_source(source: str, target_version: str) -> str:
     pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
-    return pattern.sub(
-        lambda match: f"{match.group(1)}#pragma version {target_version}", source, count=1
-    )
+    replaced = False
+
+    def replacement(match: re.Match[str]) -> str:
+        nonlocal replaced
+        if replaced:
+            return ""
+        replaced = True
+        return f"{match.group(1)}#pragma version {target_version}"
+
+    return pattern.sub(replacement, source)
 
 
 def _canonical_abi(abi: object) -> object:
