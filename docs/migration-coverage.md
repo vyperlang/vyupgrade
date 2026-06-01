@@ -168,7 +168,8 @@ modern Python interpreter.
   `@fork` tags to `@custom:fork`.
 - Local interface mutability is checked more strictly: `VY014` changes
   `nonpayable` interface entries to `view` when the implementation is a view
-  function or `public(...)` getter.
+  function or `public(...)` getter, and changes `@pure` implementations to
+  `@view` when an implemented interface requires a view method.
 - Pure functions may no longer read immutable state: `VY015` changes `@pure`
   functions to `@view` when source facts show the function body references a
   top-level `immutable(...)` binding.
@@ -177,7 +178,10 @@ modern Python interpreter.
 - Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
   ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and
-  interface type names. `VYD003` flags unknown `vyper.interfaces` imports.
+  interface type names. Legacy built-in interfaces used in `implements` are
+  preserved as local interfaces when modern `ethereum.ercs` definitions are
+  stricter than the old source-era built-ins. `VYD003` flags unknown
+  `vyper.interfaces` imports.
 - Known dependency import paths changed: `VY018` rewrites the old snekmate
   `create2_address` helper module to `create2`.
 - Module import and ownership declarations added: no-op. This is new module

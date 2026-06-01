@@ -97,6 +97,159 @@ implements: ERC20Spec
     assert "implements: ERC20Spec" in result.source
 
 
+def test_legacy_implemented_erc721_import_becomes_local_interface(config) -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC721
+
+implements: ERC721
+
+@view
+@external
+def balanceOf(_owner: address) -> uint256:
+    return 0
+
+@view
+@external
+def ownerOf(_tokenId: uint256) -> address:
+    return empty(address)
+
+@view
+@external
+def getApproved(_tokenId: uint256) -> address:
+    return empty(address)
+
+@view
+@external
+def isApprovedForAll(_owner: address, _operator: address) -> bool:
+    return False
+
+@external
+def transferFrom(_from: address, _to: address, _tokenId: uint256):
+    pass
+
+@external
+def safeTransferFrom(
+    _from: address, _to: address, _tokenId: uint256, _data: Bytes[1024] = b""
+):
+    pass
+
+@external
+def approve(_approved: address, _tokenId: uint256):
+    pass
+
+@external
+def setApprovalForAll(_operator: address, _approved: bool):
+    pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC721" not in result.source
+    assert "interface ERC721:" in result.source
+    assert "def safeTransferFrom" in result.source
+    assert "implements: ERC721" in result.source
+    assert any(fix.rule == "VY020" for fix in result.fixes)
+
+
+def test_legacy_implemented_erc721_import_preserves_payable_methods(config) -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC721
+
+implements: ERC721
+
+@view
+@external
+def balanceOf(_owner: address) -> uint256:
+    return 0
+
+@view
+@external
+def ownerOf(_tokenId: uint256) -> address:
+    return empty(address)
+
+@view
+@external
+def getApproved(_tokenId: uint256) -> address:
+    return empty(address)
+
+@view
+@external
+def isApprovedForAll(_owner: address, _operator: address) -> bool:
+    return False
+
+@external
+@payable
+def transferFrom(_from: address, _to: address, _tokenId: uint256):
+    pass
+
+@external
+@payable
+def safeTransferFrom(
+    _from: address, _to: address, _tokenId: uint256, _data: Bytes[1024] = b""
+):
+    pass
+
+@external
+@payable
+def approve(_approved: address, _tokenId: uint256):
+    pass
+
+@external
+def setApprovalForAll(_operator: address, _approved: bool):
+    pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "def transferFrom(_from: address, _to: address, _tokenId: uint256): payable" in result.source
+    assert "def safeTransferFrom" in result.source
+    assert "Bytes[1024] = b\"\"): payable" in result.source
+    assert "def approve(_approved: address, _tokenId: uint256): payable" in result.source
+    assert (
+        "def setApprovalForAll(_operator: address, _approved: bool): nonpayable"
+        in result.source
+    )
+
+
+def test_pure_implemented_erc165_method_preserves_legacy_mutability(config) -> None:
+    source = """# @version 0.3.3
+from vyper.interfaces import ERC165
+
+implements: ERC165
+
+@pure
+@external
+def supportsInterface(interface_id: bytes4) -> bool:
+    return True
+"""
+
+    result = apply_rules(source, config())
+
+    assert "interface ERC165:" in result.source
+    assert "def supportsInterface(interface_id: bytes4) -> bool: pure" in result.source
+    assert "@pure\n@external\ndef supportsInterface" in result.source
+    assert not any(fix.rule == "VY014" for fix in result.fixes)
+
+
+def test_pure_local_interface_view_implementation_becomes_view(config) -> None:
+    source = """# @version 0.3.3
+interface ERC165:
+    def supportsInterface(interface_id: bytes4) -> bool: view
+
+implements: ERC165
+
+@pure
+@external
+def supportsInterface(interface_id: bytes4) -> bool:
+    return True
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view\n@external\ndef supportsInterface" in result.source
+    assert any(fix.rule == "VY014" for fix in result.fixes)
+
+
 def test_snekmate_create2_address_import_renamed(config) -> None:
     source = """# @version 0.4.0
 from snekmate.utils import create2_address

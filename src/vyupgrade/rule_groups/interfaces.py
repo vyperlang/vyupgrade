@@ -26,6 +26,23 @@ from .external_call_helpers import external_call_matches
 from .legacy_interfaces import IMPORT_RENAMES
 
 
+LEGACY_IMPLEMENTED_INTERFACE_STUBS = {
+    "ERC165": """interface ERC165:
+    def supportsInterface(interface_id: bytes4) -> bool: {mutability}
+""",
+    "ERC721": """interface ERC721:
+    def balanceOf(_owner: address) -> uint256: {balanceOf}
+    def ownerOf(_tokenId: uint256) -> address: {ownerOf}
+    def getApproved(_tokenId: uint256) -> address: {getApproved}
+    def isApprovedForAll(_owner: address, _operator: address) -> bool: {isApprovedForAll}
+    def transferFrom(_from: address, _to: address, _tokenId: uint256): {transferFrom}
+    def safeTransferFrom(_from: address, _to: address, _tokenId: uint256, _data: Bytes[1024] = b""): {safeTransferFrom}
+    def approve(_approved: address, _tokenId: uint256): {approve}
+    def setApprovalForAll(_operator: address, _approved: bool): {setApprovalForAll}
+""",
+}
+
+
 def _legacy_constants(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     fixes: list[Fix] = []
@@ -232,6 +249,60 @@ def _interface_view_mutability(
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+def _implemented_view_mutability(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    view_methods = _implemented_interface_methods(source, facts, "view")
+    if not view_methods:
+        return source, [], []
+    lines = source.splitlines(keepends=True)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for function_line, decorators in facts.function_decorators.items():
+        function_name = facts.function_names.get(function_line)
+        if function_name not in view_methods or "pure" not in decorators or "view" in decorators:
+            continue
+        decorator_line = facts.function_decorator_lines.get(function_line, {}).get("pure")
+        if decorator_line is None or decorator_line > len(lines):
+            continue
+        line = lines[decorator_line - 1]
+        decorator_match = re.match(r"([ \t]*)@pure\b([^\n]*(?:\n|$))", line)
+        if decorator_match is None:
+            continue
+        line_start = rule_context.line_offsets[decorator_line - 1]
+        replacement = f"{decorator_match.group(1)}@view{decorator_match.group(2)}"
+        edits.append(TextEdit(line_start, line_start + decorator_match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY014",
+                decorator_line,
+                "changed implementation mutability to match view interface",
+                line.rstrip("\n"),
+                replacement.rstrip("\n"),
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _implemented_interface_methods(
+    source: str, facts: SourceFacts, mutability: str
+) -> set[str]:
+    names: set[str] = set()
+    for interface_name in _implemented_interface_names(source):
+        methods = facts.interfaces.get(interface_name, {})
+        names.update(name for name, method_mutability in methods.items() if method_mutability == mutability)
+    return names
+
+
+def _implemented_interface_names(source: str) -> set[str]:
+    names: set[str] = set()
+    for match in re.finditer(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
+        names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group(1)))
+    return names
 
 
 def _view_implementation_names(source: str) -> set[str]:
@@ -487,6 +558,7 @@ def _interface_imports(
     requested_rewrites: dict[str, str] = {}
     taken = code_identifiers(source)
     mask = rule_context.code_mask
+    implemented_names = _implemented_interface_names(source)
     offset = 0
 
     for i, line in enumerate(lines):
@@ -496,11 +568,23 @@ def _interface_imports(
             continue
         imports = [part.strip() for part in match.group(2).split(",")]
         parsed_imports = [_split_import_alias(entry) for entry in imports]
-        mapped = [IMPORT_RENAMES.get(name, name) for name, _alias in parsed_imports]
+        legacy_stubs = [
+            name
+            for name, alias in parsed_imports
+            if alias is None
+            and name in implemented_names
+            and name in LEGACY_IMPLEMENTED_INTERFACE_STUBS
+        ]
+        mapped = [
+            name if name in legacy_stubs else IMPORT_RENAMES.get(name, name)
+            for name, _alias in parsed_imports
+        ]
         names = [name for name, _alias in parsed_imports]
-        if mapped != names and rule_context.is_enabled("VY020"):
+        if (mapped != names or legacy_stubs) and rule_context.is_enabled("VY020"):
             import_entries: list[str] = []
             for entry, (old, alias), new in zip(imports, parsed_imports, mapped, strict=True):
+                if old in legacy_stubs:
+                    continue
                 if old == new:
                     import_entries.append(entry)
                 elif alias is not None:
@@ -510,14 +594,27 @@ def _interface_imports(
                 else:
                     import_entries.append(new)
                     requested_rewrites[old] = new
-            lines[i] = (
+            imports_line = (
                 f"{match.group(1)}from ethereum.ercs import {', '.join(import_entries)}{match.group(3)}{match.group(4)}"
+                if import_entries
+                else ""
             )
+            stub_source = "\n".join(
+                _legacy_implemented_interface_stub(name, rule_context.facts).rstrip("\n")
+                for name in legacy_stubs
+            )
+            lines[i] = "\n\n".join(part for part in (imports_line.rstrip("\n"), stub_source) if part)
+            if lines[i] and line.endswith("\n") and not lines[i].endswith("\n"):
+                lines[i] += "\n"
             fixes.append(
                 Fix(
                     "VY020",
                     i + 1,
-                    "updated built-in interface import path",
+                    (
+                        "preserved legacy implemented interface"
+                        if legacy_stubs
+                        else "updated built-in interface import path"
+                    ),
                     line.rstrip("\n"),
                     lines[i].rstrip("\n"),
                 )
@@ -547,6 +644,48 @@ def _interface_imports(
             )
         current = next_source
     return current, fixes, diagnostics
+
+
+def _legacy_implemented_interface_stub(name: str, facts: SourceFacts) -> str:
+    stub = LEGACY_IMPLEMENTED_INTERFACE_STUBS[name]
+    mutability = "view"
+    if name == "ERC165":
+        mutability = _implementation_mutability(facts, "supportsInterface", "view")
+        return stub.replace("{mutability}", mutability)
+    if name == "ERC721":
+        replacements = {
+            "balanceOf": _implementation_mutability(facts, "balanceOf", "view"),
+            "ownerOf": _implementation_mutability(facts, "ownerOf", "view"),
+            "getApproved": _implementation_mutability(facts, "getApproved", "view"),
+            "isApprovedForAll": _implementation_mutability(facts, "isApprovedForAll", "view"),
+            "transferFrom": _implementation_mutability(facts, "transferFrom", "nonpayable"),
+            "safeTransferFrom": _implementation_mutability(
+                facts, "safeTransferFrom", "nonpayable"
+            ),
+            "approve": _implementation_mutability(facts, "approve", "nonpayable"),
+            "setApprovalForAll": _implementation_mutability(
+                facts, "setApprovalForAll", "nonpayable"
+            ),
+        }
+        for key, value in replacements.items():
+            stub = stub.replace("{" + key + "}", value)
+        return stub
+    return stub
+
+
+def _implementation_mutability(facts: SourceFacts, name: str, default: str) -> str:
+    for function_line, function_name in facts.function_names.items():
+        if function_name != name:
+            continue
+        decorators = facts.function_decorators.get(function_line, ())
+        if "payable" in decorators:
+            return "payable"
+        if "pure" in decorators:
+            return "pure"
+        if "view" in decorators:
+            return "view"
+        return "nonpayable"
+    return default
 
 
 def _dependency_imports(
@@ -753,6 +892,11 @@ RULES = (
             crossing("VY020", (0, 4, 0)),
             crossing("VYD003", (0, 4, 0)),
         ),
+    ),
+    Rule(
+        "implemented_view_mutability",
+        runner=_implemented_view_mutability,
+        changes=(crossing("VY014", (0, 4, 0)),),
     ),
     Rule(
         "dependency_imports",
