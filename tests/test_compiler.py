@@ -533,7 +533,10 @@ def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -
         "# @version 0.4.1\nfrom src.interfaces import IExchange\n",
         encoding="utf-8",
     )
-    imported.write_text("# @version 0.4.1\n@external\ndef quote() -> uint256: ...\n", encoding="utf-8")
+    imported.write_text(
+        '# @version 0.4.1\n@external\n@view\ndef quote() -> uint256:\n    """docs"""\n    return ...\n',
+        encoding="utf-8",
+    )
     calls: dict[str, object] = {}
 
     monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
@@ -570,6 +573,61 @@ def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -
     assert calls["search_paths"][0].name.startswith("vyupgrade-target-")
     assert "#pragma version 0.4.3" in calls["imported_source"]
     assert "# @version 0.4.1" not in calls["imported_source"]
+    assert "def quote() -> uint256: ..." in calls["imported_source"]
+    assert '"""docs"""' not in calls["imported_source"]
+    assert "return ..." not in calls["imported_source"]
+
+
+def test_target_overlay_rewrites_imported_dependency_modules(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "contracts" / "LpSugar.vy"
+    imported = project / "contracts" / "modules" / "lp_shared.vy"
+    contract.parent.mkdir(parents=True)
+    imported.parent.mkdir(parents=True)
+    contract.write_text(
+        "# @version 0.4.0\nfrom contracts.modules import lp_shared\n",
+        encoding="utf-8",
+    )
+    imported.write_text(
+        "# @version 0.4.0\nfrom snekmate.utils import create2_address\n"
+        "def f(salt: bytes32, init_hash: bytes32, factory: address) -> address:\n"
+        "    return create2_address._compute_address(salt, init_hash, factory)\n",
+        encoding="utf-8",
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        imported_overlay = path.parent / "modules" / "lp_shared.vy"
+        calls["imported_source"] = imported_overlay.read_text(encoding="utf-8")
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom contracts.modules import lp_shared\n"},
+        "0.4.3",
+        (project,),
+    ) as overlay:
+        result = compile_target_source(
+            contract,
+            "#pragma version 0.4.3\nfrom contracts.modules import lp_shared\n",
+            Config(paths=(contract,), compiler_search_paths=(project,)),
+            overlay,
+        )
+
+    assert result.status == "passed"
+    assert "from snekmate.utils import create2" in calls["imported_source"]
+    assert "create2._compute_create2_address(salt, init_hash, factory)" in calls[
+        "imported_source"
+    ]
 
 
 def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:

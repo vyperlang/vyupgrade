@@ -10,7 +10,7 @@ from ..rule_helpers import (
     line_offsets as _line_offsets,
     nested_under_config_path as _nested_under_config_path,
 )
-from ..rule_registry import Rule, RuleContext, crossing
+from ..rule_registry import Rule, RuleContext, crossing, target_floor
 from ..source import (
     TextEdit,
     apply_edits,
@@ -549,6 +549,43 @@ def _interface_imports(
     return current, fixes, diagnostics
 
 
+def _dependency_imports(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    if "create2_address" not in source:
+        return source, [], []
+    current, edits = replace_identifier(source, "create2_address", "create2")
+    fixes = [
+        Fix(
+            "VY018",
+            line_number(source, edit.start),
+            "renamed snekmate create2 helper module",
+            "create2_address",
+            "create2",
+        )
+        for edit in edits
+    ]
+    edits = []
+    mask = code_mask(current)
+    pattern = re.compile(r"(?<![\w.])create2\._compute_address\b")
+    for match in pattern.finditer(current):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        replacement = "create2._compute_create2_address"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY018",
+                line_number(current, match.start()),
+                "renamed snekmate create2 address helper",
+                match.group(0),
+                replacement,
+            )
+        )
+    return apply_edits(current, edits), fixes, []
+
+
 def _split_import_alias(entry: str) -> tuple[str, str | None]:
     match = re.fullmatch(
         r"([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?", entry
@@ -716,6 +753,11 @@ RULES = (
             crossing("VY020", (0, 4, 0)),
             crossing("VYD003", (0, 4, 0)),
         ),
+    ),
+    Rule(
+        "dependency_imports",
+        runner=_dependency_imports,
+        changes=(target_floor("VY018", (0, 4, 0)),),
     ),
     Rule(
         "absolute_relative_imports",

@@ -178,6 +178,8 @@ modern Python interpreter.
   ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and
   interface type names. `VYD003` flags unknown `vyper.interfaces` imports.
+- Known dependency import paths changed: `VY018` rewrites the old snekmate
+  `create2_address` helper module to `create2`.
 - Module import and ownership declarations added: no-op. This is new module
   syntax, not a required rewrite.
 - Module exports added: no-op. This is new opt-in syntax.

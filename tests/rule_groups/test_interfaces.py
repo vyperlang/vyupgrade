@@ -97,6 +97,22 @@ implements: ERC20Spec
     assert "implements: ERC20Spec" in result.source
 
 
+def test_snekmate_create2_address_import_renamed(config) -> None:
+    source = """# @version 0.4.0
+from snekmate.utils import create2_address
+
+@external
+def f(salt: bytes32, init_hash: bytes32, factory: address) -> address:
+    return create2_address._compute_address(salt, init_hash, factory)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from snekmate.utils import create2" in result.source
+    assert "create2._compute_create2_address(salt, init_hash, factory)" in result.source
+    assert any(fix.rule == "VY018" for fix in result.fixes)
+
+
 def test_erc4626_builtin_calls(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC4626

@@ -88,7 +88,9 @@ def compile_target_source(
 ) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    compile_source = _target_validation_source(source, config.target_version)
+    compile_source = _target_validation_source(
+        source, config.target_version, is_interface=path.suffix == ".vyi"
+    )
     if overlay is not None:
         tmp_path = overlay.paths.get(path.resolve())
         if tmp_path is not None:
@@ -178,7 +180,14 @@ def target_overlay(
                 continue
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(_target_validation_source(source, target_version), encoding="utf-8")
+            target.write_text(
+                _target_validation_source(
+                    source,
+                    target_version,
+                    is_interface=path.suffix == ".vyi",
+                ),
+                encoding="utf-8",
+            )
             paths[path] = target
             overlay_search_paths.add(target.parent)
         _copy_project_configs(common, root)
@@ -265,7 +274,14 @@ def _copy_validation_sources(
             continue
         target = target_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_target_validation_source(text, target_version), encoding="utf-8")
+        target.write_text(
+            _target_validation_source(
+                text,
+                target_version,
+                is_interface=source.suffix == ".vyi",
+            ),
+            encoding="utf-8",
+        )
         search_paths.add(target.parent)
     return search_paths
 
@@ -344,7 +360,9 @@ def compare_artifact_details(
     )
 
 
-def _target_validation_source(source: str, target_version: str) -> str:
+def _target_validation_source(
+    source: str, target_version: str, *, is_interface: bool = False
+) -> str:
     pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
     replaced = False
 
@@ -355,7 +373,80 @@ def _target_validation_source(source: str, target_version: str) -> str:
         replaced = True
         return f"{match.group(1)}#pragma version {target_version}"
 
-    return pattern.sub(replacement, source)
+    rewritten = pattern.sub(replacement, source)
+    rewritten = _target_validation_dependency_source(rewritten)
+    if is_interface:
+        return _target_validation_interface_source(rewritten)
+    return rewritten
+
+
+def _target_validation_dependency_source(source: str) -> str:
+    source = re.sub(
+        r"(^[ \t]*from[ \t]+snekmate\.utils[ \t]+import[ \t]+.*?)\bcreate2_address\b",
+        r"\1create2",
+        source,
+        flags=re.MULTILINE,
+    )
+    source = re.sub(
+        r"(?<![\w.])create2(?:_address)?\._compute_address\b",
+        "create2._compute_create2_address",
+        source,
+    )
+    return source
+
+
+def _target_validation_interface_source(source: str) -> str:
+    lines = source.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+            output.append(line)
+            index += 1
+            continue
+
+        def_indent = len(line) - len(line.lstrip(" \t"))
+        header_lines = [line]
+        index += 1
+        while index < len(lines) and not _interface_header_complete("".join(header_lines)):
+            header_lines.append(lines[index])
+            index += 1
+        output.extend(_interface_header_stub_lines(header_lines))
+        while index < len(lines):
+            next_line = lines[index]
+            if not next_line.strip():
+                index += 1
+                continue
+            next_indent = len(next_line) - len(next_line.lstrip(" \t"))
+            if next_indent <= def_indent:
+                break
+            index += 1
+    return "".join(output)
+
+
+def _interface_header_complete(header: str) -> bool:
+    depth = 0
+    for char in header:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+    return depth == 0 and bool(re.search(r":[ \t]*(?:\w+\s*)?(?:#.*)?$", header.rstrip()))
+
+
+def _interface_header_stub_lines(header_lines: list[str]) -> list[str]:
+    if not header_lines:
+        return []
+    output = list(header_lines)
+    last = output[-1].rstrip("\n")
+    output[-1] = re.sub(
+        r":[ \t]*(?:view|pure|payable|nonpayable)?([ \t]*(?:#.*)?)$",
+        r": ...\1",
+        last,
+    ) + ("\n" if output[-1].endswith("\n") else "")
+    return output
 
 
 def _canonical_abi(abi: object) -> object:
