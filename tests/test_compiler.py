@@ -797,6 +797,16 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                     "slot": 4,
                     "type": "HashMap[address, Loan declaration object]",
                 },
+                "token_owner": {
+                    "location": "storage",
+                    "slot": 5,
+                    "type": "HashMap[uint256, address][uint256, address]",
+                },
+                "owner_tokens": {
+                    "location": "storage",
+                    "slot": 6,
+                    "type": "HashMap[address, HashMap[uint256, uint256][uint256, uint256]][address, HashMap[uint256, uint256][uint256, uint256]]",
+                },
             }
         },
     )
@@ -816,6 +826,16 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                     "loan": {
                         "slot": 4,
                         "type": "HashMap[address, Loan]",
+                        "n_slots": 1,
+                    },
+                    "token_owner": {
+                        "slot": 5,
+                        "type": "HashMap[uint256, address]",
+                        "n_slots": 1,
+                    },
+                    "owner_tokens": {
+                        "slot": 6,
+                        "type": "HashMap[address, HashMap[uint256, uint256]]",
                         "n_slots": 1,
                     },
                 },

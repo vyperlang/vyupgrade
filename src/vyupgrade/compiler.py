@@ -533,9 +533,47 @@ def _canonical_storage_type(type_name: str) -> str:
     type_name = type_name.removesuffix(".vyi")
     type_name = type_name.replace("interface ", "")
     type_name = type_name.replace(" declaration object", "")
+    type_name = _strip_legacy_hashmap_storage_suffixes(type_name)
     if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
         return type_name[1:]
     return type_name
+
+
+def _strip_legacy_hashmap_storage_suffixes(type_name: str) -> str:
+    output: list[str] = []
+    index = 0
+    while index < len(type_name):
+        if not type_name.startswith("HashMap[", index):
+            output.append(type_name[index])
+            index += 1
+            continue
+        open_index = index + len("HashMap")
+        close_index = _matching_square_bracket(type_name, open_index)
+        if close_index is None:
+            output.append(type_name[index])
+            index += 1
+            continue
+        inner = _strip_legacy_hashmap_storage_suffixes(type_name[open_index + 1 : close_index])
+        output.append(f"HashMap[{inner}]")
+        index = close_index + 1
+        if index < len(type_name) and type_name[index] == "[":
+            suffix_end = _matching_square_bracket(type_name, index)
+            if suffix_end is not None:
+                index = suffix_end + 1
+    return "".join(output)
+
+
+def _matching_square_bracket(value: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(value)):
+        char = value[index]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def _abi_diff(source: object, target: object) -> list[str]:
