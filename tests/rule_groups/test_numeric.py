@@ -402,6 +402,19 @@ def f(a: uint256, b: uint256) -> uint256:
     assert {fix.rule for fix in result.fixes} >= {"VY100", "VY110"}
 
 
+def test_bitwise_rewrite_handles_nested_builtin_calls(config) -> None:
+    source = """# @version 0.4.1
+@external
+def f(a: uint256, b: uint256, c: uint256) -> uint256:
+    return bitwise_or(a, bitwise_or(b, c))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "return (a | (b | c))" in result.source
+    assert [fix.rule for fix in result.fixes].count("VY110") == 2
+
+
 def test_sqrt_rewrite_skips_local_function_shadowing(config) -> None:
     source = """# @version ^0.4.0
 @external

@@ -162,8 +162,11 @@ def _bitwise(
             ("bitwise_xor", "^", False),
             ("bitwise_not", "~", True),
         ]:
-            current, new_fixes = _replace_builtin_call(current, name, operator, unary, "VY110")
-            fixes.extend(new_fixes)
+            while True:
+                current, new_fixes = _replace_builtin_call(current, name, operator, unary, "VY110")
+                if not new_fixes:
+                    break
+                fixes.extend(new_fixes)
     if rule_context.any_enabled({"VY111", "VYD012"}):
         current_context = rule_context.with_source(current)
         current, new_fixes, new_diagnostics = _replace_shift_builtin(current_context)
@@ -348,7 +351,8 @@ def _replace_builtin_call(
                 replacement,
             )
         )
-    return apply_edits(source, edits), fixes
+    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    return apply_edits(source, selected_edits), selected_fixes
 
 
 def _replace_shift_builtin(
