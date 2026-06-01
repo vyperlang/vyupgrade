@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import cache
@@ -31,6 +31,22 @@ COMPILE_TIMEOUT_SECONDS = 120
 COMMON_IMPORT_DEPENDENCIES = {
     "snekmate": "snekmate",
 }
+OVERLAY_EXCLUDED_PARTS = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "env",
+    "node_modules",
+    "venv",
+}
 
 
 @dataclass
@@ -45,6 +61,8 @@ class CompileResult:
 class TargetOverlay:
     root: Path
     paths: Mapping[Path, Path]
+    source_roots: tuple[Path, ...]
+    search_paths: tuple[Path, ...]
 
 
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
@@ -78,6 +96,12 @@ def compile_target_source(
                 config.target_vyper, config.target_version, config.target_python
             )
             compile_config = _target_compile_config(compile_source, config)
+            compile_config = replace(
+                compile_config,
+                compiler_search_paths=_overlay_search_paths(
+                    overlay, compile_config.compiler_search_paths
+                ),
+            )
             return _run_compile(
                 command,
                 tmp_path,
@@ -123,17 +147,30 @@ def compile_target_source(
 
 @contextmanager
 def target_overlay(
-    sources: Mapping[Path, str], target_version: str
+    sources: Mapping[Path, str],
+    target_version: str,
+    search_paths: tuple[Path, ...] = (),
 ) -> Iterator[TargetOverlay | None]:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
         yield None
         return
-    roots = [_nearest_project_root(path.parent) or path.parent for path in resolved_sources]
+    roots = [_validation_root(path, search_paths) for path in resolved_sources]
     common = Path(os.path.commonpath([str(root) for root in roots]))
     with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
         root = Path(tmp)
         paths: dict[Path, Path] = {}
+        overlay_search_paths: set[Path] = set()
+        for source_root in roots:
+            overlay_search_paths.update(
+                _copy_validation_sources(
+                    source_root,
+                    common,
+                    root,
+                    target_version,
+                    resolved_sources.keys(),
+                )
+            )
         for path, source in resolved_sources.items():
             try:
                 relative = path.relative_to(common)
@@ -143,8 +180,94 @@ def target_overlay(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(_target_validation_source(source, target_version), encoding="utf-8")
             paths[path] = target
+            overlay_search_paths.add(target.parent)
         _copy_project_configs(common, root)
-        yield TargetOverlay(root=root, paths=paths)
+        yield TargetOverlay(
+            root=root,
+            paths=paths,
+            source_roots=tuple(roots),
+            search_paths=tuple(
+                sorted(
+                    (path for path in overlay_search_paths if path != root),
+                    key=lambda path: str(path),
+                )
+            ),
+        )
+
+
+def _overlay_search_paths(
+    overlay: TargetOverlay, search_paths: tuple[Path, ...]
+) -> tuple[Path, ...]:
+    covered = tuple(path.resolve() for path in overlay.source_roots)
+    return (
+        overlay.root,
+        *overlay.search_paths,
+        *(
+            search_path
+            for search_path in search_paths
+            if not any(_paths_overlap(search_path.resolve(), root) for root in covered)
+        ),
+    )
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    try:
+        left.relative_to(right)
+        return True
+    except ValueError:
+        pass
+    try:
+        right.relative_to(left)
+        return True
+    except ValueError:
+        return False
+
+
+def _validation_root(path: Path, search_paths: tuple[Path, ...]) -> Path:
+    resolved = path.resolve()
+    candidates: list[Path] = []
+    for search_path in search_paths:
+        root = search_path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        candidates.append(root)
+    if candidates:
+        return max(candidates, key=lambda candidate: len(candidate.parts))
+    return _nearest_project_root(path.parent) or path.parent
+
+
+def _copy_validation_sources(
+    source_root: Path,
+    common_root: Path,
+    target_root: Path,
+    target_version: str,
+    overrides: Iterable[Path],
+) -> set[Path]:
+    search_paths: set[Path] = set()
+    override_paths = set(overrides)
+    for source in source_root.rglob("*"):
+        if source.suffix not in {".vy", ".vyi"}:
+            continue
+        if any(part in OVERLAY_EXCLUDED_PARTS for part in source.parts):
+            continue
+        resolved = source.resolve()
+        if resolved in override_paths:
+            continue
+        try:
+            relative = resolved.relative_to(common_root)
+        except ValueError:
+            continue
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        target = target_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_target_validation_source(text, target_version), encoding="utf-8")
+        search_paths.add(target.parent)
+    return search_paths
 
 
 def _copy_project_configs(source_root: Path, target_root: Path) -> None:

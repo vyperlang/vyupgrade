@@ -17,6 +17,7 @@ from vyupgrade.compiler import (
     compile_source_ast,
     compile_source_file,
     compile_target_source,
+    target_overlay,
 )
 from vyupgrade.models import Config
 
@@ -520,6 +521,55 @@ def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch,
 
     assert result.status == "passed"
     assert calls["target_parent"] == contract.parent
+
+
+def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "exchanges" / "sfrxusd.vy"
+    imported = project / "src" / "interfaces" / "IExchange.vyi"
+    contract.parent.mkdir(parents=True)
+    imported.parent.mkdir(parents=True)
+    contract.write_text(
+        "# @version 0.4.1\nfrom src.interfaces import IExchange\n",
+        encoding="utf-8",
+    )
+    imported.write_text("# @version 0.4.1\n@external\ndef quote() -> uint256: ...\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["path"] = path
+        calls["search_paths"] = config.compiler_search_paths
+        imported_overlay = path.parents[1] / "interfaces" / "IExchange.vyi"
+        calls["imported_source"] = imported_overlay.read_text(encoding="utf-8")
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom src.interfaces import IExchange\n"},
+        "0.4.3",
+        (project,),
+    ) as overlay:
+        result = compile_target_source(
+            contract,
+            "#pragma version 0.4.3\nfrom src.interfaces import IExchange\n",
+            Config(paths=(contract,), compiler_search_paths=(project,)),
+            overlay,
+        )
+
+    assert result.status == "passed"
+    assert calls["path"] != contract
+    assert calls["search_paths"][0].name.startswith("vyupgrade-target-")
+    assert "#pragma version 0.4.3" in calls["imported_source"]
+    assert "# @version 0.4.1" not in calls["imported_source"]
 
 
 def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:

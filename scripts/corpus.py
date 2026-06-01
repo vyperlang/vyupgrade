@@ -16,7 +16,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from vyupgrade.compiler import compare_artifacts, compile_source_file, compile_target_source
+from vyupgrade.compiler import (
+    compare_artifacts,
+    compile_source_file,
+    compile_target_source,
+    target_overlay,
+)
 from vyupgrade.models import Config
 from vyupgrade.rules import apply_rules
 from vyupgrade.versions import (
@@ -970,7 +975,10 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
         )
         rewrite = apply_rules(original, file_config, path)
-        target_compile = compile_target_source(path, rewrite.source, config)
+        with target_overlay(
+            {path: rewrite.source}, config.target_version, config.compiler_search_paths
+        ) as overlay:
+            target_compile = compile_target_source(path, rewrite.source, config, overlay)
         abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
             source_compile, target_compile
         )

@@ -369,7 +369,9 @@ def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(
         corpus,
         "compile_target_source",
-        lambda path, source, config: SimpleNamespace(status="passed", artifacts={}, stderr=None),
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
     )
 
     result = corpus._smoke_one(item, "0.4.3")

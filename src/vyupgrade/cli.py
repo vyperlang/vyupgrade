@@ -242,7 +242,7 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
                 for generated_file in work.rewrite.generated_files
             }
         )
-    with target_overlay(target_sources, config.target_version) as overlay:
+    with target_overlay(target_sources, config.target_version, config.compiler_search_paths) as overlay:
         for work in rewrites:
             if any(diagnostic.rule == "VYD016" for diagnostic in work.report.diagnostics):
                 continue
