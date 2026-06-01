@@ -84,6 +84,21 @@ def _constant_exponent_literals_context(
     mask = rule_context.code_mask
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
+    one_base_re = re.compile(r"(?<![\w.])(?:\(\s*1\s*\*\*\s*[0-9][0-9_]*\s*\)|1\s*\*\*\s*[0-9][0-9_]*)")
+    for match in one_base_re.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        replacement = "1"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY054",
+                line_number(source, match.start()),
+                "folded one-base exponent expression",
+                match.group(0),
+                replacement,
+            )
+        )
     max_int128_re = re.compile(r"(?<![\w])(?:\(\s*)?2\s*\*\*\s*127\s*-\s*1(?:\s*\))?")
     for match in max_int128_re.finditer(source):
         if not span_is_code(mask, match.start(), match.end()) or not _int128_literal_context(

@@ -36,6 +36,17 @@ def neg(i: int128) -> int128:
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
+def test_one_base_exponent_literal_folds_to_one(config) -> None:
+    source = """# @version 0.2.12
+RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * (1 ** 10)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * 1" in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
+
+
 def test_dynamic_uint_exponent_rewrites_to_pow_mod256(config) -> None:
     source = """# @version 0.3.10
 @external
