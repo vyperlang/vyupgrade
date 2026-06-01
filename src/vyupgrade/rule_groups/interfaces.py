@@ -315,6 +315,85 @@ def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], li
     return apply_edits(source, edits), fixes, []
 
 
+def _view_log_mutability(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    mask = rule_context.code_mask
+    line_offsets = rule_context.line_offsets
+    lines = source.splitlines(keepends=True)
+    impure_lines = {
+        function_line
+        for function_line in facts.function_names
+        if _function_contains(source, mask, line_offsets, facts, function_line, "log")
+    }
+    changed = True
+    while changed:
+        changed = False
+        impure_names = {
+            function_name
+            for function_line, function_name in facts.function_names.items()
+            if function_line in impure_lines
+        }
+        for function_line in facts.function_names:
+            if function_line in impure_lines:
+                continue
+            if any(
+                _function_calls_self_function(
+                    source,
+                    mask,
+                    line_offsets,
+                    facts,
+                    function_line,
+                    impure_name,
+                )
+                for impure_name in impure_names
+            ):
+                impure_lines.add(function_line)
+                changed = True
+
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    for function_line in sorted(impure_lines):
+        decorators = facts.function_decorators.get(function_line, ())
+        if "view" not in decorators:
+            continue
+        decorator_line = facts.function_decorator_lines.get(function_line, {}).get("view")
+        if decorator_line is None or decorator_line > len(lines):
+            continue
+        line = lines[decorator_line - 1]
+        decorator_match = re.match(r"[ \t]*@view\b[^\n]*(?:\n|$)", line)
+        if decorator_match is None:
+            continue
+        line_start = line_offsets[decorator_line - 1]
+        edits.append(TextEdit(line_start, line_start + decorator_match.end(), ""))
+        fixes.append(
+            Fix(
+                "VY017",
+                decorator_line,
+                "removed view decorator from function that emits logs",
+                line.rstrip("\n"),
+                "",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _function_calls_self_function(
+    source: str,
+    mask: list[bool],
+    line_offsets: list[int],
+    facts: SourceFacts,
+    function_line: int,
+    name: str,
+) -> bool:
+    body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
+    pattern = re.compile(rf"\bself\s*\.\s*{re.escape(name)}\s*\(")
+    return any(
+        span_is_code(mask, match.start(), match.end())
+        for match in pattern.finditer(source, body_start, body_end)
+    )
+
+
 def _function_contains_external_view_call(
     source: str, facts: SourceFacts, function_line: int
 ) -> bool:
@@ -629,6 +708,7 @@ RULES = (
     Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(crossing("VY016", (0, 4, 0)),)),
     Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(crossing("VY014", (0, 4, 0)),)),
     Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
+    Rule("view_log_mutability", runner=_view_log_mutability, changes=(crossing("VY017", (0, 4, 0)),)),
     Rule(
         "interface_imports",
         runner=_interface_imports,

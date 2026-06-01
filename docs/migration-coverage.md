@@ -172,6 +172,8 @@ modern Python interpreter.
 - Pure functions may no longer read immutable state: `VY015` changes `@pure`
   functions to `@view` when source facts show the function body references a
   top-level `immutable(...)` binding.
+- View functions may not emit events: `VY017` removes `@view` from functions
+  whose body contains a `log` statement.
 - Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
   ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and

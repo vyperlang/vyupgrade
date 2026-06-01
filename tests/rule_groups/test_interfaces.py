@@ -325,6 +325,64 @@ def add_one(i: int128) -> int128:
     assert not any(fix.rule == "VY015" for fix in result.fixes)
 
 
+def test_view_function_emitting_log_becomes_nonpayable(config) -> None:
+    source = """# @version 0.3.10
+event Redemption:
+    amount: uint256
+
+@view
+@internal
+def amount_claimable(amount: uint256) -> uint256:
+    log Redemption(amount=amount)
+    return amount
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view" not in result.source
+    assert "@internal\ndef amount_claimable" in result.source
+    assert any(fix.rule == "VY017" for fix in result.fixes)
+
+
+def test_view_function_calling_log_helper_becomes_nonpayable(config) -> None:
+    source = """# @version 0.3.10
+event Redemption:
+    amount: uint256
+
+@view
+@internal
+def amount_claimable(amount: uint256) -> uint256:
+    log Redemption(amount=amount)
+    return amount
+
+@view
+@external
+def redeemable(amount: uint256) -> uint256:
+    return self.amount_claimable(amount)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view" not in result.source
+    assert "@internal\ndef amount_claimable" in result.source
+    assert "@external\ndef redeemable" in result.source
+    assert sum(fix.rule == "VY017" for fix in result.fixes) == 2
+
+
+def test_view_function_without_log_stays_view(config) -> None:
+    source = """# @version 0.3.10
+@view
+@external
+def amount_claimable(amount: uint256) -> uint256:
+    return amount
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view\n@external\ndef amount_claimable" in result.source
+    assert not any(fix.rule == "VY017" for fix in result.fixes)
+
+
 def test_legacy_numeric_constants(config) -> None:
     source = """# @version 0.3.3
 @external
