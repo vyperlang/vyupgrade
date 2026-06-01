@@ -126,6 +126,32 @@ def createMotion(
     assert any(fix.rule == "VY058" for fix in result.fixes)
 
 
+def test_natspec_strictness_customizes_duplicate_singleton_fields(config) -> None:
+    source = '''# @version 0.3.10
+"""
+@author 0xvv
+@author Axxe
+"""
+
+@external
+def collect_fees() -> uint256:
+    """
+    @notice Collect the fees charged as interest
+    @notice None of this fees are collected if factory has no fee_receiver
+            This is by design.
+    """
+    return 0
+'''
+
+    result = apply_rules(source, config())
+
+    assert "@author 0xvv" in result.source
+    assert "@custom:author Axxe" in result.source
+    assert "@notice Collect the fees charged as interest" in result.source
+    assert "@custom:notice None of this fees are collected" in result.source
+    assert any(fix.rule == "VY058" for fix in result.fixes)
+
+
 def test_pragma_rewrite_bumps_to_enabled_target_version(config) -> None:
     source = """# @version 0.3.8
 @external

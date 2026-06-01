@@ -167,7 +167,8 @@ modern Python interpreter.
 - NatSpec validation is stricter: `VY058` removes stale `@param` lines whose
   names do not exist in the function signature or have no description, strips
   Solidity-style colons from valid `@param name:` tags, and rewrites unknown
-  `@fork` tags to `@custom:fork`.
+  `@fork` tags to `@custom:fork`. It also rewrites duplicate singleton fields
+  such as `@notice` and `@author` to `@custom:<field>`.
 - Local interface mutability is checked more strictly: `VY014` changes
   `nonpayable` interface entries to `view` when the implementation is a view
   function or `public(...)` getter, and changes `@pure` implementations to

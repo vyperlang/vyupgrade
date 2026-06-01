@@ -513,6 +513,7 @@ def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list
     in_docstring = False
     quote = ""
     doc_function_start: int | None = None
+    seen_singleton_natspec_fields: set[str] = set()
     offset = 0
     for line_no, raw_line in enumerate(source.splitlines(keepends=True), start=1):
         line = raw_line.rstrip("\n")
@@ -522,17 +523,50 @@ def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list
                 quote = stripped[:3]
                 in_docstring = True
                 doc_function_start = _function_start_at_line(facts, line_no)
+                seen_singleton_natspec_fields = set()
                 if stripped.count(quote) >= 2:
                     in_docstring = False
                     doc_function_start = None
+                    seen_singleton_natspec_fields = set()
             offset += len(raw_line)
             continue
 
         if stripped.startswith(quote):
             in_docstring = False
             doc_function_start = None
+            seen_singleton_natspec_fields = set()
             offset += len(raw_line)
             continue
+
+        singleton_tag = _natspec_singleton_tag(line)
+        if singleton_tag is not None and singleton_tag in seen_singleton_natspec_fields:
+            replacement = _duplicate_natspec_line_replacement(line, singleton_tag)
+            if replacement is None:
+                edits.append(TextEdit(offset, offset + len(raw_line), ""))
+                fixes.append(
+                    Fix(
+                        "VY058",
+                        line_no,
+                        "removed duplicate NatSpec field",
+                        line,
+                        "",
+                    )
+                )
+            else:
+                edits.append(TextEdit(offset, offset + len(line), replacement))
+                fixes.append(
+                    Fix(
+                        "VY058",
+                        line_no,
+                        "rewrote duplicate NatSpec field as custom tag",
+                        line,
+                        replacement,
+                    )
+                )
+            offset += len(raw_line)
+            continue
+        if singleton_tag is not None:
+            seen_singleton_natspec_fields.add(singleton_tag)
 
         params = _function_param_names_at_start(facts, doc_function_start)
         replacement = _natspec_line_replacement(line, params)
@@ -552,6 +586,27 @@ def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list
             fixes.append(Fix("VY058", line_no, "updated NatSpec tag syntax", line, replacement))
         offset += len(raw_line)
     return apply_edits(source, edits), fixes, []
+
+
+_SINGLETON_NATSPEC_FIELDS = frozenset({"author", "title", "notice", "dev", "license"})
+
+
+def _natspec_singleton_tag(line: str) -> str | None:
+    match = re.match(r"^\s*@([A-Za-z_][A-Za-z0-9_-]*)\b", line)
+    if match is None:
+        return None
+    tag = match.group(1)
+    return tag if tag in _SINGLETON_NATSPEC_FIELDS else None
+
+
+def _duplicate_natspec_line_replacement(line: str, tag: str) -> str | None:
+    match = re.match(r"^(\s*)@[A-Za-z_][A-Za-z0-9_-]*(\s+.*)?$", line)
+    if match is None:
+        return line
+    body = match.group(2)
+    if body is None or not body.strip():
+        return None
+    return f"{match.group(1)}@custom:{tag}{body}"
 
 
 def _function_param_names_at_start(facts: SourceFacts, start: int | None) -> set[str] | None:
