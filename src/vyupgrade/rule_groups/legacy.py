@@ -783,7 +783,7 @@ POST_DIAGNOSTIC_RULES = (
     Rule(
         "docstring_only_bodies",
         runner=_docstring_only_bodies,
-        changes=(crossing("VY131", "0.5.0a2"),),
+        changes=(crossing("VY131", (0, 4, 0)),),
     ),
 )
 
