@@ -38,6 +38,27 @@ def f() -> uint256:
     assert "n_coins: uint256 = convert(MAX_COINS, uint256)" in result.source
 
 
+def test_signed_constant_does_not_rewrite_struct_literal_key(config) -> None:
+    source = """# @version 0.2.8
+expanse: public(int128)
+
+struct Lode:
+    expanse: int128
+    total: uint256
+
+lodes: Lode[2]
+
+@external
+def f():
+    self.lodes[0] = Lode({total: 1, expanse: 0})
+"""
+
+    result = apply_rules(source, config())
+
+    assert "Lode(expanse=convert(0, int128), total=1)" in result.source
+    assert "convert(expanse" not in result.source
+
+
 def test_unsigned_assignment_keeps_unsigned_numerator_when_signed_denominator_converts(
     config,
 ) -> None:

@@ -108,6 +108,7 @@ def _mixed_signed_unsigned_arithmetic(
                 )
                 if (
                     _inside_attribute_access(source, start, end)
+                    or _inside_dict_key(source, start, end)
                     or inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                     or (name in constant_values and _inside_shift_amount(source, start))
@@ -157,6 +158,7 @@ def _mixed_signed_unsigned_arithmetic(
                 end = start + len(name)
                 if (
                     _inside_attribute_access(source, start, end)
+                    or _inside_dict_key(source, start, end)
                     or inside_convert_call(source, start)
                     or _inside_range_header(source, start)
                 ):
@@ -199,6 +201,7 @@ def _mixed_signed_unsigned_arithmetic(
                 end = start + len(name)
                 if (
                     _inside_attribute_access(source, start, end)
+                    or _inside_dict_key(source, start, end)
                     or inside_convert_call(source, start)
                     or _inside_any_convert_call(source, start)
                     or _inside_range_header(source, start)
@@ -785,6 +788,18 @@ def _inside_type_subscript(source: str, index: int) -> bool:
 
 def _inside_attribute_access(source: str, start: int, end: int) -> bool:
     return (start > 0 and source[start - 1] == ".") or (end < len(source) and source[end] == ".")
+
+
+def _inside_dict_key(source: str, start: int, end: int) -> bool:
+    i = end
+    while i < len(source) and source[i].isspace() and source[i] != "\n":
+        i += 1
+    if i >= len(source) or source[i] != ":":
+        return False
+    j = start - 1
+    while j >= 0 and source[j].isspace() and source[j] != "\n":
+        j -= 1
+    return j >= 0 and source[j] in "{,"
 
 
 
