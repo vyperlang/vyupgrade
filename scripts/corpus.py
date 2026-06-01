@@ -617,7 +617,7 @@ def import_chainsecurity(source: Path, output: Path) -> dict[str, Any]:
             except (OSError, UnicodeDecodeError):
                 counts["read_error"] += 1
                 continue
-            source_spec = infer_pragma(source_text) or compiler
+            source_spec = compiler or infer_pragma(source_text)
             if not is_supported_source_version(source_spec):
                 counts["unsupported_pragma"] += 1
                 continue
@@ -966,13 +966,14 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
     try:
         original = path.read_text(encoding="utf-8")
         compiler_search_paths = _item_compiler_search_paths(item)
+        source_version = _item_source_version(item)
         config = Config(
             paths=(path,),
             target_version=target_version,
-            source_version=item["pragma"],
+            source_version=source_version,
             compiler_search_paths=compiler_search_paths,
         )
-        source_compile = compile_source_file(path, config, item["pragma"])
+        source_compile = compile_source_file(path, config, source_version)
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         file_config = replace(
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
@@ -1257,6 +1258,13 @@ def _item_compiler_search_paths(item: dict[str, Any]) -> tuple[Path, ...]:
                 _standard_json_compiler_search_paths(payload, Path(item["corpus_repo_root"]))
             )
     return _unique_paths(paths)
+
+
+def _item_source_version(item: dict[str, Any]) -> str:
+    compiler = compiler_version_for_spec(item.get("compiler_version"))
+    if compiler is not None and item.get("standard_json"):
+        return compiler
+    return str(item["pragma"])
 
 
 def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: Path) -> tuple[Path, ...]:
