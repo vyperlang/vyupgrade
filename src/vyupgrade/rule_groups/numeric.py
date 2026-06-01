@@ -652,4 +652,12 @@ LATE_RULES = (
             crossing("VYD012", (0, 4, 2)),
         ),
     ),
+    Rule(
+        "integer_division_after_bitwise",
+        runner=_integer_division,
+        changes=(
+            crossing("VY050", (0, 4, 0)),
+            crossing("VYD004", (0, 4, 0)),
+        ),
+    ),
 )

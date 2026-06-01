@@ -171,6 +171,18 @@ def balanceOf(wallet: address) -> uint256:
     assert "return self.getBalance(wallet) // self.scale" in result.source
 
 
+def test_integer_division_after_bitwise_rewrite(config) -> None:
+    source = """# @version 0.3.3
+@external
+def f(price: uint256, packed: uint256) -> uint256:
+    return (price + bitwise_and(packed, 2 ** 128 - 1)) / 2
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return (price + (packed & 2 ** 128 - 1)) // 2" in result.source
+
+
 def test_isqrt_integer_division_operand(config) -> None:
     source = """# @version 0.3.10
 virtual_price: uint256
