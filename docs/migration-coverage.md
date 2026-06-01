@@ -124,9 +124,10 @@ modern Python interpreter.
 
 - Constructor visibility changed to `@deploy`: `VY002` removes invalid
   constructor visibility decorators and inserts `@deploy`.
-- Named reentrancy locks removed: `VY090` removes the single-lock case and emits
-  a review diagnostic. `VYD002` flags multiple named locks because global-lock
-  behavior may change callback assumptions.
+- Named reentrancy locks removed: `VY090` removes the single-lock case,
+  reserves legacy lock storage slots, and emits a review diagnostic. `VYD002`
+  flags multiple named locks because global-lock behavior may change callback
+  assumptions.
 - `_abi_encode` and `_abi_decode` renamed: `VY010` and `VY011`.
 - `@internal` became optional: no-op. Existing `@internal` source remains valid.
 - External calls require keywords: `VY040` adds `extcall`; `VY041` adds

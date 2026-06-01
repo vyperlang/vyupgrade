@@ -913,6 +913,39 @@ def test_compare_artifacts_normalizes_storage_nonreentrant_lock_names() -> None:
     assert compare_artifacts(source, target) == (None, None, True)
 
 
+def test_compare_artifacts_normalizes_generated_nonreentrant_storage_gap() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                },
+                "balance": {"location": "storage", "slot": 1, "type": "uint256"},
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "_vyupgrade_reentrancy_lock_slot": {
+                        "slot": 0,
+                        "type": "uint256",
+                        "n_slots": 1,
+                    },
+                    "balance": {"slot": 1, "type": "uint256", "n_slots": 1},
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
 def test_compare_artifact_details_reports_nonreentrant_lock_moved_to_transient_storage() -> None:
     source = CompileResult(
         "passed",

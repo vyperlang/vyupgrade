@@ -523,6 +523,11 @@ def _normalize_layout_entries(
         if not isinstance(slot, int) or not isinstance(type_name, str):
             continue
         canonical_type = _canonical_storage_type(type_name)
+        if (
+            canonical_type == "uint256"
+            and name.startswith("_vyupgrade_reentrancy_lock_slot")
+        ):
+            canonical_type = "nonreentrant lock"
         normalized_name = f"$nonreentrant:{slot}" if canonical_type == "nonreentrant lock" else name
         normalized[normalized_name] = (slot, canonical_type)
     return normalized

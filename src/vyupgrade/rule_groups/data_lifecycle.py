@@ -17,6 +17,7 @@ from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
+    code_identifiers,
     code_mask,
     find_matching,
     line_number,
@@ -327,7 +328,84 @@ def _nonreentrant(
     current = pattern.sub(repl, source)
     current, internal_fixes = _remove_internal_nonreentrant(current)
     fixes.extend(internal_fixes)
+    if "@nonreentrant" not in current or not _has_evm_version_pragma(source):
+        current, gap_fixes = _insert_nonreentrant_storage_gaps(current, len(counts))
+        fixes.extend(gap_fixes)
     return current, fixes, diagnostics
+
+
+def _has_evm_version_pragma(source: str) -> bool:
+    return bool(
+        re.search(r"^[ \t]*#[ \t]*pragma[ \t]+evm-version\b", source, flags=re.MULTILINE)
+    )
+
+
+def _insert_nonreentrant_storage_gaps(source: str, count: int) -> tuple[str, list[Fix]]:
+    if count <= 0:
+        return source, []
+    names = _nonreentrant_storage_gap_names(source, count)
+    declarations = "".join(
+        f"{name}: uint256  # preserves legacy nonreentrant lock storage slot\n" for name in names
+    )
+    insert_at = _storage_gap_insert_offset(source)
+    if insert_at is None:
+        return source, []
+    before = "\n" if insert_at > 0 and not source[:insert_at].endswith("\n\n") else ""
+    after = "" if declarations.endswith("\n") else "\n"
+    replacement = f"{before}{declarations}{after}"
+    line = line_number(source, insert_at)
+    return source[:insert_at] + replacement + source[insert_at:], [
+        Fix(
+            "VY090",
+            line,
+            "reserved legacy nonreentrant lock storage slot",
+            "",
+            declarations.rstrip("\n"),
+        )
+    ]
+
+
+def _nonreentrant_storage_gap_names(source: str, count: int) -> list[str]:
+    used = code_identifiers(source)
+    names: list[str] = []
+    index = 1
+    while len(names) < count:
+        suffix = "" if index == 1 else f"_{index}"
+        name = f"_vyupgrade_reentrancy_lock_slot{suffix}"
+        if name not in used:
+            names.append(name)
+            used.add(name)
+        index += 1
+    return names
+
+
+def _storage_gap_insert_offset(source: str) -> int | None:
+    facts = parse_source_facts(source)
+    storage_names = {
+        name
+        for name, type_name in facts.global_vars.items()
+        if not type_name.startswith(("constant(", "immutable("))
+    }
+    lines = source.splitlines(keepends=True)
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or line[:1].isspace():
+            continue
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", stripped)
+        if match and match.group(1) in storage_names:
+            return offsets[index]
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or line[:1].isspace():
+            continue
+        if stripped.startswith("@") or re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+            return offsets[index]
+    return len(source)
 
 
 CONSTRUCTOR_RULES = (
