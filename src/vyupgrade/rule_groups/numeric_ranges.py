@@ -21,6 +21,7 @@ from ..source import (
     apply_edits,
     find_matching,
     line_number,
+    split_top_level_arg_spans,
     split_top_level_args,
     span_is_code,
 )
@@ -56,6 +57,10 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
         var_type = _loop_var_type(iterable, vars_for_line, facts)
         if var_type is None:
             continue
+        if var_type == "int256" and _range_iterable_has_leading_negative_start(iterable):
+            var_type = _negative_range_loop_operand_type(
+                source[match.end() :], match.group(2), vars_for_line
+            ) or var_type
         before = match.group(0)
         after = f"{match.group(1)}for {match.group(2)}: {var_type} in {iterable}:"
         edits.append(TextEdit(match.start(), match.end(), after))
@@ -71,6 +76,81 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
         if function_start is not None:
             inferred_loop_vars.setdefault(function_start, {})[match.group(2)] = var_type
 
+    return apply_edits(source, edits), fixes, []
+
+
+def _signed_negative_range_bounds(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
+    facts = rule_context.facts
+    constant_values = integer_constant_values(source, config.source_ast)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = rule_context.code_mask
+    for match in re.finditer(r"\brange\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        open_index = source.find("(", match.start())
+        close = find_matching(source, open_index)
+        if close is None:
+            continue
+        raw_args = source[open_index + 1 : close]
+        arg_spans = split_top_level_arg_spans(raw_args)
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        first_start, _first_end, first = arg_spans[0]
+        second_start, _second_end, second = arg_spans[1]
+        name = _negative_range_bound_name(first)
+        if name is None:
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        if not _is_unsigned_integer_type(vars_for_line.get(name)):
+            continue
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        loop_var_match = re.search(
+            r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)(?::[^:]+)?\s+in\s+$",
+            source[line_start : match.start()],
+        )
+        target_type = (
+            _negative_range_loop_operand_type(
+                source[close:], loop_var_match.group(1), vars_for_line
+            )
+            if loop_var_match is not None
+            else None
+        ) or "int256"
+        bound = str(constant_values.get(name, name))
+        if not any(arg.partition("=")[0].strip() == "bound" for _s, _e, arg in arg_spans):
+            edits.append(TextEdit(close, close, f", bound={bound}"))
+            fixes.append(
+                Fix(
+                    "VY071",
+                    line_number(source, match.start()),
+                    "added signed negative range bound",
+                    f"range({raw_args})",
+                    f"range({raw_args}, bound={bound})",
+                )
+            )
+        for arg_start, arg in ((first_start, first), (second_start, second)):
+            if not _range_bound_uses_name(arg, name):
+                continue
+            name_match = re.search(rf"\b{re.escape(name)}\b", arg)
+            if name_match is None:
+                continue
+            start = open_index + 1 + arg_start + name_match.start()
+            end = start + len(name)
+            replacement = f"convert({name}, {target_type})"
+            edits.append(TextEdit(start, end, replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_number(source, start),
+                    "converted unsigned negative range bound to signed type",
+                    name,
+                    replacement,
+                )
+            )
     return apply_edits(source, edits), fixes, []
 
 
@@ -156,6 +236,8 @@ def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
     positional = [arg for arg in args if not re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*=", arg)]
     if not positional:
         return "uint256"
+    if _leading_negative_expression(positional[0]):
+        return "int256"
     start_type = infer_expr_type(positional[0], vars_for_line)
     if len(positional) > 1 and is_integer_type(start_type) and not _literal_integer(positional[0]):
         return start_type
@@ -249,7 +331,56 @@ def _range_bound_literal(value: str, values: dict[str, int]) -> str | None:
     return str(constant)
 
 
+def _negative_range_bound_name(expr: str) -> str | None:
+    match = re.fullmatch(
+        r"\(?\s*-1\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*/{1,2}\s*[^()]+\s*\)?",
+        expr.strip(),
+    )
+    return match.group(1) if match is not None else None
+
+
+def _range_bound_uses_name(expr: str, name: str) -> bool:
+    return bool(
+        re.fullmatch(
+            rf"\(?\s*(?:-1\s*\*\s*)?{re.escape(name)}\s*/{{1,2}}\s*[^()]+\s*\)?",
+            expr.strip(),
+        )
+    )
+
+
+def _leading_negative_expression(expr: str) -> bool:
+    return bool(re.match(r"\s*\(*\s*-", expr))
+
+
+def _range_iterable_has_leading_negative_start(iterable: str) -> bool:
+    match = re.match(r"range\s*\((.*)\)\s*$", iterable)
+    if match is None:
+        return _leading_negative_expression(iterable)
+    args = split_top_level_args(match.group(1))
+    return bool(args and _leading_negative_expression(args[0]))
+
+
+def _negative_range_loop_operand_type(
+    following_source: str, loop_var: str, vars_for_line: dict[str, str]
+) -> str | None:
+    for name, type_name in vars_for_line.items():
+        normalized = normalize_type(type_name)
+        if not _is_signed_integer_type(normalized):
+            continue
+        if re.search(
+            rf"\b(?:{re.escape(loop_var)}\s*\*\s*{re.escape(name)}|{re.escape(name)}\s*\*\s*{re.escape(loop_var)})\b",
+            following_source,
+        ):
+            return normalized
+    return None
+
+
 RULES = (
+    Rule(
+        "signed_negative_range_bounds",
+        runner=_signed_negative_range_bounds,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
     Rule(
         "range_bound",
         runner=_range_bound,

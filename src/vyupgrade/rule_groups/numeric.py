@@ -239,6 +239,9 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
         return bool(re.search(r"\d", expr))
     typed = False
     for token in tokens:
+        if re.fullmatch(r"u?int(?:\d+)?", token):
+            typed = True
+            continue
         if token in {
             "convert",
             "isqrt",
@@ -249,10 +252,6 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
             "unsafe_div",
             "unsafe_mul",
             "unsafe_sub",
-            "uint256",
-            "uint128",
-            "uint64",
-            "uint8",
         }:
             typed = True
             continue

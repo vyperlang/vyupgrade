@@ -31,6 +31,25 @@ def f():
     assert "for i: int128 in range(N_COINS):" in result.source
 
 
+def test_negative_range_bound_converts_unsigned_constant_to_signed(config) -> None:
+    source = """# @version 0.3.6
+MAX_PRICES: constant(uint256) = 20
+
+@external
+def f():
+    tick_spacing: int24 = 1
+    for index in range((-1 * MAX_PRICES / 2), (MAX_PRICES / 2)):
+        tick: int24 = index * tick_spacing
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "for index: int24 in range((-1 * convert(MAX_PRICES, int24) // 2), "
+        "(convert(MAX_PRICES, int24) // 2), bound=20):" in result.source
+    )
+
+
 def test_unsigned_range_bound_converts_signed_constant(config) -> None:
     source = """# @version 0.3.10
 N_COINS: constant(int128) = 3
