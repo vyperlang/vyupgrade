@@ -131,6 +131,34 @@ def test_source_facts_do_not_mutate_builtin_interface_registry() -> None:
     assert "foo" not in BUILTIN_INTERFACES["IERC20"]
 
 
+def test_source_facts_end_backslash_continued_function_headers() -> None:
+    source = """interface IGauge:
+    def totalSupply() -> uint256: view
+
+interface ICLGauge:
+    def rewardRate() -> uint256: view
+
+@internal
+def first(_data: address[4])\\
+    -> uint256:
+    gauge: IGauge = IGauge(_data[0])
+    return gauge.totalSupply()
+
+@external
+def second(_gauge: address)\\
+    -> uint256:
+    gauge: ICLGauge = ICLGauge(_gauge)
+    return gauge.rewardRate()
+"""
+
+    facts = parse_source_facts(source)
+
+    assert facts.function_names == {8: "first", 14: "second"}
+    assert facts.function_ends[8] == 13
+    assert facts.vars_at_line(10)["gauge"] == "IGauge"
+    assert facts.vars_at_line(16)["gauge"] == "ICLGauge"
+
+
 def test_expr_type_extracts_min_max_value_type() -> None:
     assert infer_expr_type("max_value(int128)", {}, None) == "int128"
     assert infer_expr_type("min_value(int256)", {}, None) == "int256"

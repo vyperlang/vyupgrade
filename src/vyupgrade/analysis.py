@@ -132,7 +132,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             current_struct = None
 
         if pending_function_line is not None:
-            header_line = _strip_inline_comment(stripped).strip()
+            header_line = _header_fragment(_strip_inline_comment(stripped).strip())
             if header_line:
                 pending_function_header.append(header_line)
             if _balanced_parens(" ".join(pending_function_header)):
@@ -197,7 +197,7 @@ def parse_source_facts(source: str) -> SourceFacts:
                 pending_interface_method = None
                 continue
             if pending_interface_header:
-                header_line = _strip_inline_comment(stripped).strip()
+                header_line = _header_fragment(_strip_inline_comment(stripped).strip())
                 if header_line:
                     pending_interface_header.append(header_line)
                 if _balanced_parens(" ".join(pending_interface_header)):
@@ -217,7 +217,7 @@ def parse_source_facts(source: str) -> SourceFacts:
                 continue
             multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", header_line)
             if multiline_def:
-                pending_interface_header = [header_line]
+                pending_interface_header = [_header_fragment(header_line)]
             continue
 
         decorator_match = re.match(r"@([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
@@ -238,7 +238,7 @@ def parse_source_facts(source: str) -> SourceFacts:
         if re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", function_header):
             pending_function_line = line_no
             pending_function_indent = indent
-            pending_function_header = [function_header]
+            pending_function_header = [_header_fragment(function_header)]
             continue
 
         if current_function_line is not None and indent <= current_function_indent and stripped:
@@ -599,6 +599,10 @@ def _strip_default(type_part: str) -> str:
 
 def _strip_inline_comment(line: str) -> str:
     return line.split("#", 1)[0].rstrip()
+
+
+def _header_fragment(line: str) -> str:
+    return line.rstrip("\\").strip()
 
 
 def _unwrap_public_or_constant(type_name: str) -> str | None:
