@@ -751,6 +751,90 @@ def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) ->
         assert (overlay_project / "snekmate" / "utils" / "create2.vy").exists()
 
 
+def test_target_overlay_resolves_dependency_imports_from_search_roots(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "token.vy"
+    erc20 = project / "lib" / "pypi" / "snekmate" / "tokens" / "erc20.vy"
+    permit = erc20.parent / "interfaces" / "IERC20Permit.vyi"
+    contract.parent.mkdir(parents=True)
+    erc20.parent.mkdir(parents=True)
+    permit.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.0\nfrom snekmate.tokens import erc20\n", encoding="utf-8")
+    erc20.write_text(
+        "# @version 0.4.0\nimport interfaces.IERC20Permit as IERC20Permit\n",
+        encoding="utf-8",
+    )
+    permit.write_text("# @version 0.4.0\n@external\ndef permit(): ...\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom snekmate.tokens import erc20\n"},
+        "0.4.3",
+        (project / "lib" / "pypi", project / "src", project),
+    ) as overlay:
+        assert overlay is not None
+        assert (overlay.root / "lib" / "pypi" / "snekmate" / "tokens" / "erc20.vy").exists()
+        assert (
+            overlay.root
+            / "lib"
+            / "pypi"
+            / "snekmate"
+            / "tokens"
+            / "interfaces"
+            / "IERC20Permit.vyi"
+        ).exists()
+
+
+def test_target_overlay_resolves_relative_dependency_imports(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "token.vy"
+    erc20 = project / "src" / "erc20.vy"
+    interface = project / "src" / "utils" / "interfaces" / "IERC5267.vyi"
+    contract.parent.mkdir(parents=True)
+    interface.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.0\nfrom . import erc20\n", encoding="utf-8")
+    erc20.write_text(
+        "# @version 0.4.0\nfrom .utils.interfaces import IERC5267\n",
+        encoding="utf-8",
+    )
+    interface.write_text("# @version 0.4.0\n@external\ndef eip712Domain(): ...\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom . import erc20\n"},
+        "0.4.3",
+        (project / "src", project),
+    ) as overlay:
+        assert overlay is not None
+        assert (overlay.root / "src" / "erc20.vy").exists()
+        assert (overlay.root / "src" / "utils" / "interfaces" / "IERC5267.vyi").exists()
+
+
+def test_target_overlay_rewrites_standard_json_src_package_imports(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "token.vy"
+    erc20 = project / "src" / "erc20.vy"
+    interface = project / "utils" / "interfaces" / "IERC5267.vyi"
+    contract.parent.mkdir(parents=True)
+    interface.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.0\nfrom . import erc20\n", encoding="utf-8")
+    erc20.write_text(
+        "# @version 0.4.0\nfrom .utils.interfaces import IERC5267\n",
+        encoding="utf-8",
+    )
+    interface.write_text("# @version 0.4.0\n@external\ndef eip712Domain(): ...\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom . import erc20\n"},
+        "0.4.3",
+        (project / "src", project),
+    ) as overlay:
+        assert overlay is not None
+        erc20_overlay = overlay.root / "src" / "erc20.vy"
+        assert "from ..utils.interfaces import IERC5267" in erc20_overlay.read_text(
+            encoding="utf-8"
+        )
+        assert (overlay.root / "utils" / "interfaces" / "IERC5267.vyi").exists()
+
+
 def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")
