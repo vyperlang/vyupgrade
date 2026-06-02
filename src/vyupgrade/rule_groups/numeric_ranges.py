@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from ..analysis import (
     SourceFacts,
@@ -32,12 +33,19 @@ from .numeric_types import (
 )
 
 
+@dataclass(frozen=True)
+class _FlagMemberList:
+    type_name: str
+    replacement: str
+
+
 def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     facts = rule_context.facts
     mask = rule_context.code_mask
+    flag_member_values = _flag_or_enum_member_values(source)
     pattern = re.compile(
         r"^([ \t]*)for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+(.+?):", re.MULTILINE
     )
@@ -54,7 +62,13 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
         vars_for_line = facts.vars_at_line(line)
         if function_start is not None:
             vars_for_line.update(inferred_loop_vars.get(function_start, {}))
-        var_type = _loop_var_type(iterable, vars_for_line, facts)
+        flag_member_list = _literal_flag_member_list(iterable, flag_member_values)
+        if flag_member_list is not None:
+            var_type = "uint256"
+            annotated_iterable = flag_member_list.replacement
+        else:
+            var_type = _loop_var_type(iterable, vars_for_line, facts)
+            annotated_iterable = iterable
         if var_type is None:
             continue
         if var_type == "uint256" and _range_iterable_has_literal_bounds(iterable):
@@ -66,7 +80,7 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
                 source[match.end() :], match.group(2), vars_for_line
             ) or var_type
         before = match.group(0)
-        after = f"{match.group(1)}for {match.group(2)}: {var_type} in {iterable}:"
+        after = f"{match.group(1)}for {match.group(2)}: {var_type} in {annotated_iterable}:"
         edits.append(TextEdit(match.start(), match.end(), after))
         fixes.append(
             Fix(
@@ -80,6 +94,46 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
         if function_start is not None:
             inferred_loop_vars.setdefault(function_start, {})[match.group(2)] = var_type
 
+    return apply_edits(source, edits), fixes, []
+
+
+def _flag_or_enum_return_casts(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = rule_context.code_mask
+    pattern = re.compile(
+        r"^(?P<indent>[ \t]*)return[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<comment>[ \t]*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start("name"), match.end("name")):
+            continue
+        line = line_number(source, match.start())
+        return_type = normalize_type(facts.return_type_at_line(line) or "")
+        if return_type not in facts.flags_or_enums:
+            continue
+        var_type = normalize_type(facts.vars_at_line(line).get(match.group("name"), ""))
+        if not is_integer_type(var_type):
+            continue
+        before = match.group(0)
+        after = (
+            f"{match.group('indent')}return convert({match.group('name')}, {return_type})"
+            f"{match.group('comment')}"
+        )
+        edits.append(TextEdit(match.start(), match.end(), after))
+        fixes.append(
+            Fix(
+                "VY052",
+                line,
+                "converted integer return value to enum or flag type",
+                before,
+                after,
+            )
+        )
     return apply_edits(source, edits), fixes, []
 
 
@@ -228,6 +282,66 @@ def _literal_list_element_type(
         return clean_types[0]
     normalized_types = [normalize_type(type_name) for type_name in clean_types]
     return normalized_types[0] if len(set(normalized_types)) == 1 else None
+
+
+def _literal_flag_member_list(
+    iterable: str, flag_member_values: dict[str, dict[str, int]]
+) -> _FlagMemberList | None:
+    if not (iterable.startswith("[") and iterable.endswith("]")):
+        return None
+    args = split_top_level_args(iterable[1:-1])
+    if not args:
+        return None
+    type_name: str | None = None
+    values: list[str] = []
+    for arg in args:
+        match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)", arg.strip()
+        )
+        if match is None:
+            return None
+        current_type, member = match.groups()
+        if type_name is None:
+            type_name = current_type
+        elif type_name != current_type:
+            return None
+        value = flag_member_values.get(current_type, {}).get(member)
+        if value is None:
+            return None
+        values.append(str(value))
+    if type_name is None:
+        return None
+    return _FlagMemberList(type_name, f"[{', '.join(values)}]")
+
+
+def _flag_or_enum_member_values(source: str) -> dict[str, dict[str, int]]:
+    values: dict[str, dict[str, int]] = {}
+    current_name: str | None = None
+    current_indent = 0
+    next_value = 1
+    for raw_line in source.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" \t"))
+        if current_name is not None and indent <= current_indent:
+            current_name = None
+        header = re.match(r"(?:enum|flag)\s+([A-Za-z_][A-Za-z0-9_]*):\s*(?:#.*)?$", stripped)
+        if header is not None:
+            current_name = header.group(1)
+            current_indent = indent
+            next_value = 1
+            values.setdefault(current_name, {})
+            continue
+        if current_name is None:
+            continue
+        member_line = stripped.split("#", 1)[0].strip()
+        member = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)", member_line)
+        if member is None:
+            continue
+        values[current_name][member.group(1)] = next_value
+        next_value *= 2
+    return values
 
 
 def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
@@ -463,5 +577,10 @@ RULES = (
         ),
     ),
     Rule("typed_range_loops", runner=_typed_range_loops, changes=(crossing("VY070", (0, 4, 0)),)),
+    Rule(
+        "flag_or_enum_return_casts",
+        runner=_flag_or_enum_return_casts,
+        changes=(crossing("VY052", (0, 4, 0)),),
+    ),
     Rule("integer_assignment_casts", runner=_integer_assignment_casts, changes=(crossing("VY052", (0, 4, 0)),)),
 )

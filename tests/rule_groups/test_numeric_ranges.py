@@ -270,6 +270,31 @@ def f(pid: uint256):
     assert "for action: Action in self.proposals[pid].actions:" in result.source
 
 
+def test_loop_variable_type_annotation_for_literal_enum_member_list(config) -> None:
+    source = """# @version 0.3.10
+enum Epoch:
+    SLEEP  # 1
+    COLLECT  # 2
+    EXCHANGE  # 4
+    FORWARD  # 8
+
+EPOCH_TIMESTAMPS: constant(uint256[9]) = [0, 10, 20, 30, 40, 50, 60, 70, 80]
+
+@internal
+def _epoch_ts(ts: uint256) -> Epoch:
+    for epoch in [Epoch.SLEEP, Epoch.COLLECT, Epoch.EXCHANGE, Epoch.FORWARD]:
+        if ts < EPOCH_TIMESTAMPS[2 * convert(epoch, uint256)]:
+            return epoch
+    raise "Bad Epoch"
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for epoch: uint256 in [1, 2, 4, 8]:" in result.source
+    assert "EPOCH_TIMESTAMPS[2 * epoch]" in result.source
+    assert "return convert(epoch, Epoch)" in result.source
+
+
 def test_pr_3679_range_runtime_stop_gets_bound_keyword(config) -> None:
     source = """# @version 0.3.10
 @external
