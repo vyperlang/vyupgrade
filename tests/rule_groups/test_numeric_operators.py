@@ -50,6 +50,52 @@ def f(new_balance: uint256):
     assert any(fix.rule == "VY230" for fix in result.fixes)
 
 
+def test_line_leading_binary_plus_is_preserved_in_tuple_sum(config) -> None:
+    source = """# @version 0.3.7
+@external
+def f(a: uint256, b: uint256) -> uint256:
+    return (
+        a
+        + b
+    )
+"""
+
+    result = apply_rules(source, config(target_version="0.3.8"))
+
+    assert "        + b" in result.source
+    assert not any(fix.rule == "VY230" for fix in result.fixes)
+
+
+def test_line_leading_binary_plus_is_preserved_after_backslash(config) -> None:
+    source = """# @version 0.3.7
+@external
+def f(a: uint256, b: uint256) -> uint256:
+    total: uint256 = a \\
+        + b
+    return total
+"""
+
+    result = apply_rules(source, config(target_version="0.3.8"))
+
+    assert "        + b" in result.source
+    assert not any(fix.rule == "VY230" for fix in result.fixes)
+
+
+def test_line_leading_unary_plus_after_open_paren_is_rewritten(config) -> None:
+    source = """# @version 0.3.7
+@external
+def f(a: uint256) -> uint256:
+    return (
+        + a
+    )
+"""
+
+    result = apply_rules(source, config(target_version="0.3.8"))
+
+    assert "        a" in result.source
+    assert any(fix.rule == "VY230" for fix in result.fixes)
+
+
 def test_numeric_not_unknown_type_is_diagnostic_only(config) -> None:
     source = """# @version 0.3.7
 @external

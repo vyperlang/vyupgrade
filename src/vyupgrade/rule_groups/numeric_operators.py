@@ -49,10 +49,27 @@ def _remove_unary_plus(source: str) -> tuple[str, list[Fix]]:
         if not span_is_code(mask, start, match.end("expr")):
             continue
         edit_start = match.start("prefix") + len(match.group("prefix"))
+        if _line_leading_binary_plus(source, edit_start):
+            continue
         edit_end = match.start("expr")
         edits.append(TextEdit(edit_start, edit_end, ""))
         fixes.append(Fix("VY230", line_number(source, start), "removed disabled unary plus", "+", ""))
     return apply_edits(source, edits), fixes
+
+
+def _line_leading_binary_plus(source: str, plus_index: int) -> bool:
+    line_start = source.rfind("\n", 0, plus_index) + 1
+    if source[line_start:plus_index].strip():
+        return False
+    previous_end = line_start - 1
+    while previous_end > 0:
+        previous_start = source.rfind("\n", 0, previous_end - 1) + 1
+        previous = source[previous_start:previous_end].strip()
+        if previous:
+            previous = previous.rstrip("\\").rstrip()
+            return not previous.endswith(("(", "[", "{", "=", "+", "-", "*", "/", "%", ","))
+        previous_end = previous_start - 1
+    return False
 
 
 def _replace_numeric_not(
