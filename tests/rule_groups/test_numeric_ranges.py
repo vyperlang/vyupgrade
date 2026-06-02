@@ -123,6 +123,56 @@ def f(items: DynArray[address, 10]):
     assert "for item: address in items:" in result.source
 
 
+def test_loop_variable_type_annotation_for_spaced_range_call(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f():
+    for i in range (2, 9999999):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint256 in range (2, 9999999):" in result.source
+
+
+def test_literal_range_loop_uses_narrow_unsigned_body_peer(config) -> None:
+    source = """# @version 0.3.7
+mintingEpoch: uint64
+pools: HashMap[bytes32, HashMap[uint64, uint64]]
+
+@external
+def f(schema: bytes32):
+    for i in range (2, 9999999):
+        if i > self.mintingEpoch:
+            break
+        if self.pools[schema][self.mintingEpoch - i] != 0:
+            pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint64 in range (2, 9999999):" in result.source
+
+
+def test_narrow_unsigned_range_loop_keeps_matching_bound_type(config) -> None:
+    source = """# @version 0.3.7
+mintingEpoch: uint64
+
+@external
+def f():
+    unempty_start: uint64 = self.mintingEpoch
+    for i in range (unempty_start, unempty_start + 99999999):
+        if i > self.mintingEpoch - 1:
+            break
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint64 in range (unempty_start, unempty_start + 99999999, bound=99999999):" in result.source
+    assert "convert(unempty_start, uint256)" not in result.source
+
+
 def test_loop_variable_type_annotation_for_self_storage_array(config) -> None:
     source = """# @version 0.3.10
 queue: address[10]

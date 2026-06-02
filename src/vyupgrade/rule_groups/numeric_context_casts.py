@@ -167,11 +167,12 @@ def _unsigned_range_bound_signed_constants(
     edits: list[TextEdit] = []
     constant_values = integer_constant_values(source, config.source_ast)
     for match in re.finditer(
-        r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*uint(?:\d+)?\s+in\s+range\s*\(",
+        r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<loop_type>uint(?:\d+)?)\s+in\s+range\s*\(",
         source,
     ):
         if not span_is_code(mask, match.start(), match.end()):
             continue
+        loop_type = normalize_type(match.group("loop_type"))
         close = find_matching(source, match.end() - 1)
         if close is None:
             continue
@@ -198,6 +199,8 @@ def _unsigned_range_bound_signed_constants(
                 or _is_narrow_unsigned_integer_type(normalized_type)
             ):
                 continue
+            if normalized_type == loop_type:
+                continue
             for name_match in re.finditer(rf"\b{re.escape(name)}\b", args):
                 if not any(
                     start <= name_match.start() and name_match.end() <= end
@@ -208,7 +211,7 @@ def _unsigned_range_bound_signed_constants(
                 end = args_start + name_match.end()
                 if inside_convert_call(source, start) or not span_is_code(mask, start, end):
                     continue
-                replacement = f"convert({name}, uint256)"
+                replacement = f"convert({name}, {loop_type})"
                 edits.append(TextEdit(start, end, replacement))
                 converted = True
                 fixes.append(

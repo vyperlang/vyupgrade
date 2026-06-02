@@ -57,6 +57,10 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
         var_type = _loop_var_type(iterable, vars_for_line, facts)
         if var_type is None:
             continue
+        if var_type == "uint256" and _range_iterable_has_literal_bounds(iterable):
+            var_type = _narrow_unsigned_range_loop_operand_type(
+                source[match.end() :], match.group(2), vars_for_line
+            ) or var_type
         if var_type == "int256" and _range_iterable_has_leading_negative_start(iterable):
             var_type = _negative_range_loop_operand_type(
                 source[match.end() :], match.group(2), vars_for_line
@@ -195,7 +199,7 @@ def _integer_assignment_casts(
 
 
 def _loop_var_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:
-    if iterable.startswith("range("):
+    if re.match(r"range\s*\(", iterable):
         return _range_loop_var_type(iterable, vars_for_line)
     literal_type = _literal_list_element_type(iterable, vars_for_line, facts)
     if literal_type is not None:
@@ -396,6 +400,36 @@ def _range_iterable_has_leading_negative_start(iterable: str) -> bool:
         return _leading_negative_expression(iterable)
     args = split_top_level_args(match.group(1))
     return bool(args and _leading_negative_expression(args[0]))
+
+
+def _range_iterable_has_literal_bounds(iterable: str) -> bool:
+    match = re.match(r"range\s*\((.*)\)\s*$", iterable)
+    if match is None:
+        return False
+    args = split_top_level_args(match.group(1))
+    return bool(args) and all(_literal_integer(arg.strip()) for arg in args)
+
+
+def _narrow_unsigned_range_loop_operand_type(
+    following_source: str, loop_var: str, vars_for_line: dict[str, str]
+) -> str | None:
+    candidate_types: set[str] = set()
+    for name, type_name in vars_for_line.items():
+        normalized = normalize_type(type_name)
+        if not _is_narrow_unsigned_integer_type(normalized):
+            continue
+        name_ref = rf"(?:self\.)?{re.escape(name)}"
+        if re.search(
+            rf"\b(?:{re.escape(loop_var)}\s*(?:[<>]=?|==|!=)\s*{name_ref}|{name_ref}\s*(?:[<>]=?|==|!=)\s*{re.escape(loop_var)}|{name_ref}\s*[-+]\s*{re.escape(loop_var)}|{re.escape(loop_var)}\s*[-+]\s*{name_ref})\b",
+            following_source,
+        ):
+            candidate_types.add(normalized)
+    return next(iter(candidate_types)) if len(candidate_types) == 1 else None
+
+
+def _is_narrow_unsigned_integer_type(type_name: str) -> bool:
+    match = re.fullmatch(r"uint(\d+)", normalize_type(type_name))
+    return match is not None and int(match.group(1)) < 256
 
 
 def _negative_range_loop_operand_type(
