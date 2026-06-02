@@ -601,6 +601,58 @@ def f(pool: address, amount: uint256, i: uint256) -> uint256:
     ) in result.source
 
 
+def test_signed_cast_removed_from_unsigned_subscript_arithmetic(config) -> None:
+    source = """# @version 0.2.16
+MAX_COIN: constant(uint256) = 1
+BASE_N_COINS: constant(uint256) = 2
+
+@external
+def f(i: int128) -> address:
+    base_coins: address[BASE_N_COINS] = empty(address[BASE_N_COINS])
+    return base_coins[i - convert(MAX_COIN, int128)]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "base_coins[convert(i, uint256) - MAX_COIN]" in result.source
+
+
+def test_signed_literal_cast_removed_from_unsigned_subscript_arithmetic(config) -> None:
+    source = """# @version 0.2.16
+MAX_DISCOUNTS: constant(int8) = 10
+
+struct Discount:
+    duration: uint256
+
+discounts: Discount[MAX_DISCOUNTS]
+
+@external
+def f():
+    for i in range(MAX_DISCOUNTS):
+        self.discounts[i] = self.discounts[i - convert(1, int8)]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.discounts[convert(i, uint256) - 1]" in result.source
+
+
+def test_unsigned_expression_cast_removed_from_unsigned_subscript_arithmetic(config) -> None:
+    source = """# @version 0.3.10
+META_N_COINS: constant(uint256) = 2
+MAX_COINS: constant(uint256) = 8
+
+@external
+def f(i: int128) -> address:
+    base_coins: DynArray[address, MAX_COINS] = empty(DynArray[address, MAX_COINS])
+    return base_coins[i - convert(META_N_COINS - 1, int128)]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "base_coins[convert(i, uint256) - (META_N_COINS - 1)]" in result.source
+
+
 def test_signed_constant_casted_in_unsigned_subscript_arithmetic(config) -> None:
     source = """# @version 0.2.16
 N_COINS: constant(int128) = 2
@@ -616,6 +668,49 @@ def f(i: uint256, dx: uint256) -> uint256[N_STABLECOINS]:
     result = apply_rules(source, config())
 
     assert "amounts[i - (convert(N_COINS, uint256) - 1)] = dx" in result.source
+
+
+def test_unsigned_local_converted_inside_signed_external_arg_expression(config) -> None:
+    source = """# @version 0.2.16
+interface CurvePool:
+    def balances(i: int128) -> uint256: view
+
+MAX_COINS: constant(int128) = 8
+
+@external
+def f(pool: address, base_coin_idx: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(MAX_COINS):
+        total += CurvePool(pool).balances(convert(i - base_coin_idx, int128))
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "staticcall CurvePool(pool).balances((i - convert(base_coin_idx, int128)))"
+        in result.source
+    )
+
+
+def test_unsigned_constant_converted_in_signed_external_arg_expression(config) -> None:
+    source = """# @version 0.3.10
+interface StableSwap:
+    def calc_withdraw_one_coin(token_amount: uint256, i: int128) -> uint256: view
+
+META_N_COINS: constant(uint256) = 2
+
+@external
+def f(pool: address, amount: uint256) -> uint256:
+    return StableSwap(pool).calc_withdraw_one_coin(amount, META_N_COINS - 1)
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "staticcall StableSwap(pool).calc_withdraw_one_coin("
+        "amount, convert(META_N_COINS, int128) - 1)"
+    ) in result.source
 
 
 def test_signed_loop_index_casted_in_unsigned_subscript_arithmetic(config) -> None:

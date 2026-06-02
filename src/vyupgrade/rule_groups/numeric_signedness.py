@@ -204,6 +204,9 @@ def _mixed_signed_unsigned_arithmetic(
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
                 end = start + len(name)
+                call_target = _signed_external_call_arg_target_type(
+                    source, start, name, facts, vars_for_line
+                )
                 if (
                     _inside_attribute_access(source, start, end)
                     or _inside_dict_key(source, start, end)
@@ -212,8 +215,8 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
-                    or _is_unsigned_integer_type(lhs_type)
-                    or _unsigned_internal_call_arg_context(source, start, facts)
+                    or (_is_unsigned_integer_type(lhs_type) and call_target is None)
+                    or (_unsigned_internal_call_arg_context(source, start, facts) and call_target is None)
                 ):
                     continue
                 local_expr = _local_expression(source, start)
@@ -231,7 +234,7 @@ def _mixed_signed_unsigned_arithmetic(
                 division_target = _unsigned_name_signed_division_target_type(
                     local_expr, name, vars_for_line, facts
                 )
-                target_type = comparison_target or arithmetic_target or division_target
+                target_type = comparison_target or call_target or arithmetic_target or division_target
                 if target_type is None:
                     continue
                 literal = _signed_division_unsigned_constant_literal(
@@ -264,6 +267,19 @@ def _mixed_signed_unsigned_arithmetic(
             continue
         line_no = line_number(source, match.start())
         vars_for_line = facts.vars_at_line(line_no)
+        mixed_edits, mixed_fixes = _signed_convert_mixed_integer_casts(
+            source,
+            expr,
+            match.start(),
+            close + 1,
+            match.end() + expr_start,
+            target_type,
+            line_no,
+            vars_for_line,
+            facts,
+        )
+        edits.extend(mixed_edits)
+        fixes.extend(mixed_fixes)
         if not _has_unsigned_context(expr, vars_for_line):
             continue
         absolute_expr_start = match.end() + expr_start
@@ -296,6 +312,11 @@ def _mixed_signed_unsigned_arithmetic(
     max_value_edits, max_value_fixes = _max_value_comparison_casts(source, facts, mask)
     edits.extend(max_value_edits)
     fixes.extend(max_value_fixes)
+    subscript_convert_edits, subscript_convert_fixes = _unsigned_subscript_signed_convert_casts(
+        source, facts, mask
+    )
+    edits.extend(subscript_convert_edits)
+    fixes.extend(subscript_convert_fixes)
     for bracket in re.finditer(r"\[", source):
         if not span_is_code(mask, bracket.start(), bracket.end()):
             continue
@@ -377,6 +398,130 @@ def _max_value_comparison_casts(
             )
         )
     return edits, fixes
+
+
+def _unsigned_subscript_signed_convert_casts(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> tuple[list[TextEdit], list[Fix]]:
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    for bracket in re.finditer(r"\[", source):
+        if not span_is_code(mask, bracket.start(), bracket.end()):
+            continue
+        close = find_matching(source, bracket.start(), "[", "]")
+        if close is None:
+            continue
+        line_no = line_number(source, bracket.start())
+        vars_for_line = facts.vars_at_line(line_no)
+        if not _subscript_index_expects_unsigned(source, bracket.start(), vars_for_line):
+            continue
+        expr_start = bracket.end()
+        expr = source[expr_start:close]
+        for match in re.finditer(r"\bconvert\s*\(", expr):
+            absolute_start = expr_start + match.start()
+            absolute_open = expr_start + match.end() - 1
+            absolute_close = find_matching(source, absolute_open)
+            if absolute_close is None or absolute_close > close:
+                continue
+            arg_spans = split_top_level_arg_spans(source[absolute_open + 1 : absolute_close])
+            if arg_spans is None or len(arg_spans) != 2:
+                continue
+            inner_start, inner_end, inner = arg_spans[0]
+            _target_start, _target_end, target_type = arg_spans[1]
+            if not _is_signed_integer_type(target_type):
+                continue
+            if not _is_unsigned_integer_expression(inner, vars_for_line, facts):
+                continue
+            replacement = source[absolute_open + 1 + inner_start : absolute_open + 1 + inner_end]
+            if re.search(r"[-+*/%]", replacement):
+                replacement = f"({replacement})"
+            before = source[absolute_start : absolute_close + 1]
+            edits.append(TextEdit(absolute_start, absolute_close + 1, replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_no,
+                    "removed signed cast from unsigned array index arithmetic",
+                    before,
+                    replacement,
+                )
+            )
+    return edits, fixes
+
+
+def _nonnegative_integer_literal(expr: str) -> bool:
+    return re.fullmatch(r"(?:0|[1-9][0-9_]*)", expr) is not None
+
+
+def _is_unsigned_integer_expression(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> bool:
+    expr = expr.strip()
+    if _is_unsigned_integer_type(infer_expr_type(expr, vars_for_line, facts)):
+        return True
+    if _nonnegative_integer_literal(expr):
+        return True
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*[-+*]\s*(?:[A-Za-z_][A-Za-z0-9_]*|[0-9][0-9_]*))*", expr):
+        return False
+    identifiers = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr)
+    if not identifiers:
+        return False
+    return all(_is_unsigned_integer_type(infer_expr_type(name, vars_for_line, facts)) for name in identifiers)
+
+
+def _signed_convert_mixed_integer_casts(
+    source: str,
+    expr: str,
+    convert_start: int,
+    convert_end: int,
+    expr_start: int,
+    target_type: str,
+    line_no: int,
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
+) -> tuple[list[TextEdit], list[Fix]]:
+    if not _expression_has_signed_integer(expr, vars_for_line, facts):
+        return [], []
+    replacements: list[tuple[int, int, str, str]] = []
+    for name, type_name in sorted(vars_for_line.items(), key=lambda item: len(item[0]), reverse=True):
+        if not _is_unsigned_integer_type(type_name):
+            continue
+        for match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+            start = expr_start + match.start()
+            end = expr_start + match.end()
+            if _inside_nested_convert_call(source, start, expr_start - 1) or _inside_type_subscript(
+                source, start
+            ):
+                continue
+            replacement = f"convert({name}, {normalize_type(target_type)})"
+            replacements.append((match.start(), match.end(), name, replacement))
+    if not replacements:
+        return [], []
+    new_expr = expr
+    for start, end, _name, replacement in sorted(replacements, reverse=True):
+        new_expr = new_expr[:start] + replacement + new_expr[end:]
+    outer_replacement = f"({new_expr})" if re.search(r"[-+*/%<>=|&]", new_expr) else new_expr
+    fixes = [
+        Fix(
+            "VY052",
+            line_no,
+            "converted unsigned operand inside signed integer cast",
+            source[convert_start:convert_end],
+            outer_replacement,
+        )
+    ]
+    return [TextEdit(convert_start, convert_end, outer_replacement)], fixes
+
+
+def _expression_has_signed_integer(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> bool:
+    for name in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr):
+        if name not in facts.global_vars and _is_signed_integer_type(
+            infer_expr_type(name, vars_for_line, facts)
+        ):
+            return True
+    return False
 
 
 def _signed_name_has_unsigned_context(
@@ -700,7 +845,7 @@ def _external_call_arg_expected_type(
         arg_index is None
         or args is None
         or arg_index >= len(args)
-        or args[arg_index].strip() != arg
+        or re.search(rf"\b{re.escape(arg)}\b", args[arg_index]) is None
     ):
         return None
     prefix = source[line_start:open_index]
