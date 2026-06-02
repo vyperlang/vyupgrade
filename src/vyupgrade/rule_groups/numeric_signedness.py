@@ -65,6 +65,28 @@ def _mixed_signed_unsigned_arithmetic(
         rhs_offset = _expression_start_offset(code_line)
         rhs_start = offset + rhs_offset
         rhs = code_line[rhs_offset:]
+        signed_max_assignment = re.fullmatch(
+            r"(?P<prefix>\s*)max_value\s*\(\s*(?P<type>int\d+)\s*\)(?P<suffix>\s*)", rhs
+        )
+        if signed_max_assignment is not None and _is_unsigned_integer_type(lhs_type):
+            replacement = (
+                f"{signed_max_assignment.group('prefix')}"
+                f"convert(max_value({signed_max_assignment.group('type')}), "
+                f"{normalize_type(lhs_type or 'uint256')})"
+                f"{signed_max_assignment.group('suffix')}"
+            )
+            edits.append(TextEdit(rhs_start, rhs_start + len(rhs), replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_no,
+                    "converted signed max_value assigned to unsigned integer",
+                    rhs,
+                    replacement,
+                )
+            )
+            offset += len(raw_line)
+            continue
         negative_assignment = re.fullmatch(
             r"(?P<prefix>\s*)\(?\s*-\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)?(?P<suffix>\s*)", rhs
         )
@@ -375,7 +397,7 @@ def _max_value_comparison_casts(
     comparison_re = re.compile(
         r"(?P<left>len\s*\([^()\n]*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
         r"(?P<space_left>\s*)(?P<op>==|!=|<=|>=|<|>)(?P<space_right>\s*)"
-        r"(?P<right>max_value\s*\(\s*(?P<type>uint\d+)\s*\))"
+        r"(?P<right>max_value\s*\(\s*(?P<type>u?int\d+)\s*\))"
     )
     for match in comparison_re.finditer(source):
         if not span_is_code(mask, match.start(), match.end()):
@@ -383,7 +405,11 @@ def _max_value_comparison_casts(
         vars_for_line = facts.vars_at_line(line_number(source, match.start()))
         left_type = normalize_type(infer_expr_type(match.group("left"), vars_for_line, facts) or "")
         right_type = normalize_type(match.group("type"))
-        if not (_is_unsigned_integer_type(left_type) and left_type != right_type):
+        if not (
+            _is_unsigned_integer_type(left_type)
+            and (_is_unsigned_integer_type(right_type) or _is_signed_integer_type(right_type))
+            and left_type != right_type
+        ):
             continue
         before = match.group("right")
         after = f"convert({before}, {left_type})"
