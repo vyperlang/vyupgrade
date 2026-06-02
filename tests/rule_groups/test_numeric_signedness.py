@@ -253,6 +253,55 @@ def f(n_coins: uint256) -> int128:
     assert "if convert(k, uint256) >= convert(n_coins, int128):" not in result.source
 
 
+def test_signed_loop_comparison_removes_unsigned_subscript_cast(config) -> None:
+    source = """# @version 0.3.10
+MAX_LONGABLES: constant(int128) = 10
+
+@external
+def f(values: DynArray[address, 10]):
+    num_longables: uint256 = len(values)
+    for i in range(MAX_LONGABLES):
+        value: address = values[i]
+        if i == convert(num_longables, int128) - 1:
+            break
+"""
+
+    result = apply_rules(source, config())
+
+    assert "value: address = values[convert(i, uint256)]" in result.source
+    assert "if i == convert(num_longables, int128) - 1:" in result.source
+    assert "if convert(i, uint256) == convert(num_longables, int128) - 1:" not in result.source
+
+
+def test_unsigned_external_call_argument_not_cast_to_signed_assignment_lhs(config) -> None:
+    source = """# @version 0.3.10
+interface VotingEscrow:
+    def slope_changes(_ts: uint256) -> int128: view
+
+struct Point:
+    ts: uint256
+
+WEEK: constant(uint256) = 86400 * 7
+VOTING_ESCROW: constant(address) = 0x0000000000000000000000000000000000000001
+
+@external
+def f(point_history: Point):
+    start_time: uint256 = WEEK + (point_history.ts / WEEK) * WEEK
+    slope_changes: int128[12] = empty(int128[12])
+    for i in range(12):
+        slope_changes[i] = VotingEscrow(VOTING_ESCROW).slope_changes(start_time + WEEK * i)
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "slope_changes[i] = staticcall VotingEscrow(VOTING_ESCROW).slope_changes("
+        "start_time + WEEK * i)"
+    ) in result.source
+    assert "convert(WEEK, int128)" not in result.source
+    assert "convert(i, int128)" not in result.source
+
+
 def test_unsigned_loop_variable_converted_against_signed_cast(config) -> None:
     source = """# @version 0.3.10
 BASE_N_COINS: constant(int128) = 2

@@ -190,6 +190,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or inside_convert_call(source, start)
                     or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
+                    or _unsigned_external_call_arg_context(source, start, name, facts, vars_for_line)
                 ):
                     continue
                 loop_type = normalize_type(
@@ -256,6 +257,10 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_type_subscript(source, start)
                     or (_is_unsigned_integer_type(lhs_type) and call_target is None)
                     or (_unsigned_internal_call_arg_context(source, start, facts) and call_target is None)
+                    or (
+                        _unsigned_external_call_arg_context(source, start, name, facts, vars_for_line)
+                        and call_target is None
+                    )
                 ):
                     continue
                 local_expr = _local_expression(source, start)
@@ -420,10 +425,14 @@ def _mixed_signed_unsigned_arithmetic(
                 )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     current = apply_edits(source, selected_edits)
+    cleanup_edits, cleanup_fixes = _signed_loop_comparison_convert_cleanup(
+        current, parse_source_facts(current), code_mask(current)
+    )
+    current = apply_edits(current, cleanup_edits)
     return_edits, return_fixes = _signed_return_unsigned_unsafe_shift_casts(
         current, parse_source_facts(current), code_mask(current)
     )
-    return apply_edits(current, return_edits), selected_fixes + return_fixes, []
+    return apply_edits(current, return_edits), selected_fixes + cleanup_fixes + return_fixes, []
 
 
 def _max_value_comparison_casts(
@@ -461,6 +470,83 @@ def _max_value_comparison_casts(
             )
         )
     return edits, fixes
+
+
+def _signed_loop_comparison_convert_cleanup(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> tuple[list[TextEdit], list[Fix]]:
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    for match in re.finditer(r"\bconvert\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        close = find_matching(source, match.end() - 1)
+        if close is None:
+            continue
+        args = split_top_level_arg_spans(source[match.end() : close])
+        if args is None or len(args) != 2:
+            continue
+        _name_start, _name_end, name = args[0]
+        _target_start, _target_end, target_type = args[1]
+        name = name.strip()
+        if (
+            target_type.strip() != "uint256"
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            or not span_is_code(mask, match.start(), close + 1)
+        ):
+            continue
+        line_no = line_number(source, match.start())
+        if name not in facts.loop_vars_at_line(line_no):
+            continue
+        vars_for_line = facts.vars_at_line(line_no)
+        loop_type = _nearest_loop_var_type(source, match.start(), name) or vars_for_line.get(name)
+        if not _is_signed_integer_type(loop_type):
+            continue
+        converted = source[match.start() : close + 1]
+        peer = _comparison_peer_for_expression(_comparison_expression_at(source, match.start()), converted)
+        if peer is None or not _expression_is_signed_integer(peer, vars_for_line, facts):
+            continue
+        edits.append(TextEdit(match.start(), close + 1, name))
+        fixes.append(
+            Fix(
+                "VY052",
+                line_no,
+                "removed unsigned cast from signed loop comparison",
+                converted,
+                name,
+            )
+        )
+    return edits, fixes
+
+
+def _comparison_peer_for_expression(expr: str, target: str) -> str | None:
+    expr = expr.strip().removesuffix(":").strip()
+    expr = re.sub(r"^(?:if|elif|assert|return)\s+", "", expr)
+    for separator in (" and ", " or "):
+        if separator in expr:
+            for part in expr.split(separator):
+                if target in part:
+                    peer = _comparison_peer_for_expression(part, target)
+                    if peer is not None:
+                        return peer
+    match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
+    if match is None:
+        return None
+    left, _op, right = (part.strip() for part in match.groups())
+    if left == target:
+        return right
+    if right == target:
+        return left
+    return None
+
+
+def _expression_is_signed_integer(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> bool:
+    inferred = infer_expr_type(expr, vars_for_line, facts)
+    if _is_signed_integer_type(inferred):
+        return True
+    return bool(re.search(r"\bconvert\s*\([^,\n]+,\s*int\d*\s*\)", expr))
 
 
 def _narrow_unsigned_comparison_arithmetic_casts(
@@ -1094,6 +1180,13 @@ def _unsigned_internal_call_arg_context(source: str, index: int, facts: SourceFa
         target_type = list(params.values())[arg_index]
         return _is_unsigned_integer_type(target_type)
     return False
+
+
+def _unsigned_external_call_arg_context(
+    source: str, index: int, name: str, facts: SourceFacts, vars_for_line: dict[str, str]
+) -> bool:
+    target_type = _external_call_arg_expected_type(source, index, name, facts, vars_for_line)
+    return _is_unsigned_integer_type(target_type)
 
 
 def _signed_external_call_arg_target_type(
