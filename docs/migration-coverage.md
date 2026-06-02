@@ -134,6 +134,9 @@ modern Python interpreter.
 - Unreachable code validation is stricter: `VY092` removes code in a block
   after unconditional terminators and after exhaustive terminating if-chains.
 - `_abi_encode` and `_abi_decode` renamed: `VY010` and `VY011`.
+- Memory `DynArray` allocations cannot use effectively unbounded
+  `max_value(int128)` lengths: `VY094` caps that legacy idiom at
+  `max_value(uint32)` and applies the same cap to matching range loops.
 - `@internal` became optional: no-op. Existing `@internal` source remains valid.
 - External calls require keywords: `VY040` adds `extcall`; `VY041` adds
   `staticcall`. `VY042` parenthesizes keyworded calls before subscripting.

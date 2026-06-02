@@ -85,6 +85,29 @@ def read_flag() -> bool:
     assert any(fix.rule == "VY093" for fix in result.fixes)
 
 
+def test_unbounded_dynarray_int128_limit_is_capped(config) -> None:
+    source = """# @version 0.3.6
+struct Pair:
+    token: address
+
+@external
+@view
+def pairs() -> DynArray[Pair, max_value(int128)]:
+    all: DynArray[Pair, max_value(int128)] = []
+    for index in range(max_value(int128)):
+        if index > 10:
+            break
+    return all
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "def pairs() -> DynArray[Pair, max_value(uint32)]:" in result.source
+    assert "all: DynArray[Pair, max_value(uint32)] = []" in result.source
+    assert "for index: uint32 in range(max_value(uint32)):" in result.source
+    assert any(fix.rule == "VY094" for fix in result.fixes)
+
+
 def test_unreachable_code_after_return_is_removed(config) -> None:
     source = """# @version 0.3.10
 @external

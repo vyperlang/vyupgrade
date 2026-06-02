@@ -295,6 +295,68 @@ def _reserved_flag_storage(rule_context: RuleContext) -> tuple[str, list[Fix], l
     return apply_edits(source, edits), fixes, []
 
 
+def _unbounded_dynarray_limits(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    mask = rule_context.code_mask
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    for match in re.finditer(r"\bDynArray\s*\[[^\n\]]+,\s*max_value\s*\(\s*int128\s*\)\s*\]", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        bound = re.search(r"max_value\s*\(\s*int128\s*\)", match.group(0))
+        if bound is None:
+            continue
+        start = match.start() + bound.start()
+        end = match.start() + bound.end()
+        edits.append(TextEdit(start, end, "max_value(uint32)"))
+        fixes.append(
+            Fix(
+                "VY094",
+                line_number(source, start),
+                "bounded legacy unbounded DynArray length",
+                source[start:end],
+                "max_value(uint32)",
+            )
+        )
+    if edits:
+        for match in re.finditer(r"\brange\s*\(\s*max_value\s*\(\s*int128\s*\)\s*\)", source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            bound = re.search(r"max_value\s*\(\s*int128\s*\)", match.group(0))
+            if bound is None:
+                continue
+            start = match.start() + bound.start()
+            end = match.start() + bound.end()
+            edits.append(TextEdit(start, end, "max_value(uint32)"))
+            fixes.append(
+                Fix(
+                    "VY094",
+                    line_number(source, start),
+                    "bounded legacy unbounded range",
+                    source[start:end],
+                    "max_value(uint32)",
+                )
+            )
+        for match in re.finditer(
+            r"\bfor\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*int128\s+in\s+range\s*\(\s*max_value\s*\(\s*int128\s*\)\s*\)",
+            source,
+        ):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            type_start = source.find("int128", match.start(), match.end())
+            edits.append(TextEdit(type_start, type_start + len("int128"), "uint32"))
+            fixes.append(
+                Fix(
+                    "VY094",
+                    line_number(source, match.start()),
+                    "changed legacy unbounded range loop type",
+                    "int128",
+                    "uint32",
+                )
+            )
+    return apply_edits(source, edits), fixes, []
+
+
 def _first_top_level_function_offset(source: str) -> int:
     offset = 0
     pending_decorator = 0
@@ -919,6 +981,7 @@ POST_NUMERIC_RULES = (
     Rule("max_value_storage_arrays", runner=_max_value_storage_arrays, changes=(crossing("VY091", (0, 4, 0)),)),
     Rule("unreachable_code", runner=_unreachable_code, changes=(crossing("VY092", (0, 4, 0)),)),
     Rule("reserved_flag_storage", runner=_reserved_flag_storage, changes=(crossing("VY093", (0, 3, 4)),)),
+    Rule("unbounded_dynarray_limits", runner=_unbounded_dynarray_limits, changes=(crossing("VY094", (0, 4, 0)),)),
     Rule(
         "nonreentrant",
         runner=_nonreentrant,
