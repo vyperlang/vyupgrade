@@ -746,7 +746,7 @@ def _strip_abi_metadata(value: object) -> object:
         return {
             key: _canonical_abi_value(key, item, value)
             for key, item in sorted(value.items())
-            if key not in {"gas"}
+            if key not in {"gas", "internalType"}
             and not (key == "name" and item == "")
             and not (value.get("type") == "constructor" and key == "outputs")
             and not (key == "components" and _is_tuple_abi_type(value.get("type")))

@@ -1126,7 +1126,7 @@ def test_compare_artifacts_normalizes_legacy_abi_type_spellings() -> None:
                     "name": "getAverageRating",
                     "stateMutability": "view",
                     "inputs": [{"name": "target", "type": "address"}],
-                    "outputs": [{"name": "", "type": "int168"}],
+                    "outputs": [{"name": "", "type": "int168", "internalType": "decimal"}],
                 },
                 {
                     "type": "function",
