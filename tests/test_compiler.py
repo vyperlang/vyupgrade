@@ -1256,6 +1256,11 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                     "slot": 6,
                     "type": "HashMap[address, HashMap[uint256, uint256][uint256, uint256]][address, HashMap[uint256, uint256][uint256, uint256]]",
                 },
+                "tokens": {
+                    "location": "storage",
+                    "slot": 7,
+                    "type": "DynArray[ERC20, 255]",
+                },
             }
         },
     )
@@ -1286,6 +1291,11 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                         "slot": 6,
                         "type": "HashMap[address, HashMap[uint256, uint256]]",
                         "n_slots": 1,
+                    },
+                    "tokens": {
+                        "slot": 7,
+                        "type": "DynArray[/tmp/site-packages/vyper/builtins/interfaces/IERC20.vyi, 255]",
+                        "n_slots": 256,
                     },
                 },
                 "transient_storage_layout": {

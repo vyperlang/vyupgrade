@@ -860,16 +860,27 @@ def _normalize_layout_entries(
 
 
 def _canonical_storage_type(type_name: str) -> str:
-    type_name = type_name.rsplit("/", 1)[-1]
-    type_name = type_name.removesuffix(".vyi")
+    type_name = _strip_storage_type_paths(type_name)
     type_name = type_name.replace("interface ", "")
     type_name = type_name.replace(" declaration object", "")
     type_name = re.sub(r"\benum ([A-Za-z_][A-Za-z0-9_]*)\([^][]*\)", r"\1", type_name)
     type_name = _canonical_max_value_arrays(type_name)
     type_name = _strip_legacy_hashmap_storage_suffixes(type_name)
-    if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
-        return type_name[1:]
+    type_name = re.sub(
+        r"\bI(ERC20Detailed|ERC4626|ERC20|ERC721|ERC1155|ERC165)\b",
+        r"\1",
+        type_name,
+    )
     return type_name
+
+
+def _strip_storage_type_paths(type_name: str) -> str:
+    type_name = re.sub(
+        r"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9_.-]+)+/([A-Za-z_][A-Za-z0-9_]*)(?:\.vyi?|\.vy)",
+        r"\1",
+        type_name,
+    )
+    return re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)(?:\.vyi?|\.vy)\b", r"\1", type_name)
 
 
 def _canonical_max_value_arrays(type_name: str) -> str:
