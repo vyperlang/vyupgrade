@@ -395,6 +395,8 @@ modern Python interpreter.
   `create_copy_of()`.
 - Function input name `value` reserved: `VY212` renames legacy inputs and
   updates local references. `VYD211` remains for cases the fixer cannot handle.
+- Builtin names `min_value` and `max_value` reserved: `VY222` renames colliding
+  function-local variables and updates local references.
 - `slice()` start and length must be `uint256`: `VYD212`.
 - `len()` returns `uint256`: `VYD213`.
 - External-call `value=` and `gas=` kwargs must be `uint256`: `VYD214`.

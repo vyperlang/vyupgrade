@@ -369,6 +369,56 @@ def _deposit_for(addr: address, value: uint256):
     assert any(fix.rule == "VY212" for fix in result.fixes)
 
 
+def test_builtin_colliding_max_value_local_is_renamed(config) -> None:
+    source = """# @version 0.3.10
+allowance: HashMap[address, HashMap[address, uint256]]
+
+@external
+def f(_from: address, _value: uint256):
+    _allowance: uint256 = self.allowance[_from][msg.sender]
+    max_value:uint256 = 115792089237316195423570985008687907853269984665640564039457584007913129639935
+    # if _allowance != max_value(uint256):
+    if _allowance != max_value:
+        self.allowance[_from][msg.sender] = _allowance - _value
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "_max_value:uint256 =" in result.source
+    assert "if _allowance != _max_value:" in result.source
+    assert "# if _allowance != max_value(uint256):" in result.source
+    assert any(fix.rule == "VY222" for fix in result.fixes)
+
+
+def test_builtin_colliding_min_and_max_value_locals_are_renamed(config) -> None:
+    source = """# @version 0.3.10
+user_point_epoch: HashMap[address, uint256]
+
+@external
+def f(addr: address, ts: uint256) -> uint256:
+    min_value: uint256 = 0
+    max_value: uint256 = self.user_point_epoch[addr]
+    for i in range(128):
+        if min_value >= max_value:
+            break
+        mid: uint256 = (min_value + max_value + 1) / 2
+        if mid <= ts:
+            min_value = mid
+        else:
+            max_value = mid - 1
+    return min_value
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "_min_value: uint256 = 0" in result.source
+    assert "_max_value: uint256 = self.user_point_epoch[addr]" in result.source
+    assert "if _min_value >= _max_value:" in result.source
+    assert "mid: uint256 = (_min_value + _max_value + 1) // 2" in result.source
+    assert "return _min_value" in result.source
+    assert sum(1 for fix in result.fixes if fix.rule == "VY222") == 2
+
+
 def test_early_beta_syntax_cleanup_rewrites_safe_forms(config) -> None:
     source = """# @version 0.1.0b4
 payload: bytes <= 32

@@ -521,6 +521,57 @@ def _reserved_parameter_names(rule_context: RuleContext) -> tuple[str, list[Fix]
     return apply_edits(source, edits), fixes, []
 
 
+def _reserved_local_names(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    line_offsets = rule_context.line_offsets
+    mask = rule_context.code_mask
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    reserved_names = {"min_value", "max_value"}
+    decl_pattern = re.compile(r"(?m)^[ \t]*(min_value|max_value)[ \t]*:")
+
+    for function_line, vars_for_func in sorted(facts.function_vars.items()):
+        body_start, body_end = _function_body_span(source, line_offsets, facts, function_line)
+        body = source[body_start:body_end]
+        declared_names: dict[str, int] = {}
+        for decl_match in decl_pattern.finditer(body):
+            name = decl_match.group(1)
+            start = body_start + decl_match.start(1)
+            end = body_start + decl_match.end(1)
+            if not span_is_code(mask, start, end):
+                continue
+            declared_names.setdefault(name, start)
+        for name, declaration_start in declared_names.items():
+            taken = set(vars_for_func) | reserved_names
+            replacement = f"_{name}"
+            if replacement in taken:
+                replacement = f"{name}_"
+            for name_match in re.finditer(rf"\b{re.escape(name)}\b", source[declaration_start:body_end]):
+                start = declaration_start + name_match.start()
+                end = declaration_start + name_match.end()
+                if not span_is_code(mask, start, end):
+                    continue
+                if _is_attribute_name(source, start) or _is_keyword_argument_name(source, start, end):
+                    continue
+                next_index = end
+                while next_index < body_end and source[next_index] in " \t":
+                    next_index += 1
+                if next_index < body_end and source[next_index] == "(":
+                    continue
+                edits.append(TextEdit(start, end, replacement))
+            fixes.append(
+                Fix(
+                    "VY222",
+                    line_number(source, declaration_start),
+                    "renamed local variable colliding with builtin",
+                    name,
+                    replacement,
+                )
+            )
+    return apply_edits(source, edits), fixes, []
+
+
 def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     facts = rule_context.facts
@@ -847,6 +898,7 @@ POST_INTERFACE_RULES = (
     ),
     Rule("legacy_dynamic_types", runner=_legacy_dynamic_types, changes=(target_floor("VY207", (0, 2, 1)),)),
     Rule("reserved_parameter_names", runner=_reserved_parameter_names, changes=(target_floor("VY212", (0, 2, 1)),),),
+    Rule("reserved_local_names", runner=_reserved_local_names, changes=(target_floor("VY222", (0, 4, 0)),),),
 )
 
 POST_DIAGNOSTIC_RULES = (
