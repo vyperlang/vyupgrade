@@ -80,6 +80,20 @@ def f(this_week: uint256, to_distribute: uint256, t: uint256, since_last: uint25
     )
 
 
+def test_parenthesized_hashmap_storage_integer_division(config) -> None:
+    source = """# @version 0.2.16
+_balances: (HashMap[address, uint256])
+
+@external
+def f() -> uint256:
+    return self._balances[self] / 2
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return self._balances[self] // 2" in result.source
+
+
 def test_integer_division_inside_storage_subscript(config) -> None:
     source = """# @version 0.3.10
 packed_factory_versions: HashMap[uint256, uint256]
@@ -132,6 +146,30 @@ def f(loan: Loan, rate_mul: uint256) -> (uint256, uint256):
     assert "return (loan.initial_debt * rate_mul // loan.rate_mul, rate_mul)" in result.source
 
 
+def test_nested_struct_attribute_integer_division(config) -> None:
+    source = """# @version 0.3.7
+struct Rental:
+    amount: uint256
+    protocol_fee: uint256
+
+struct Context:
+    active_rental: Rental
+
+@external
+def f(context: Context) -> uint256:
+    rewards: uint256 = 0
+    rewards += context.active_rental.amount * (10000 - context.active_rental.protocol_fee) / 10000
+    return rewards
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "rewards += context.active_rental.amount * "
+        "(10000 - context.active_rental.protocol_fee) // 10000"
+    ) in result.source
+
+
 def test_external_call_integer_division_operand(config) -> None:
     source = """# @version 0.3.7
 interface Pool:
@@ -149,6 +187,48 @@ def f(pool: Pool, asset: uint256, rate: uint256) -> uint256:
         "return staticcall pool.virtual_balance(asset) * rate // staticcall pool.rate(asset)"
         in result.source
     )
+
+
+def test_indexed_external_call_target_integer_division_operand(config) -> None:
+    source = """# @version 0.3.10
+interface Pool:
+    def totalSupply() -> uint256: view
+    def virtual_price() -> uint256: view
+
+@external
+def f(pools: Pool[2], i: uint256) -> uint256:
+    return pools[i].totalSupply() * pools[i].virtual_price() / 10**18
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return staticcall pools[i].totalSupply() * staticcall pools[i].virtual_price() // 10**18"
+        in result.source
+    )
+
+
+def test_casted_external_call_target_integer_division_operand(config) -> None:
+    source = """# @version 0.2.16
+interface Bundle:
+    def getBalance(token: address) -> uint256: view
+    def totalSupply() -> uint256: view
+
+bstable: address
+busd: address
+precision: uint256
+
+@external
+def f(_amountOut: uint256) -> uint256:
+    return (_amountOut * self.precision // Bundle(self.bstable).getBalance(self.busd)) * Bundle(self.bstable).totalSupply() / self.precision
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return (_amountOut * self.precision // staticcall Bundle(self.bstable).getBalance(self.busd)) "
+        "* staticcall Bundle(self.bstable).totalSupply() // self.precision"
+    ) in result.source
 
 
 def test_struct_attribute_external_call_integer_division_operand(config) -> None:
@@ -388,6 +468,67 @@ def claimable(user: address, amount: uint256) -> uint256:
     result = apply_rules(source, config())
 
     assert "return amount * self.votes_used[user] // self.voted" in result.source
+
+
+def test_len_integer_division_operand(config) -> None:
+    source = """# @version 0.2.16
+@external
+def f(values: DynArray[address, 10], threshold: uint256) -> bool:
+    return threshold >= (len(values) / 2) + 1
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return threshold >= (len(values) // 2) + 1" in result.source
+
+
+def test_tuple_return_index_integer_division_operand(config) -> None:
+    source = """# @version 0.2.16
+E18: constant(int256) = 10 ** 18
+
+@internal
+@view
+def _scaling_factor() -> (int256, bool):
+    return 1, False
+
+@internal
+@view
+def _exp(x: int256) -> int256:
+    return x
+
+@external
+@view
+def f(x: int256) -> int256:
+    return self._exp(47 * (self._scaling_factor()[0] * x / E18 - E18) / 10)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self._scaling_factor()[0] * x // E18" in result.source
+    assert "47 * (self._scaling_factor()[0] * x // E18 - E18) // 10" in result.source
+
+
+def test_as_wei_value_integer_division_operand(config) -> None:
+    source = """# @version 0.2.16
+reward_per_token_stored: public(uint256)
+last_update_time: public(uint256)
+reward_rate: public(uint256)
+total_supply: public(uint256)
+
+@internal
+@view
+def _get_last_time_reward_applicable() -> uint256:
+    return block.timestamp
+
+@external
+@view
+def f() -> uint256:
+    return self.reward_per_token_stored + (((self._get_last_time_reward_applicable() - self.last_update_time) * self.reward_rate * as_wei_value(1, "ether")) / self.total_supply)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "* as_wei_value(1, \"ether\")) // self.total_supply" in result.source
 
 
 def test_tab_indented_return_integer_division_uses_function_return_type(config) -> None:

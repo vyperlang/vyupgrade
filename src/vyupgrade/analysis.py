@@ -384,6 +384,14 @@ def indexed_value_type(type_name: str | None) -> str | None:
     if type_name is None:
         return None
     type_name = unwrap_type(type_name)
+    if type_name.startswith("(") and type_name.endswith(")"):
+        parts = split_top_level_args(type_name[1:-1])
+        if not parts:
+            return None
+        if len(parts) == 1:
+            type_name = parts[0].strip()
+        else:
+            return parts[0].strip()
     if type_name.startswith("HashMap[") and type_name.endswith("]"):
         parts = split_top_level_args(type_name.removeprefix("HashMap[").removesuffix("]"))
         if parts and len(parts) == 2:
@@ -428,6 +436,10 @@ def infer_expr_type(
     if bounds_match:
         return bounds_match.group(1)
     if re.fullmatch(r"isqrt\s*\(.+\)", expr, re.DOTALL):
+        return "uint256"
+    if re.fullmatch(r"len\s*\(.+\)", expr, re.DOTALL):
+        return "uint256"
+    if re.fullmatch(r"as_wei_value\s*\(.+\)", expr, re.DOTALL):
         return "uint256"
     empty_match = re.fullmatch(r"empty\s*\(\s*(.+?)\s*\)", expr)
     if empty_match:
@@ -485,7 +497,7 @@ def _infer_external_call_type(
 ) -> str | None:
     expr = re.sub(r"^(?:staticcall|extcall)\s+", "", expr.strip())
     match = re.fullmatch(
-        r"(?:(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\(.+\)|(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)",
+        r"(?:(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\(.+\)|(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])*(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])*)*))\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)",
         expr,
         re.DOTALL,
     )
@@ -649,6 +661,9 @@ def _unwrap_public_or_constant(type_name: str, known_types: set[str] | None = No
 
 
 def _looks_like_type(type_name: str, known_types: set[str]) -> bool:
+    if type_name.startswith("(") and type_name.endswith(")"):
+        parts = split_top_level_args(type_name[1:-1])
+        return len(parts or []) == 1 and _looks_like_type(parts[0].strip(), known_types)
     if TYPE_WRAPPER_RE.fullmatch(type_name):
         return True
     if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):

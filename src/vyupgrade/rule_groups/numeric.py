@@ -183,6 +183,9 @@ def _read_left_operand(source: str, index: int) -> str:
         open_index = _find_matching_open(source, i)
         if open_index is not None:
             start = _read_indexed_expression_start(source, open_index)
+            if start < open_index and source[start] == ".":
+                target = _read_left_operand(source, start)
+                return f"{target}{source[start : i + 1]}"
             if start < open_index:
                 return source[start : i + 1]
             return source[open_index : i + 1]
@@ -270,7 +273,9 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
             continue
         if token in {
             "convert",
+            "as_wei_value",
             "isqrt",
+            "len",
             "max",
             "min",
             "pow_mod256",
@@ -279,6 +284,9 @@ def _integerish_expression(expr: str, vars_for_line: dict[str, str], facts=None)
             "unsafe_mul",
             "unsafe_sub",
         }:
+            typed = True
+            continue
+        if facts is not None and is_integer_type(facts.function_return_names.get(token)):
             typed = True
             continue
         token_type = vars_for_line.get(token)
@@ -297,10 +305,11 @@ def _replace_integerish_subexpressions(expr: str, vars_for_line: dict[str, str],
     edits: list[TextEdit] = []
     for pattern in [
         r"\bisqrt\s*\(",
-        r"(?:staticcall|extcall)\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
+        r"\blen\s*\(",
+        r"(?:staticcall|extcall)\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)*)\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
         r"(?<!\.)\b(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\s*\(",
         r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])+(?:\.[A-Za-z_][A-Za-z0-9_]*)?",
-        r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*",
+        r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)+",
     ]:
         for match in re.finditer(pattern, expr):
             end = match.end()
@@ -308,6 +317,11 @@ def _replace_integerish_subexpressions(expr: str, vars_for_line: dict[str, str],
                 close = find_matching(expr, end - 1)
                 if close is None:
                     continue
+                end = close + 1
+            while end < len(expr) and expr[end] == "[":
+                close = find_matching(expr, end, open_char="[", close_char="]")
+                if close is None:
+                    break
                 end = close + 1
             candidate = expr[match.start() : end]
             if is_integer_type(infer_expr_type(candidate, vars_for_line, facts)):
