@@ -41,17 +41,17 @@ def _remove_unary_plus(source: str) -> tuple[str, list[Fix]]:
     edits: list[TextEdit] = []
     mask = code_mask(source)
     pattern = re.compile(
-        r"(?P<prefix>(?:^|[=(,\[\{]\s*))\+(?P<expr>[A-Za-z_][A-Za-z0-9_.]*)",
+        r"(?P<prefix>(?:^|[=(,\[\{+\-*/%]|[+\-*/%]?=)\s*)\+\s*(?P<expr>[A-Za-z_][A-Za-z0-9_.]*)",
         re.MULTILINE,
     )
     for match in pattern.finditer(source):
         start = match.start("expr") - 1
         if not span_is_code(mask, start, match.end("expr")):
             continue
-        edits.append(TextEdit(start, start + 1, ""))
-        fixes.append(
-            Fix("VY230", line_number(source, start), "removed disabled unary plus", "+", "")
-        )
+        edit_start = match.start("prefix") + len(match.group("prefix"))
+        edit_end = match.start("expr")
+        edits.append(TextEdit(edit_start, edit_end, ""))
+        fixes.append(Fix("VY230", line_number(source, start), "removed disabled unary plus", "+", ""))
     return apply_edits(source, edits), fixes
 
 

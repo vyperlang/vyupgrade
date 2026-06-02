@@ -35,6 +35,21 @@ def f(amount: uint256, ok: bool) -> bool:
     assert {fix.rule for fix in result.fixes} >= {"VY230", "VY231"}
 
 
+def test_unary_plus_after_augmented_assignment_is_rewritten(config) -> None:
+    source = """# @version 0.3.7
+liquidity: uint256
+
+@external
+def f(new_balance: uint256):
+    self.liquidity += + new_balance
+"""
+
+    result = apply_rules(source, config(target_version="0.3.8"))
+
+    assert "self.liquidity += new_balance" in result.source
+    assert any(fix.rule == "VY230" for fix in result.fixes)
+
+
 def test_numeric_not_unknown_type_is_diagnostic_only(config) -> None:
     source = """# @version 0.3.7
 @external
