@@ -180,9 +180,13 @@ def _mixed_signed_unsigned_arithmetic(
             for match in re.finditer(rf"\b{re.escape(name)}\b", rhs):
                 start = rhs_start + match.start()
                 end = start + len(name)
+                subscript_target = _signed_subscript_key_target_type(
+                    source, start, name, vars_for_line, facts
+                )
                 if (
                     _inside_attribute_access(source, start, end)
                     or _inside_dict_key(source, start, end)
+                    or (_inside_subscript(source, start) and subscript_target is None)
                     or inside_convert_call(source, start)
                     or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
@@ -192,11 +196,14 @@ def _mixed_signed_unsigned_arithmetic(
                     _signed_comparison_target_type(
                         _comparison_expression_at(source, start), name, vars_for_line
                     )
+                    or _unsigned_name_signed_arithmetic_target_type(
+                        _local_expression(source, start), name, lhs_type, vars_for_line, facts
+                    )
                     or _signed_internal_call_arg_target_type(source, start, name, facts)
                     or _signed_external_call_arg_target_type(
                         source, start, name, facts, vars_for_line
                     )
-                    or _signed_subscript_key_target_type(source, start, name, vars_for_line, facts)
+                    or subscript_target
                 )
                 if target_type is None:
                     continue
@@ -1207,6 +1214,15 @@ def _inside_array_subscript(source: str, index: int, vars_for_line: dict[str, st
     if root is None:
         return False
     return _subscript_expects_unsigned(root, vars_for_line)
+
+
+def _inside_subscript(source: str, index: int) -> bool:
+    line_start = source.rfind("\n", 0, index) + 1
+    open_index = source.rfind("[", line_start, index)
+    if open_index == -1:
+        return False
+    close_index = find_matching(source, open_index, "[", "]")
+    return close_index is not None and open_index < index < close_index
 
 
 def _subscript_index_expects_unsigned(

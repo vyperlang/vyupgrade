@@ -993,3 +993,19 @@ def f() -> int256:
 
     assert "for i: uint256 in range(8):" in result.source
     assert "ret = convert(i, int256)" in result.source
+
+
+def test_unsigned_loop_augmented_division_in_signed_local_is_converted(config) -> None:
+    source = """# pragma version 0.3.10
+@internal
+def f(x: int256) -> int256:
+    term: int256 = x
+    for i in range(1, 50):
+        term //= (i + 1)
+    return term
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "for i: uint256 in range(1, 50):" in result.source
+    assert "term //= (convert(i, int256) + 1)" in result.source
