@@ -258,6 +258,8 @@ modern Python interpreter.
 
 - `enum` custom type added: no-op for migrations into `0.3.4`; `VY030` handles
   the later `0.4.0` `enum` to `flag` migration.
+- `flag` became a reserved declaration keyword: `VY093` renames a legacy
+  public storage variable named `flag` and adds a getter preserving `flag()`.
 - `_abi_decode()` added: no-op for `0.3.4`; `VY011` handles the later `0.4.0`
   rename to `abi_decode`.
 - `create_from_blueprint()` and `create_copy_of()` added: no-op for `0.3.4`;

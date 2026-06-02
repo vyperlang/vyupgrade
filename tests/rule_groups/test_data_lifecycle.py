@@ -61,6 +61,30 @@ def f(idx: uint256, gauge: address):
     assert any(fix.rule == "VY091" for fix in result.fixes)
 
 
+def test_reserved_flag_public_storage_gets_backing_variable_and_getter(config) -> None:
+    source = """# @version 0.2.12
+flag: public(bool)
+amount: public(uint256)
+
+@external
+def set_flag():
+    self.flag = True
+
+@external
+def read_flag() -> bool:
+    return self.flag
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "_flag: bool" in result.source
+    assert "flag: public(bool)" not in result.source
+    assert "def flag() -> bool:" in result.source
+    assert "return self._flag" in result.source
+    assert "self.flag" not in result.source
+    assert any(fix.rule == "VY093" for fix in result.fixes)
+
+
 def test_unreachable_code_after_return_is_removed(config) -> None:
     source = """# @version 0.3.10
 @external

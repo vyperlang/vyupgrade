@@ -249,6 +249,68 @@ def _max_value_array_type_to_hashmap(type_expr: str) -> str | None:
     return f"HashMap[uint256, {element}]"
 
 
+def _reserved_flag_storage(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    mask = rule_context.code_mask
+    declaration = re.search(
+        r"^flag\s*:\s*public\s*\(\s*(?P<type>[^)\n]+)\s*\)(?P<comment>[ \t]*(?:#.*)?)$",
+        source,
+        re.MULTILINE,
+    )
+    if declaration is None or not span_is_code(mask, declaration.start(), declaration.end()):
+        return source, [], []
+    if re.search(r"^[ \t]*def\s+flag\s*\(", source, re.MULTILINE):
+        return source, [], []
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    value_type = declaration.group("type").strip()
+    replacement = f"_flag: {value_type}{declaration.group('comment')}"
+    edits.append(TextEdit(declaration.start(), declaration.end(), replacement))
+    fixes.append(
+        Fix(
+            "VY093",
+            line_number(source, declaration.start()),
+            "renamed reserved flag storage variable",
+            declaration.group(0),
+            replacement,
+        )
+    )
+    for match in re.finditer(r"\bself\.flag\b", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        edits.append(TextEdit(match.start(), match.end(), "self._flag"))
+        fixes.append(
+            Fix(
+                "VY093",
+                line_number(source, match.start()),
+                "renamed reserved flag storage reference",
+                "self.flag",
+                "self._flag",
+            )
+        )
+    insert_at = _first_top_level_function_offset(source)
+    getter = f"@external\n@view\ndef flag() -> {value_type}:\n    return self._flag\n\n"
+    edits.append(TextEdit(insert_at, insert_at, getter))
+    fixes.append(Fix("VY093", line_number(source, insert_at), "added flag getter", "", getter.rstrip()))
+    return apply_edits(source, edits), fixes, []
+
+
+def _first_top_level_function_offset(source: str) -> int:
+    offset = 0
+    pending_decorator = 0
+    for line in source.splitlines(keepends=True):
+        stripped = line.strip()
+        if line[:1] not in {" ", "\t"} and stripped.startswith("@"):
+            if pending_decorator == 0:
+                pending_decorator = offset
+        elif line[:1] not in {" ", "\t"} and re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+            return pending_decorator or offset
+        elif stripped and not stripped.startswith("#"):
+            pending_decorator = 0
+        offset += len(line)
+    return len(source)
+
+
 def _unreachable_code(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     lines = source.splitlines(keepends=True)
@@ -856,6 +918,7 @@ POST_NUMERIC_RULES = (
     Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
     Rule("max_value_storage_arrays", runner=_max_value_storage_arrays, changes=(crossing("VY091", (0, 4, 0)),)),
     Rule("unreachable_code", runner=_unreachable_code, changes=(crossing("VY092", (0, 4, 0)),)),
+    Rule("reserved_flag_storage", runner=_reserved_flag_storage, changes=(crossing("VY093", (0, 3, 4)),)),
     Rule(
         "nonreentrant",
         runner=_nonreentrant,
