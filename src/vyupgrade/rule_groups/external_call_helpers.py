@@ -93,7 +93,7 @@ def _interface_cast_call_matches(
         for match in re.finditer(rf"(?<![\w.]){re.escape(interface_name)}\s*\(", source):
             open_index = source.find("(", match.start())
             close = find_matching(source, open_index)
-            if close is None or not span_is_code(mask, match.start(), min(close + 1, len(source))):
+            if close is None or not span_is_code(mask, match.start(), match.end()):
                 continue
             tail = re.match(r"(?:\s|\\)*\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", source[close + 1 :])
             if tail is None:

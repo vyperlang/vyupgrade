@@ -197,7 +197,7 @@ def _external_call_keywords_once(
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
     for start, end, target, method, cast_type in external_call_matches(source, facts):
-        if not span_is_code(mask, start, end):
+        if not span_is_code(mask, start, min(start + 1, len(source))):
             continue
         prefix = source[max(0, start - 16) : start]
         if target == "self" or method in {"append", "pop"}:

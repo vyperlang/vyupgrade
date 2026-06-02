@@ -38,6 +38,27 @@ def f(token: address, receiver: address):
     assert "__vyupgrade_discard" not in result.source
 
 
+def test_extcall_added_for_interface_cast_with_string_subscript_target(config) -> None:
+    source = """# @version 0.3.3
+interface Registry:
+    def set_governances(governance: DynArray[address, 10]) -> DynArray[uint256, 10]: nonpayable
+
+targets: HashMap[String[32], address]
+
+@external
+def f(governance: address) -> uint256:
+    ids: DynArray[uint256, 10] = Registry(self.targets["registry"]).set_governances([governance])
+    return ids[0]
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        'ids: DynArray[uint256, 10] = extcall Registry(self.targets["registry"]).set_governances([governance])'
+        in result.source
+    )
+
+
 def test_external_call_inside_multiline_expression_is_not_discard_assigned(config) -> None:
     source = """# @version 0.3.10
 interface Strategy:
