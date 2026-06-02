@@ -892,16 +892,10 @@ def _nonreentrant(
     current = pattern.sub(repl, source)
     current, internal_fixes = _remove_internal_nonreentrant(current)
     fixes.extend(internal_fixes)
-    if "@nonreentrant" not in current or not _has_evm_version_pragma(source):
+    if "@nonreentrant" not in current:
         current, gap_fixes = _insert_nonreentrant_storage_gaps(current, len(counts))
         fixes.extend(gap_fixes)
     return current, fixes, diagnostics
-
-
-def _has_evm_version_pragma(source: str) -> bool:
-    return bool(
-        re.search(r"^[ \t]*#[ \t]*pragma[ \t]+evm-version\b", source, flags=re.MULTILINE)
-    )
 
 
 def _insert_nonreentrant_storage_gaps(source: str, count: int) -> tuple[str, list[Fix]]:

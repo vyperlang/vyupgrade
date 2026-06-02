@@ -483,7 +483,7 @@ def f():
     assert "@nonreentrant\n@external" in result.source
 
 
-def test_named_reentrancy_lock_reserves_slot_when_target_uses_default_evm(config) -> None:
+def test_named_reentrancy_lock_keeps_layout_gap_out_without_evm_pragma(config) -> None:
     source = """# @version 0.3.10
 balance: uint256
 
@@ -495,7 +495,7 @@ def f():
 
     result = apply_rules(source, config())
 
-    assert "_vyupgrade_reentrancy_lock_slot: uint256" in result.source
+    assert "_vyupgrade_reentrancy_lock_slot: uint256" not in result.source
     assert "@nonreentrant\n@external" in result.source
 
 
