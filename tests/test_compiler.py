@@ -1356,6 +1356,48 @@ def test_compare_artifact_details_reports_nonreentrant_lock_moved_to_transient_s
     ]
 
 
+def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "is_killed": {
+                        "location": "storage",
+                        "slot": 16,
+                        "type": "HashMap[ERC20, enum Epoch('SLEEP','COLLECT','EXCHANGE','FORWARD')]",
+                    },
+                    "get_gauge": {
+                        "location": "storage",
+                        "slot": 17,
+                        "type": "address[115792089237316195423570985008687907853269984665640564039457584007913129639935]",
+                    },
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "is_killed": {
+                        "slot": 16,
+                        "type": "HashMap[ERC20, Epoch]",
+                    },
+                    "get_gauge": {
+                        "slot": 17,
+                        "type": "HashMap[uint256, address]",
+                    },
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifact_details(source, target)[2] == []
+
+
 def test_compare_artifact_details_reports_changed_selectors_and_storage() -> None:
     source = CompileResult(
         "passed",

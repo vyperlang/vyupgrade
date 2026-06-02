@@ -28,6 +28,7 @@ from .versions import (
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 COMPILE_TIMEOUT_SECONDS = 120
+UINT256_MAX_DECIMAL = str(2**256 - 1)
 COMMON_IMPORT_DEPENDENCIES = {
     "snekmate": "snekmate",
 }
@@ -822,10 +823,24 @@ def _canonical_storage_type(type_name: str) -> str:
     type_name = type_name.removesuffix(".vyi")
     type_name = type_name.replace("interface ", "")
     type_name = type_name.replace(" declaration object", "")
+    type_name = re.sub(r"\benum ([A-Za-z_][A-Za-z0-9_]*)\([^][]*\)", r"\1", type_name)
+    type_name = _canonical_max_value_arrays(type_name)
     type_name = _strip_legacy_hashmap_storage_suffixes(type_name)
     if type_name in {"IERC20", "IERC20Detailed", "IERC4626", "IERC721", "IERC1155", "IERC165"}:
         return type_name[1:]
     return type_name
+
+
+def _canonical_max_value_arrays(type_name: str) -> str:
+    pattern = re.compile(
+        rf"\b(?P<element>[A-Za-z_][A-Za-z0-9_]*|u?int(?:\d+)?|bytes(?:\d+)?|address|bool)"
+        rf"\[{UINT256_MAX_DECIMAL}\]"
+    )
+    while True:
+        updated = pattern.sub(r"HashMap[uint256, \g<element>]", type_name)
+        if updated == type_name:
+            return type_name
+        type_name = updated
 
 
 def _strip_legacy_hashmap_storage_suffixes(type_name: str) -> str:
