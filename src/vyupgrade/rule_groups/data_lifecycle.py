@@ -480,7 +480,9 @@ def _scan_terminal_block(
             index = chain_end
             continue
         if _is_terminator(stripped):
-            _mark_unreachable_after(lines, index + 1, end, indent, remove)
+            _mark_unreachable_after(
+                lines, _continued_statement_end(lines, index, end), end, indent, remove
+            )
             return True
         child_indent = _first_child_indent(lines, index + 1, end, indent)
         if child_indent is not None:
@@ -599,6 +601,17 @@ def _is_terminator(stripped: str) -> bool:
             "continue ",
         )
     )
+
+
+def _continued_statement_end(lines: list[str], index: int, end: int) -> int:
+    limit = min(end, len(lines))
+    while index < limit and _line_continues(lines[index]):
+        index += 1
+    return min(index + 1, limit)
+
+
+def _line_continues(line: str) -> bool:
+    return line.split("#", 1)[0].rstrip().endswith("\\")
 
 
 def _balanced_delimiters(text: str) -> bool:

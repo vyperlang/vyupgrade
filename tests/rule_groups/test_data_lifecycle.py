@@ -228,6 +228,54 @@ def f(kind: uint256) -> uint256:
     assert not any(fix.rule == "VY092" for fix in result.fixes)
 
 
+def test_unreachable_code_keeps_backslash_return_continuation(config) -> None:
+    source = """# @version 0.3.10
+@internal
+@pure
+def pack(a: uint256, b: uint256) -> uint256:
+    return a | \\
+        (b << 64)
+
+@internal
+@pure
+def unpack(value: uint256) -> uint256:
+    return value
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return a | \\\n        (b << 64)" in result.source
+    assert "@internal\n@pure\ndef unpack" in result.source
+    assert not any(fix.rule == "VY092" for fix in result.fixes)
+
+
+def test_unreachable_code_keeps_backslash_boolean_return_continuation(config) -> None:
+    source = """# @version 0.3.10
+interface Access:
+    def owner() -> address: view
+    def hasRole(role: bytes32, operator: address) -> bool: view
+
+ADMIN_ROLE: constant(bytes32) = keccak256("ADMIN")
+
+@internal
+@view
+def is_admin(target: address, operator: address) -> bool:
+    return Access(target).owner() == operator \\
+        or Access(target).hasRole(ADMIN_ROLE, operator)
+
+@internal
+@view
+def done() -> bool:
+    return True
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "== operator \\\n        or staticcall Access(target).hasRole" in result.source
+    assert "@internal\n@view\ndef done" in result.source
+    assert not any(fix.rule == "VY092" for fix in result.fixes)
+
+
 def test_pr_3777_struct_dict_instantiation_to_kwargs(config) -> None:
     source = """# @version 0.3.10
 struct Point:
