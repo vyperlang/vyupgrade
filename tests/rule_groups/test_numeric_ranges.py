@@ -234,6 +234,34 @@ def f():
     assert "for x: int128 in range" in result.source
 
 
+def test_range_runtime_stop_with_public_constant_delta_gets_bound_keyword(config) -> None:
+    source = """# @version 0.2.16
+MAX_POOLS: public(constant(uint256)) = 2000
+
+@external
+def f(_offset: uint256):
+    for pindex in range(_offset, _offset + MAX_POOLS):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(_offset, _offset + MAX_POOLS, bound=2000)" in result.source
+
+
+def test_range_runtime_stop_with_max_value_delta_gets_bound_keyword(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(_index: uint256):
+    for i in range(_index, _index + max_value(uint8)):
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "range(_index, _index + convert(max_value(uint8), uint256), bound=255)" in result.source
+
+
 def test_unsigned_range_bound_does_not_convert_existing_bound_keyword(config) -> None:
     source = """# @version 0.3.10
 MAX_COINS: constant(int128) = 8

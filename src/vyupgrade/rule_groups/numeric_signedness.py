@@ -288,6 +288,9 @@ def _mixed_signed_unsigned_arithmetic(
                     )
                 )
     mask = rule_context.code_mask
+    max_value_edits, max_value_fixes = _max_value_comparison_casts(source, facts, mask)
+    edits.extend(max_value_edits)
+    fixes.extend(max_value_fixes)
     for bracket in re.finditer(r"\[", source):
         if not span_is_code(mask, bracket.start(), bracket.end()):
             continue
@@ -336,6 +339,39 @@ def _mixed_signed_unsigned_arithmetic(
                 )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _max_value_comparison_casts(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> tuple[list[TextEdit], list[Fix]]:
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    comparison_re = re.compile(
+        r"(?P<left>len\s*\([^()\n]*\)|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+        r"(?P<space_left>\s*)(?P<op>==|!=|<=|>=|<|>)(?P<space_right>\s*)"
+        r"(?P<right>max_value\s*\(\s*(?P<type>uint\d+)\s*\))"
+    )
+    for match in comparison_re.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        left_type = normalize_type(infer_expr_type(match.group("left"), vars_for_line, facts) or "")
+        right_type = normalize_type(match.group("type"))
+        if not (_is_unsigned_integer_type(left_type) and left_type != right_type):
+            continue
+        before = match.group("right")
+        after = f"convert({before}, {left_type})"
+        edits.append(TextEdit(match.start("right"), match.end("right"), after))
+        fixes.append(
+            Fix(
+                "VY052",
+                line_number(source, match.start("right")),
+                "converted max_value comparison to unsigned peer type",
+                before,
+                after,
+            )
+        )
+    return edits, fixes
 
 
 def _signed_name_has_unsigned_context(

@@ -147,6 +147,18 @@ def f() -> bool:
     assert "self.base_cache_updated + convert(BASE_CACHE_EXPIRES, uint256)" in result.source
 
 
+def test_max_value_comparison_casts_to_unsigned_peer_type(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(tokens: DynArray[address, max_value(uint8)]) -> bool:
+    return len(tokens) == max_value(uint8)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "len(tokens) == convert(max_value(uint8), uint256)" in result.source
+
+
 def test_signed_constant_converted_in_unsigned_index_comparison(config) -> None:
     source = """# @version 0.2.8
 PRECISION: constant(int128) = 10 ** 18

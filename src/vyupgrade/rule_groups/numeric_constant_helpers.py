@@ -30,7 +30,7 @@ def integer_constant_values(
 ) -> dict[str, int]:
     values: dict[str, int] = ast_integer_constants(source_ast) if source_ast is not None else {}
     constant_re = re.compile(
-        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*constant\s*\([^#\n=]+\)\s*=\s*(?P<expr>[^\n#]+)",
+        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:public\s*\(\s*)?constant\s*\([^#\n=]+\)\s*\)?\s*=\s*(?P<expr>[^\n#]+)",
         re.MULTILINE,
     )
     mask = code_mask(source)
@@ -53,6 +53,17 @@ def eval_integer_constant_expr(expr: str, values: dict[str, int]) -> int | None:
 def _eval_integer_ast(node: ast.AST, values: dict[str, int]) -> int | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return node.value
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "max_value"
+        and len(node.args) == 1
+    ):
+        arg = node.args[0]
+        if isinstance(arg, ast.Name):
+            match = re.fullmatch(r"u?int(\d+)", arg.id)
+            if match is not None:
+                return 2 ** int(match.group(1)) - 1
     if isinstance(node, ast.Name):
         return values.get(node.id)
     if isinstance(node, ast.UnaryOp):

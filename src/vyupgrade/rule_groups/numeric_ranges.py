@@ -25,7 +25,7 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from .numeric_constant_helpers import integer_constant_values
+from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -251,6 +251,7 @@ def _range_bound(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     config = rule_context.config
+    facts = rule_context.facts
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
@@ -265,9 +266,10 @@ def _range_bound(
         raw_args = source[open_index + 1 : close]
         if "bound" in raw_args:
             continue
-        args = split_top_level_args(raw_args)
-        if args is None:
+        arg_spans = split_top_level_arg_spans(raw_args)
+        if arg_spans is None:
             continue
+        args = [arg for _start, _end, arg in arg_spans]
         if len(args) == 1:
             if not _literal_integer(args[0]) and rule_context.is_enabled("VYD014"):
                 diagnostics.append(
@@ -294,6 +296,20 @@ def _range_bound(
                 )
             )
             continue
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+        for cast_edit, before, after in _range_stop_max_value_cast_edits(
+            args[0], arg_spans[1], open_index + 1, vars_for_line
+        ):
+            edits.append(cast_edit)
+            fixes.append(
+                Fix(
+                    "VY071",
+                    line_number(source, cast_edit.start),
+                    "converted max_value range delta to start type",
+                    before,
+                    after,
+                )
+            )
         edits.append(TextEdit(close, close, f", bound={bound}"))
         fixes.append(
             Fix(
@@ -307,15 +323,37 @@ def _range_bound(
     return apply_edits(source, edits), fixes, diagnostics
 
 
+def _range_stop_max_value_cast_edits(
+    start: str,
+    stop_span: tuple[int, int, str],
+    args_offset: int,
+    vars_for_line: dict[str, str],
+) -> list[tuple[TextEdit, str, str]]:
+    start_type = normalize_type(infer_expr_type(start, vars_for_line) or "")
+    if not start_type.startswith("uint"):
+        return []
+    stop_start, _stop_end, stop = stop_span
+    edits: list[tuple[TextEdit, str, str]] = []
+    for match in re.finditer(r"\bmax_value\s*\(\s*(uint\d+)\s*\)", stop):
+        value_type = normalize_type(match.group(1))
+        if value_type == start_type:
+            continue
+        before = match.group(0)
+        after = f"convert({before}, {start_type})"
+        start_index = args_offset + stop_start + match.start()
+        edits.append((TextEdit(start_index, start_index + len(before), after), before, after))
+    return edits
+
+
 def _infer_range_bound(start: str, stop: str, values: dict[str, int] | None = None) -> str | None:
     start = start.strip()
     stop = stop.strip()
     values = values or {}
     escaped = re.escape(start)
-    plus_match = re.fullmatch(rf"{escaped}\s*\+\s*([A-Za-z_][A-Za-z0-9_]*|(?:\d|_)+)", stop)
+    plus_match = re.fullmatch(rf"{escaped}\s*\+\s*(.+)", stop)
     if plus_match:
         return _range_bound_literal(plus_match.group(1), values)
-    minus_match = re.fullmatch(rf"{escaped}\s*-\s*([A-Za-z_][A-Za-z0-9_]*|(?:\d|_)+)", stop)
+    minus_match = re.fullmatch(rf"{escaped}\s*-\s*(.+)", stop)
     if minus_match:
         return _range_bound_literal(minus_match.group(1), values)
     return None
@@ -325,7 +363,7 @@ def _range_bound_literal(value: str, values: dict[str, int]) -> str | None:
     value = value.strip()
     if _literal_integer(value):
         return value
-    constant = values.get(value)
+    constant = eval_integer_constant_expr(value, values)
     if constant is None or constant < 0:
         return None
     return str(constant)
