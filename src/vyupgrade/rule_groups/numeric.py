@@ -670,7 +670,7 @@ def _redundant_integer_convert(
             expr, vars_for_line
         ) and not _expression_has_narrow_unsigned_integer(
             expr, vars_for_line
-        ):
+        ) and not _target_semantic_convert(expr, target):
             replacement = f"({expr})"
             edits.append(TextEdit(match.start(), close + 1, replacement))
             fixes.append(
@@ -686,7 +686,13 @@ def _redundant_integer_convert(
 
 
 def _target_semantic_convert(expr: str, target: str) -> bool:
-    return expr == "block.prevhash" and normalize_type(target) == "uint256"
+    target = normalize_type(target)
+    if expr == "block.prevhash" and target == "uint256":
+        return True
+    return target == "uint256" and re.search(
+        r"\bconvert\s*\([^()\n]+,\s*int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)",
+        expr,
+    ) is not None
 
 
 def _redundant_convert_replacement(expr: str) -> str:

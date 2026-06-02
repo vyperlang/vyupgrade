@@ -693,6 +693,23 @@ def choosewinner() -> uint256:
     assert "block.prevhash % self.ticket_count" not in result.source
 
 
+def test_signed_max_uint256_convert_kept_for_target_return(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(value: uint256, delta: uint256) -> uint256:
+    return convert(max(
+        convert(value, int256),
+        convert(value, int256) - convert(delta, int256)
+    ), uint256)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return convert(max(" in result.source
+    assert "), uint256)" in result.source
+    assert "return (max(" not in result.source
+
+
 def test_literal_convert_kept_for_abi_encoding_context(config) -> None:
     source = """# @version 0.3.10
 @external
