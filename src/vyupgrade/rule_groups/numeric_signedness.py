@@ -8,6 +8,7 @@ from ..analysis import (
     indexed_key_type,
     indexed_value_type,
     normalize_type,
+    parse_source_facts,
 )
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
@@ -302,6 +303,17 @@ def _mixed_signed_unsigned_arithmetic(
         )
         edits.extend(mixed_edits)
         fixes.extend(mixed_fixes)
+        unsafe_edits, unsafe_fixes = _signed_convert_unsafe_literal_casts(
+            source,
+            expr,
+            match.start(),
+            close + 1,
+            match.end() + expr_start,
+            target_type,
+            line_no,
+        )
+        edits.extend(unsafe_edits)
+        fixes.extend(unsafe_fixes)
         if not _has_unsigned_context(expr, vars_for_line):
             continue
         absolute_expr_start = match.end() + expr_start
@@ -386,7 +398,11 @@ def _mixed_signed_unsigned_arithmetic(
                     )
                 )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
-    return apply_edits(source, selected_edits), selected_fixes, []
+    current = apply_edits(source, selected_edits)
+    return_edits, return_fixes = _signed_return_unsigned_unsafe_shift_casts(
+        current, parse_source_facts(current), code_mask(current)
+    )
+    return apply_edits(current, return_edits), selected_fixes + return_fixes, []
 
 
 def _max_value_comparison_casts(
@@ -537,6 +553,153 @@ def _signed_convert_mixed_integer_casts(
         )
     ]
     return [TextEdit(convert_start, convert_end, outer_replacement)], fixes
+
+
+def _signed_convert_unsafe_literal_casts(
+    source: str,
+    expr: str,
+    convert_start: int,
+    convert_end: int,
+    expr_start: int,
+    target_type: str,
+    line_no: int,
+) -> tuple[list[TextEdit], list[Fix]]:
+    if not _is_signed_integer_type(target_type):
+        return [], []
+    replacements: list[tuple[int, int, str, str]] = []
+    for match in re.finditer(r"\bunsafe_(?:add|mul|sub)\s*\(", expr):
+        absolute_open = expr_start + match.end() - 1
+        absolute_close = find_matching(source, absolute_open)
+        if absolute_close is None:
+            continue
+        relative_close = absolute_close - expr_start
+        if relative_close > len(expr):
+            continue
+        arg_spans = split_top_level_arg_spans(source[absolute_open + 1 : absolute_close])
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        args = [(start, end, arg.strip()) for start, end, arg in arg_spans]
+        for index, (start, end, arg) in enumerate(args):
+            if not _nonnegative_integer_literal(arg):
+                continue
+            other_arg = args[1 - index][2]
+            if not _integer_expression_suggests_wide_type(other_arg):
+                continue
+            replacement = f"convert({arg}, {normalize_type(target_type)})"
+            absolute_start = absolute_open + 1 + start
+            absolute_end = absolute_open + 1 + end
+            replacements.append((absolute_start - expr_start, absolute_end - expr_start, arg, replacement))
+    if not replacements:
+        return [], []
+    new_expr = expr
+    for start, end, _arg, replacement in sorted(replacements, reverse=True):
+        new_expr = new_expr[:start] + replacement + new_expr[end:]
+    fixes = [
+        Fix(
+            "VY052",
+            line_no,
+            "converted unsafe arithmetic literal to enclosing signed type",
+            source[convert_start:convert_end],
+            new_expr,
+        )
+    ]
+    return [TextEdit(convert_start, convert_end, new_expr)], fixes
+
+
+def _integer_expression_suggests_wide_type(expr: str) -> bool:
+    expr = expr.strip()
+    if expr.startswith("convert("):
+        return False
+    return bool(
+        re.search(r"\*\*|[-+*/%]", expr)
+        or re.fullmatch(r"(?:self\.)?[A-Za-z_][A-Za-z0-9_.]*(?:\[[^\]\n]+\])*", expr)
+    )
+
+
+def _signed_return_unsigned_unsafe_shift_casts(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> tuple[list[TextEdit], list[Fix]]:
+    lines = source.splitlines(keepends=True)
+    line_offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        line_offsets.append(offset)
+        offset += len(line)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.lstrip()
+        if not stripped.startswith("return unsafe_mul("):
+            index += 1
+            continue
+        line_no = index + 1
+        return_type = normalize_type(facts.return_type_at_line(line_no) or "")
+        if not _is_signed_integer_type(return_type):
+            index += 1
+            continue
+        start_line = index
+        statement = line
+        while statement.rstrip("\n").endswith("\\") and index + 1 < len(lines):
+            index += 1
+            statement += lines[index]
+        statement_end = line_offsets[index] + len(lines[index].rstrip("\n"))
+        statement_start = line_offsets[start_line]
+        expr_start = statement_start + line.find("return ") + len("return ")
+        if not span_is_code(mask, expr_start, expr_start + len("unsafe_mul")):
+            index += 1
+            continue
+        expr = source[expr_start:statement_end]
+        if expr.strip().startswith("convert(") or ">>" not in expr:
+            index += 1
+            continue
+        unsafe_open = source.find("(", expr_start, statement_end)
+        unsafe_close = find_matching(source, unsafe_open)
+        if unsafe_open == -1 or unsafe_close is None or unsafe_close > statement_end:
+            index += 1
+            continue
+        arg_spans = split_top_level_arg_spans(source[unsafe_open + 1 : unsafe_close])
+        if arg_spans is None or len(arg_spans) != 2:
+            index += 1
+            continue
+        vars_for_line = facts.vars_at_line(line_no)
+        replacements: list[tuple[int, int, str]] = []
+        args = [(start, end, arg.strip()) for start, end, arg in arg_spans]
+        for arg_index, (start, end, arg) in enumerate(args):
+            if not _nonnegative_integer_literal(arg):
+                continue
+            other = args[1 - arg_index][2]
+            other_type = normalize_type(infer_expr_type(other, vars_for_line, facts) or "")
+            if not _is_unsigned_integer_type(other_type):
+                continue
+            replacements.append((unsafe_open + 1 + start, unsafe_open + 1 + end, other_type))
+        if not replacements:
+            index += 1
+            continue
+        new_expr = expr
+        for start, end, target_type in sorted(replacements, reverse=True):
+            relative_start = start - expr_start
+            relative_end = end - expr_start
+            literal = source[start:end]
+            new_expr = (
+                new_expr[:relative_start]
+                + f"convert({literal}, {target_type})"
+                + new_expr[relative_end:]
+            )
+        replacement = f"convert({new_expr}, {return_type})"
+        edits.append(TextEdit(expr_start, statement_end, replacement))
+        fixes.append(
+            Fix(
+                "VY052",
+                line_no,
+                "converted unsigned unsafe return expression to signed return type",
+                expr,
+                replacement,
+            )
+        )
+        index += 1
+    return edits, fixes
 
 
 def _expression_has_signed_integer(

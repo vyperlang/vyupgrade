@@ -748,6 +748,36 @@ def f(pool: address, amount: uint256) -> uint256:
     ) in result.source
 
 
+def test_unsafe_mul_literal_casts_to_enclosing_signed_convert(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> int256:
+    return convert(unsafe_mul(10**32, 3), int256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return unsafe_mul(10**32, convert(3, int256))" in result.source
+
+
+def test_unsigned_unsafe_shift_return_casts_to_signed_return_type(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def wad_exp(r: int256, k: int256) -> int256:
+    return unsafe_mul(convert(convert(r, bytes32), uint256), 3_822_833_074_963_236_453_042_738_258_902_158_003_155_416_615_667) >>\\
+           convert(unsafe_sub(convert(195, int256), k), uint256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return convert(unsafe_mul(convert(convert(r, bytes32), uint256), "
+        "convert(3_822_833_074_963_236_453_042_738_258_902_158_003_155_416_615_667, uint256)) >>\\\n"
+        "           convert(unsafe_sub(convert(195, int256), k), uint256), int256)"
+    ) in result.source
+
+
 def test_signed_loop_index_casted_in_unsigned_subscript_arithmetic(config) -> None:
     source = """# @version 0.2.16
 N_COINS: constant(int128) = 2
