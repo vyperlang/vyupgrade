@@ -747,6 +747,7 @@ def _strip_abi_metadata(value: object) -> object:
             key: _canonical_abi_value(key, item, value)
             for key, item in sorted(value.items())
             if key not in {"gas"}
+            and not (key == "name" and item == "")
             and not (value.get("type") == "constructor" and key == "outputs")
             and not (key == "components" and _is_tuple_abi_type(value.get("type")))
         }
@@ -758,8 +759,22 @@ def _strip_abi_metadata(value: object) -> object:
 def _canonical_abi_value(key: str, value: object, parent: Mapping[str, object]) -> object:
     if key == "stateMutability" and value == "pure":
         return "view"
+    if key == "outputs":
+        return _canonical_abi_outputs(value)
     if key == "type" and isinstance(value, str):
         return _canonical_abi_type(value, parent.get("components"))
+    return _strip_abi_metadata(value)
+
+
+def _canonical_abi_outputs(value: object) -> object:
+    if (
+        isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], dict)
+        and _is_tuple_abi_type(value[0].get("type"))
+        and isinstance(value[0].get("components"), list)
+    ):
+        return _strip_abi_metadata(value[0]["components"])
     return _strip_abi_metadata(value)
 
 

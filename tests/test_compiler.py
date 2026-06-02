@@ -1176,7 +1176,7 @@ def test_compare_artifact_details_ignores_constructor_selector() -> None:
     assert method_diff == []
 
 
-def test_compare_artifact_details_reports_abi_output_shape_changes() -> None:
+def test_compare_artifact_details_normalizes_single_tuple_outputs() -> None:
     source = CompileResult(
         "passed",
         artifacts={
@@ -1224,11 +1224,8 @@ def test_compare_artifact_details_reports_abi_output_shape_changes() -> None:
         },
     )
 
-    abi_diff, _method_diff, _storage_diff = compare_artifact_details(source, target)
-
-    assert abi_diff == [
-        "changed ABI entry: function points_sum(int128, uint256): outputs (bias: uint256, slope: uint256) -> ((uint256,uint256))",
-    ]
+    assert compare_artifacts(source, target) == (True, None, None)
+    assert compare_artifact_details(source, target)[0] == []
 
 
 def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
