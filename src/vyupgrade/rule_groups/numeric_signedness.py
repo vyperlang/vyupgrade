@@ -167,7 +167,7 @@ def _mixed_signed_unsigned_arithmetic(
                     continue
                 target_type = (
                     _signed_comparison_target_type(
-                        _local_expression(source, start), name, vars_for_line
+                        _comparison_expression_at(source, start), name, vars_for_line
                     )
                     or _signed_internal_call_arg_target_type(source, start, name, facts)
                     or _signed_external_call_arg_target_type(
@@ -217,11 +217,16 @@ def _mixed_signed_unsigned_arithmetic(
                 ):
                     continue
                 local_expr = _local_expression(source, start)
+                comparison_expr = _comparison_expression_at(source, start)
                 comparison_target = _signed_comparison_target_type_at(
                     source, start, name, vars_for_line
                 )
-                arithmetic_target = _unsigned_name_signed_arithmetic_target_type(
-                    local_expr, name, lhs_type, vars_for_line, facts
+                arithmetic_target = (
+                    None
+                    if _comparison_peer(comparison_expr, name) is not None
+                    else _unsigned_name_signed_arithmetic_target_type(
+                        local_expr, name, lhs_type, vars_for_line, facts
+                    )
                 )
                 division_target = _unsigned_name_signed_division_target_type(
                     local_expr, name, vars_for_line, facts
@@ -547,7 +552,7 @@ def _unsigned_name_signed_comparison_expression_type(
 def _signed_comparison_target_type_at(
     source: str, index: int, name: str, vars_for_line: dict[str, str]
 ) -> str | None:
-    other = _comparison_peer(_local_expression(source, index), name)
+    other = _comparison_peer(_comparison_expression_at(source, index), name)
     if other is None:
         return None
     loop_type = (
@@ -562,7 +567,7 @@ def _signed_comparison_target_type_at(
 def _unsigned_comparison_target_type_at(
     source: str, index: int, name: str, vars_for_line: dict[str, str], facts: SourceFacts
 ) -> str | None:
-    other = _comparison_peer(_local_expression(source, index), name)
+    other = _comparison_peer(_comparison_expression_at(source, index), name)
     if other is None:
         return None
     loop_type = (
@@ -599,6 +604,20 @@ def _comparison_peer(expr: str, name: str) -> str | None:
     if right == name:
         return left
     return None
+
+
+def _comparison_expression_at(source: str, index: int) -> str:
+    line_start = source.rfind("\n", 0, index) + 1
+    line_end = source.find("\n", index)
+    if line_end == -1:
+        line_end = len(source)
+    expr = source[line_start:line_end]
+    mask = code_mask(expr)
+    comment_start = next(
+        (pos for pos, char in enumerate(expr) if char == "#" and (pos == 0 or mask[pos - 1])),
+        None,
+    )
+    return expr[:comment_start] if comment_start is not None else expr
 
 
 def _signed_internal_call_arg_target_type(

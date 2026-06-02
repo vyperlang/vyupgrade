@@ -196,6 +196,42 @@ def f() -> uint256:
     assert "if i == convert(N_COINS, uint256):" not in result.source
 
 
+def test_signed_loop_variable_not_converted_against_signed_cast(config) -> None:
+    source = """# @version 0.3.10
+MAX_COINS: constant(int128) = 8
+
+@internal
+def f(n_coins: uint256) -> int128:
+    for k in range(MAX_COINS):
+        if k >= convert(n_coins, int128):
+            return k
+    return 0
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if k >= convert(n_coins, int128):" in result.source
+    assert "if convert(k, uint256) >= convert(n_coins, int128):" not in result.source
+
+
+def test_unsigned_loop_variable_converted_against_signed_cast(config) -> None:
+    source = """# @version 0.3.10
+BASE_N_COINS: constant(int128) = 2
+
+@internal
+def f() -> uint256:
+    total: uint256 = 0
+    for i in range(4):
+        if i < convert(BASE_N_COINS, int128):
+            total += i
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if convert(i, int128) < BASE_N_COINS:" in result.source
+
+
 def test_comment_identifier_does_not_create_unsigned_context(config) -> None:
     source = """# @version 0.3.7
 rate: uint256
