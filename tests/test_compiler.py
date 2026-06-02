@@ -1405,6 +1405,37 @@ def test_compare_artifacts_normalizes_generated_nonreentrant_storage_gap() -> No
     assert compare_artifacts(source, target) == (None, None, True)
 
 
+def test_compare_artifacts_treats_transient_only_nonreentrant_move_as_persistent_equal() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {},
+                "transient_storage_layout": {
+                    "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock", "n_slots": 1},
+                },
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifact_details(source, target)[2] == [
+        "moved storage to transient: $nonreentrant:0 slot 0 nonreentrant lock -> $nonreentrant:0 slot 0 nonreentrant lock",
+    ]
+
+
 def test_compare_artifact_details_reports_nonreentrant_lock_moved_to_transient_storage() -> None:
     source = CompileResult(
         "passed",

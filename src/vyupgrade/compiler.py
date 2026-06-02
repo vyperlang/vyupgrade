@@ -576,6 +576,7 @@ def compare_artifacts(
     target_abi = target.artifacts.get("abi")
     source_methods = source.artifacts.get("method_identifiers")
     target_methods = target.artifacts.get("method_identifiers")
+    target_transient_layout = _canonical_transient_storage_layout(target.artifacts.get("layout"))
     return (
         None
         if source_abi is None or target_abi is None
@@ -584,7 +585,9 @@ def compare_artifacts(
         if source_methods is None or target_methods is None
         else _canonical_method_identifiers(source_methods)
         == _canonical_method_identifiers(target_methods),
-        None if source_layout is None or target_layout is None else source_layout == target_layout,
+        None
+        if source_layout is None or target_layout is None
+        else _persistent_storage_layout_equal(source_layout, target_layout, target_transient_layout),
     )
 
 
@@ -1026,6 +1029,17 @@ def _storage_layout_diff(
             skip_removed=moved_lock_names,
         ),
     ]
+
+
+def _persistent_storage_layout_equal(
+    source: dict[str, tuple[int, str]],
+    target: dict[str, tuple[int, str]],
+    target_transient: dict[str, tuple[int, str]],
+) -> bool:
+    return all(
+        line.startswith("moved storage to transient: ")
+        for line in _storage_layout_diff(source, target, target_transient)
+    )
 
 
 def _mapping_diff_lines(
