@@ -40,6 +40,23 @@ LEGACY_IMPLEMENTED_INTERFACE_STUBS = {
     def approve(_approved: address, _tokenId: uint256): {approve}
     def setApprovalForAll(_operator: address, _approved: bool): {setApprovalForAll}
 """,
+    "ERC4626": """interface ERC4626:
+    def totalAssets() -> uint256: {totalAssets}
+    def convertToAssets(shareAmount: uint256) -> uint256: {convertToAssets}
+    def convertToShares(assetAmount: uint256) -> uint256: {convertToShares}
+    def maxDeposit(owner: address) -> uint256: {maxDeposit}
+    def previewDeposit(assets: uint256) -> uint256: {previewDeposit}
+    def deposit(assets: uint256, receiver: address = msg.sender) -> uint256: {deposit}
+    def maxMint(owner: address) -> uint256: {maxMint}
+    def previewMint(shares: uint256) -> uint256: {previewMint}
+    def mint(shares: uint256, receiver: address = msg.sender) -> uint256: {mint}
+    def maxWithdraw(owner: address) -> uint256: {maxWithdraw}
+    def previewWithdraw(assets: uint256) -> uint256: {previewWithdraw}
+    def withdraw(assets: uint256, receiver: address = msg.sender, owner: address = msg.sender) -> uint256: {withdraw}
+    def maxRedeem(owner: address) -> uint256: {maxRedeem}
+    def previewRedeem(shares: uint256) -> uint256: {previewRedeem}
+    def redeem(shares: uint256, receiver: address = msg.sender, owner: address = msg.sender) -> uint256: {redeem}
+""",
 }
 
 
@@ -781,7 +798,7 @@ def _interface_imports(
         legacy_stubs = [
             name
             for name, alias in parsed_imports
-            if alias is None
+            if alias in {None, name}
             and name in implemented_names
             and name in LEGACY_IMPLEMENTED_INTERFACE_STUBS
         ]
@@ -876,6 +893,30 @@ def _legacy_implemented_interface_stub(name: str, facts: SourceFacts) -> str:
             "setApprovalForAll": _implementation_mutability(
                 facts, "setApprovalForAll", "nonpayable"
             ),
+        }
+        for key, value in replacements.items():
+            stub = stub.replace("{" + key + "}", value)
+        return stub
+    if name == "ERC4626":
+        replacements = {
+            method: _implementation_mutability(facts, method, default)
+            for method, default in {
+                "totalAssets": "view",
+                "convertToAssets": "view",
+                "convertToShares": "view",
+                "maxDeposit": "view",
+                "previewDeposit": "view",
+                "deposit": "nonpayable",
+                "maxMint": "view",
+                "previewMint": "view",
+                "mint": "nonpayable",
+                "maxWithdraw": "view",
+                "previewWithdraw": "view",
+                "withdraw": "nonpayable",
+                "maxRedeem": "view",
+                "previewRedeem": "view",
+                "redeem": "nonpayable",
+            }.items()
         }
         for key, value in replacements.items():
             stub = stub.replace("{" + key + "}", value)

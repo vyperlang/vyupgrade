@@ -270,6 +270,92 @@ def supportsInterface(interface_id: bytes4) -> bool:
     assert not any(fix.rule == "VY014" for fix in result.fixes)
 
 
+def test_legacy_implemented_erc4626_import_becomes_local_interface(config) -> None:
+    source = """# @version 0.3.7
+from vyper.interfaces import ERC4626 as ERC4626
+
+implements: ERC4626
+
+totalAssets: public(uint256)
+asset: constant(address) = 0x0000000000000000000000000000000000000001
+
+@view
+@external
+def convertToAssets(shareAmount: uint256) -> uint256:
+    return shareAmount
+
+@view
+@external
+def convertToShares(assetAmount: uint256) -> uint256:
+    return assetAmount
+
+@view
+@external
+def maxDeposit(owner: address) -> uint256:
+    return 0
+
+@view
+@external
+def previewDeposit(assets: uint256) -> uint256:
+    return assets
+
+@external
+def deposit(assets: uint256, receiver: address=msg.sender) -> uint256:
+    return assets
+
+@view
+@external
+def maxMint(owner: address) -> uint256:
+    return 0
+
+@view
+@external
+def previewMint(shares: uint256) -> uint256:
+    return shares
+
+@external
+def mint(shares: uint256, receiver: address=msg.sender) -> uint256:
+    return shares
+
+@view
+@external
+def maxWithdraw(owner: address) -> uint256:
+    return 0
+
+@view
+@external
+def previewWithdraw(assets: uint256) -> uint256:
+    return assets
+
+@external
+def withdraw(assets: uint256, receiver: address=msg.sender, owner: address=msg.sender) -> uint256:
+    return assets
+
+@view
+@external
+def maxRedeem(owner: address) -> uint256:
+    return 0
+
+@view
+@external
+def previewRedeem(shares: uint256) -> uint256:
+    return shares
+
+@external
+def redeem(shares: uint256, receiver: address=msg.sender, owner: address=msg.sender) -> uint256:
+    return shares
+"""
+
+    result = apply_rules(source, config())
+
+    assert "from ethereum.ercs import IERC4626" not in result.source
+    assert "interface ERC4626:" in result.source
+    assert "def asset() -> address" not in result.source
+    assert "def totalAssets() -> uint256: view" in result.source
+    assert "implements: ERC4626" in result.source
+    assert any(fix.rule == "VY020" for fix in result.fixes)
+
+
 def test_pure_local_interface_view_implementation_becomes_view(config) -> None:
     source = """# @version 0.3.3
 interface ERC165:
