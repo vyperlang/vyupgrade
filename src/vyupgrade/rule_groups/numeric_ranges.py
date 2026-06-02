@@ -281,7 +281,8 @@ def _loop_var_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFa
         return literal_type
     iterable_type = vars_for_line.get(iterable)
     if iterable_type is None and re.fullmatch(r"self\.[A-Za-z_][A-Za-z0-9_]*", iterable):
-        iterable_type = vars_for_line.get(iterable.removeprefix("self."))
+        name = iterable.removeprefix("self.")
+        iterable_type = facts.storage_vars.get(name) or vars_for_line.get(name)
     if iterable_type is None:
         iterable_type = infer_expr_type(iterable, vars_for_line, facts)
     return iterable_element_type(iterable_type)

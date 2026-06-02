@@ -286,6 +286,28 @@ def f(pid: uint256):
     assert "for action: Action in self.proposals[pid].actions:" in result.source
 
 
+def test_loop_variable_type_annotation_for_storage_struct_dynarray(config) -> None:
+    source = """# @version 0.3.10
+struct PegKeeperInfo:
+    peg_keeper: address
+    debt_ceiling: uint256
+
+peg_keepers: DynArray[PegKeeperInfo, 8]
+
+@external
+def f() -> DynArray[address, 8]:
+    result: DynArray[address, 8] = []
+    for info in self.peg_keepers:
+        result.append(info.peg_keeper)
+    return result
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for info: PegKeeperInfo in self.peg_keepers:" in result.source
+    assert "for info: address in self.peg_keepers:" not in result.source
+
+
 def test_loop_variable_type_annotation_for_literal_enum_member_list(config) -> None:
     source = """# @version 0.3.10
 enum Epoch:
