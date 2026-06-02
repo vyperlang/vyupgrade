@@ -199,6 +199,52 @@ def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
     return "".join(out), fixes
 
 
+def _max_value_storage_arrays(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    mask = rule_context.code_mask
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    pattern = re.compile(
+        r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<type>[^#\n=]+)(?P<comment>[ \t]*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start("name"), match.end("type")):
+            continue
+        replacement_type = _max_value_array_type_to_hashmap(match.group("type").strip())
+        if replacement_type is None:
+            continue
+        before = match.group(0)
+        after = f"{match.group('name')}: {replacement_type}{match.group('comment')}"
+        edits.append(TextEdit(match.start(), match.end(), after))
+        fixes.append(
+            Fix(
+                "VY091",
+                line_number(source, match.start()),
+                "lowered max_value-bound storage array to hashmap",
+                before,
+                after,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _max_value_array_type_to_hashmap(type_expr: str) -> str | None:
+    wrapper = re.fullmatch(r"(?P<name>public|immutable|constant)\s*\((?P<inner>.*)\)", type_expr)
+    if wrapper is not None:
+        inner_replacement = _max_value_array_type_to_hashmap(wrapper.group("inner").strip())
+        if inner_replacement is None:
+            return None
+        return f"{wrapper.group('name')}({inner_replacement})"
+    array = re.fullmatch(r"(?P<element>.+)\[\s*max_value\s*\(\s*uint256\s*\)\s*\]", type_expr)
+    if array is None:
+        return None
+    element = array.group("element").strip()
+    if not element:
+        return None
+    return f"HashMap[uint256, {element}]"
+
+
 def _struct_kwargs(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     current = rule_context.source
     all_fixes: list[Fix] = []
@@ -553,6 +599,7 @@ ENUM_RULES = (
 POST_NUMERIC_RULES = (
     Rule("struct_kwargs", runner=_struct_kwargs, changes=(crossing("VY060", (0, 4, 0)),)),
     Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
+    Rule("max_value_storage_arrays", runner=_max_value_storage_arrays, changes=(crossing("VY091", (0, 4, 0)),)),
     Rule(
         "nonreentrant",
         runner=_nonreentrant,
