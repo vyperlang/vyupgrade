@@ -236,7 +236,11 @@ def _max_value_array_type_to_hashmap(type_expr: str) -> str | None:
         if inner_replacement is None:
             return None
         return f"{wrapper.group('name')}({inner_replacement})"
-    array = re.fullmatch(r"(?P<element>.+)\[\s*max_value\s*\(\s*uint256\s*\)\s*\]", type_expr)
+    max_uint256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    array = re.fullmatch(
+        rf"(?P<element>.+)\[\s*(?:max_value\s*\(\s*uint256\s*\)|{max_uint256})\s*\]",
+        type_expr,
+    )
     if array is None:
         return None
     element = array.group("element").strip()

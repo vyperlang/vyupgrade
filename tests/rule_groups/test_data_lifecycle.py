@@ -44,6 +44,7 @@ def test_max_value_bound_public_storage_array_becomes_hashmap(config) -> None:
     source = """# @version 0.3.7
 get_gauge_count: public(uint256)
 get_gauge: public(address[max_value(uint256)])
+restLayout: public(bytes32[115792089237316195423570985008687907853269984665640564039457584007913129639935])
 fixed: public(address[8])
 
 @external
@@ -54,6 +55,7 @@ def f(idx: uint256, gauge: address):
     result = apply_rules(source, config(target_version="0.4.3"))
 
     assert "get_gauge: public(HashMap[uint256, address])" in result.source
+    assert "restLayout: public(HashMap[uint256, bytes32])" in result.source
     assert "fixed: public(address[8])" in result.source
     assert "self.get_gauge[idx] = gauge" in result.source
     assert any(fix.rule == "VY091" for fix in result.fixes)
