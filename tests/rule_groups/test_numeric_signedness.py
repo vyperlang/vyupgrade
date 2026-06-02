@@ -232,6 +232,25 @@ def f() -> uint256:
     assert "if convert(i, int128) < BASE_N_COINS:" in result.source
 
 
+def test_unsigned_loop_variable_converted_in_elif_signed_comparison(config) -> None:
+    source = """# @version 0.2.16
+@external
+def f(j: int128, xp: uint256[3]) -> uint256:
+    total: uint256 = 0
+    for _i in range(3):
+        if _i == 0:
+            total += 1
+        elif _i != j:
+            total += xp[_i]
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "elif convert(_i, int128) != j:" in result.source
+    assert "total += xp[_i]" in result.source
+
+
 def test_comment_identifier_does_not_create_unsigned_context(config) -> None:
     source = """# @version 0.3.7
 rate: uint256

@@ -595,7 +595,7 @@ def _signed_comparison_target_type(
     expr: str, name: str, vars_for_line: dict[str, str]
 ) -> str | None:
     expr = expr.strip().removesuffix(":").strip()
-    expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    expr = re.sub(r"^(?:if|elif|assert|return)\s+", "", expr)
     match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
     if match is None:
         return None
@@ -670,7 +670,7 @@ def _unsigned_name_signed_comparison_expression_type(
     expr: str, name: str, vars_for_line: dict[str, str], facts: SourceFacts
 ) -> str | None:
     expr = expr.strip().removesuffix(":").strip()
-    expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    expr = re.sub(r"^(?:if|elif|assert|return)\s+", "", expr)
     for separator in (" and ", " or "):
         if separator in expr:
             for part in expr.split(separator):
@@ -732,7 +732,7 @@ def _unsigned_comparison_target_type_at(
 
 def _comparison_peer(expr: str, name: str) -> str | None:
     expr = expr.strip().removesuffix(":").strip()
-    expr = re.sub(r"^(?:if|assert|return)\s+", "", expr)
+    expr = re.sub(r"^(?:if|elif|assert|return)\s+", "", expr)
     for separator in (" and ", " or "):
         if separator in expr:
             for part in expr.split(separator):
@@ -901,7 +901,7 @@ def _top_level_arg_index(raw_args: str, offset: int) -> int | None:
 
 
 def _expression_start_offset(line: str) -> int:
-    for pattern in [r"\b(?:if|assert|return)\s+", r"=\s*"]:
+    for pattern in [r"\b(?:if|elif|assert|return)\s+", r"=\s*"]:
         match = re.search(pattern, line)
         if match:
             return match.end()
