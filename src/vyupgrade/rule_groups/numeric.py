@@ -631,6 +631,8 @@ def _redundant_integer_convert(
             continue
         if _integerish_expression(expr, vars_for_line) and not _expression_has_signed_integer(
             expr, vars_for_line
+        ) and not _expression_has_narrow_unsigned_integer(
+            expr, vars_for_line
         ):
             replacement = f"({expr})"
             edits.append(TextEdit(match.start(), close + 1, replacement))
@@ -666,6 +668,15 @@ def _simple_nonliteral_expr(expr: str) -> bool:
 def _expression_has_signed_integer(expr: str, vars_for_line: dict[str, str]) -> bool:
     for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
         if _is_signed_integer_type(vars_for_line.get(token)):
+            return True
+    return False
+
+
+def _expression_has_narrow_unsigned_integer(expr: str, vars_for_line: dict[str, str]) -> bool:
+    for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr):
+        type_name = normalize_type(vars_for_line.get(token) or "")
+        match = re.fullmatch(r"uint(\d+)", type_name)
+        if match is not None and int(match.group(1)) < 256:
             return True
     return False
 

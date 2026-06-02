@@ -609,6 +609,33 @@ def f() -> uint256:
     assert "(COEFF * 46 // 10 ** 6)" in result.source
 
 
+def test_redundant_convert_keeps_narrow_unsigned_expression(config) -> None:
+    source = """# @version 0.3.9
+@external
+def f(left: uint8, right: uint8) -> uint256:
+    if left > right:
+        return convert(left - right, uint256)
+    return convert(right - left, uint256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return convert(left - right, uint256)" in result.source
+    assert "return convert(right - left, uint256)" in result.source
+
+
+def test_redundant_convert_keeps_narrow_unsigned_exponent(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(decimals: uint8) -> uint256:
+    return 10 ** convert(decimals // 2, uint256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "10 ** convert(decimals // 2, uint256)" in result.source
+
+
 def test_redundant_convert_keeps_signed_integer_expression(config) -> None:
     source = """# @version 0.3.10
 E18: constant(int256) = 10 ** 18
