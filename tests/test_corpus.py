@@ -243,7 +243,7 @@ def test_import_chainsecurity_preserves_standard_json_source_tree(tmp_path: Path
         },
         "settings": {
             "outputSelection": {"contracts/Main.vy": ["abi"]},
-            "search_paths": [".", "interfaces"],
+            "search_paths": [".", "0", "interfaces"],
         },
         "compiler_version": "v0.4.1+commit.8a93dd27",
     }
@@ -443,7 +443,7 @@ def test_smoke_uses_standard_json_search_paths(monkeypatch, tmp_path: Path) -> N
         json.dumps(
             {
                 "settings": {
-                    "search_paths": [".", "tests/integration/network/sepolia", "../unsafe"]
+                    "search_paths": [".", "0", "tests/integration/network/sepolia", "../unsafe"]
                 }
             }
         ),

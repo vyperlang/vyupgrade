@@ -1246,7 +1246,11 @@ def _standard_json_source_content(source_info: object) -> str | None:
 
 def _item_compiler_search_paths(item: dict[str, Any]) -> tuple[Path, ...]:
     paths: list[Path] = [Path(item["corpus_repo_root"])]
-    paths.extend(Path(path) for path in item.get("compiler_search_paths", []) if path)
+    paths.extend(
+        path
+        for path in (Path(path) for path in item.get("compiler_search_paths", []) if path)
+        if path.exists()
+    )
     standard_json = item.get("standard_json")
     if isinstance(standard_json, str):
         try:
@@ -1279,7 +1283,7 @@ def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: 
         if not isinstance(raw_path, str):
             continue
         path = _standard_json_search_path(package_root, raw_path)
-        if path is not None:
+        if path is not None and path.exists():
             paths.append(path)
     return _unique_paths(paths)
 
