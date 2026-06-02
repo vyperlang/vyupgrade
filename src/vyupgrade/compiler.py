@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import cache
@@ -46,6 +46,10 @@ OVERLAY_EXCLUDED_PARTS = {
     "env",
     "node_modules",
     "venv",
+}
+VALIDATION_SOURCE_SUFFIXES = {".vy", ".vyi", ".json"}
+VALIDATION_MODULE_ALIASES = {
+    "create2": "create2_address",
 }
 
 
@@ -157,7 +161,13 @@ def target_overlay(
     if not resolved_sources:
         yield None
         return
-    roots = [_validation_root(path, search_paths) for path in resolved_sources]
+    roots = tuple(
+        dict.fromkeys(
+            root
+            for path in resolved_sources
+            for root in _validation_roots(path, search_paths)
+        )
+    )
     common = Path(os.path.commonpath([str(root) for root in roots]))
     with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
         root = Path(tmp)
@@ -170,7 +180,7 @@ def target_overlay(
                     common,
                     root,
                     target_version,
-                    resolved_sources.keys(),
+                    resolved_sources,
                 )
             )
         for path, source in resolved_sources.items():
@@ -232,7 +242,7 @@ def _paths_overlap(left: Path, right: Path) -> bool:
         return False
 
 
-def _validation_root(path: Path, search_paths: tuple[Path, ...]) -> Path:
+def _validation_roots(path: Path, search_paths: tuple[Path, ...]) -> tuple[Path, ...]:
     resolved = path.resolve()
     candidates: list[Path] = []
     for search_path in search_paths:
@@ -243,8 +253,8 @@ def _validation_root(path: Path, search_paths: tuple[Path, ...]) -> Path:
             continue
         candidates.append(root)
     if candidates:
-        return max(candidates, key=lambda candidate: len(candidate.parts))
-    return _nearest_project_root(path.parent) or path.parent
+        return tuple(sorted(candidates, key=lambda candidate: len(candidate.parts)))
+    return (_nearest_project_root(path.parent) or path.parent,)
 
 
 def _copy_validation_sources(
@@ -252,38 +262,166 @@ def _copy_validation_sources(
     common_root: Path,
     target_root: Path,
     target_version: str,
-    overrides: Iterable[Path],
+    overrides: Mapping[Path, str],
 ) -> set[Path]:
     search_paths: set[Path] = set()
     override_paths = set(overrides)
-    for source in source_root.rglob("*"):
-        if source.suffix not in {".vy", ".vyi"}:
-            continue
-        if any(part in OVERLAY_EXCLUDED_PARTS for part in source.parts):
-            continue
-        resolved = source.resolve()
-        if resolved in override_paths:
-            continue
+    queue: list[tuple[Path, str]] = []
+    for path, source in overrides.items():
         try:
-            relative = resolved.relative_to(common_root)
+            path.relative_to(source_root)
         except ValueError:
             continue
-        try:
-            text = source.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        queue.append((path, source))
+
+    processed: set[Path] = set()
+    while queue:
+        current, current_source = queue.pop()
+        if current in processed:
             continue
-        target = target_root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            _target_validation_source(
-                text,
+        processed.add(current)
+        for resolved in _validation_import_sources(current, current_source, source_root):
+            if resolved in processed:
+                continue
+            source = overrides.get(resolved)
+            if source is None:
+                try:
+                    source = resolved.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+            queue.append((resolved, source))
+            if resolved in override_paths:
+                continue
+            if any(part in OVERLAY_EXCLUDED_PARTS for part in resolved.parts):
+                continue
+            _copy_validation_source(
+                resolved,
+                source,
+                common_root,
+                target_root,
                 target_version,
-                is_interface=source.suffix == ".vyi",
-            ),
+                search_paths,
+            )
+    return search_paths
+
+
+def _copy_validation_source(
+    source_path: Path,
+    source: str,
+    common_root: Path,
+    target_root: Path,
+    target_version: str,
+    search_paths: set[Path],
+) -> None:
+    if source_path.suffix not in VALIDATION_SOURCE_SUFFIXES:
+        return
+    try:
+        relative = source_path.relative_to(common_root)
+    except ValueError:
+        return
+    target = target_root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.suffix == ".json":
+        target.write_text(source, encoding="utf-8")
+        search_paths.add(target.parent)
+        return
+    target.write_text(
+        _target_validation_source(
+            source,
+            target_version,
+            is_interface=source_path.suffix == ".vyi",
+        ),
+        encoding="utf-8",
+    )
+    search_paths.add(target.parent)
+    if source_path.name == "create2_address.vy":
+        alias = target.with_name("create2.vy")
+        alias.write_text(
+            _target_validation_source(source, target_version, is_interface=False),
             encoding="utf-8",
         )
-        search_paths.add(target.parent)
-    return search_paths
+
+
+def _validation_import_sources(path: Path, source: str, source_root: Path) -> tuple[Path, ...]:
+    imports: list[Path] = []
+    for line in source.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        import_match = re.match(
+            r"import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b",
+            stripped,
+        )
+        if import_match:
+            imports.extend(
+                _resolve_validation_import(path, source_root, import_match.group(1), ())
+            )
+            continue
+        from_match = re.match(
+            r"from\s+([.A-Za-z_][.A-Za-z0-9_]*)\s+import\s+(.+)$",
+            stripped,
+        )
+        if from_match:
+            names = tuple(_imported_module_names(from_match.group(2)))
+            imports.extend(
+                _resolve_validation_import(path, source_root, from_match.group(1), names)
+            )
+    return tuple(dict.fromkeys(imports))
+
+
+def _imported_module_names(imports: str) -> Iterator[str]:
+    for part in imports.strip().removeprefix("(").removesuffix(")").split(","):
+        name = part.split("#", 1)[0].strip()
+        if not name or name == "*":
+            continue
+        name = name.split()[0]
+        if re.match(r"[A-Za-z_][A-Za-z0-9_]*$", name):
+            yield name
+
+
+def _resolve_validation_import(
+    path: Path, source_root: Path, module: str, names: tuple[str, ...]
+) -> tuple[Path, ...]:
+    base, module_parts = _validation_import_base(path, source_root, module)
+    candidates: list[Path] = []
+    module_path = base.joinpath(*module_parts) if module_parts else base
+    if names:
+        for name in names:
+            candidates.extend(_validation_module_candidates(module_path / name))
+        candidates.extend(_validation_module_candidates(module_path))
+    else:
+        candidates.extend(_validation_module_candidates(module_path))
+    resolved: list[Path] = []
+    root = source_root.resolve()
+    for candidate in candidates:
+        try:
+            resolved_candidate = candidate.resolve()
+            resolved_candidate.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if resolved_candidate.exists() and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
+            resolved.append(resolved_candidate)
+    return tuple(dict.fromkeys(resolved))
+
+
+def _validation_import_base(
+    path: Path, source_root: Path, module: str
+) -> tuple[Path, tuple[str, ...]]:
+    if not module.startswith("."):
+        return source_root, tuple(part for part in module.split(".") if part)
+    level = len(module) - len(module.lstrip("."))
+    base = path.parent
+    for _ in range(max(level - 1, 0)):
+        base = base.parent
+    return base, tuple(part for part in module[level:].split(".") if part)
+
+
+def _validation_module_candidates(path: Path) -> tuple[Path, ...]:
+    paths = [path]
+    alias = VALIDATION_MODULE_ALIASES.get(path.name)
+    if alias is not None:
+        paths.append(path.with_name(alias))
+    return tuple(candidate.with_suffix(suffix) for candidate in paths for suffix in sorted(VALIDATION_SOURCE_SUFFIXES))
 
 
 def _copy_project_configs(source_root: Path, target_root: Path) -> None:

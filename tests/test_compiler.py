@@ -630,6 +630,94 @@ def test_target_overlay_rewrites_imported_dependency_modules(monkeypatch, tmp_pa
     ]
 
 
+def test_target_overlay_skips_unrelated_sibling_sources(tmp_path) -> None:
+    project = tmp_path / "flat"
+    contract = project / "main.vy"
+    dependency = project / "dependency.vy"
+    unrelated = project / "unrelated.vy"
+    project.mkdir()
+    contract.write_text("# @version 0.4.0\nimport dependency\n", encoding="utf-8")
+    dependency.write_text("# @version 0.4.0\nx: uint256\n", encoding="utf-8")
+    unrelated.write_text("# @version 0.4.0\ny: uint256\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nimport dependency\n"},
+        "0.4.3",
+        (project,),
+    ) as overlay:
+        assert overlay is not None
+        overlay_contract = overlay.paths[contract.resolve()]
+        overlay_root = overlay_contract.parent
+        assert (overlay_root / "dependency.vy").exists()
+        assert not (overlay_root / "unrelated.vy").exists()
+
+
+def test_target_overlay_preserves_shallow_absolute_import_roots(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "strategy.vy"
+    dependency = project / "src" / "modules" / "constants.vy"
+    contract.parent.mkdir(parents=True)
+    dependency.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.0\nfrom src.modules import constants\n", encoding="utf-8")
+    dependency.write_text("# @version 0.4.0\nMAX_BPS: constant(uint256) = 10_000\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom src.modules import constants\n"},
+        "0.4.3",
+        (project, project / "src"),
+    ) as overlay:
+        assert overlay is not None
+        overlay_contract = overlay.paths[contract.resolve()]
+        overlay_project = overlay_contract.parents[1]
+        assert overlay_contract.relative_to(overlay_project) == Path("src/strategy.vy")
+        assert (overlay_project / "src" / "modules" / "constants.vy").exists()
+
+
+def test_target_overlay_copies_json_interfaces(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "validator.vy"
+    interface = project / "src" / "interfaces" / "IValidator.json"
+    contract.parent.mkdir(parents=True)
+    interface.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.3\nfrom src.interfaces import IValidator\n", encoding="utf-8")
+    interface.write_text("[]\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom src.interfaces import IValidator\n"},
+        "0.4.3",
+        (project,),
+    ) as overlay:
+        assert overlay is not None
+        overlay_contract = overlay.paths[contract.resolve()]
+        overlay_project = overlay_contract.parents[1]
+        assert (overlay_project / "src" / "interfaces" / "IValidator.json").exists()
+
+
+def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "factory.vy"
+    dependency = project / "snekmate" / "utils" / "create2_address.vy"
+    contract.parent.mkdir(parents=True)
+    dependency.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.0\nfrom snekmate.utils import create2_address\n", encoding="utf-8")
+    dependency.write_text(
+        "# @version 0.4.0\n"
+        "def _compute_address(salt: bytes32, init_hash: bytes32, factory: address) -> address:\n"
+        "    return empty(address)\n",
+        encoding="utf-8",
+    )
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom snekmate.utils import create2\n"},
+        "0.4.3",
+        (project,),
+    ) as overlay:
+        assert overlay is not None
+        overlay_contract = overlay.paths[contract.resolve()]
+        overlay_project = overlay_contract.parents[1]
+        assert (overlay_project / "snekmate" / "utils" / "create2.vy").exists()
+
+
 def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")
