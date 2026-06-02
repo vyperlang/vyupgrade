@@ -891,6 +891,53 @@ def f() -> int256:
     assert "return unsafe_mul(10**32, convert(3, int256))" in result.source
 
 
+def test_signed_outer_convert_preserves_unsigned_internal_call_arg(config) -> None:
+    source = """# @version 0.3.10
+@internal
+@view
+def get_y_effective(collateral: uint256, N: uint256, discount: uint256) -> uint256:
+    return collateral + N + discount
+
+@external
+def health(collateral: int256, n: uint256) -> int256:
+    return convert(self.get_y_effective(convert(collateral, uint256), n, 0), int256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "self.get_y_effective(convert(collateral, uint256), n, 0)" in result.source
+    assert "convert(n, int256)" not in result.source
+
+
+def test_signed_unsafe_sub_convert_keeps_unsigned_operands(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(N: uint256) -> int256:
+    return convert(unsafe_sub(N, 1), int256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return convert(unsafe_sub(N, 1), int256)" in result.source
+    assert "unsafe_sub(N, convert(1, int256))" not in result.source
+
+
+def test_nested_unsigned_shift_convert_keeps_outer_signed_cast(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(value: uint256, k: int256) -> int256:
+    return convert(convert(convert(value << convert(unsafe_sub(159, k), uint256), bytes32), uint256) >> 159, int256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return convert(convert(convert(value << convert(unsafe_sub(159, k), uint256), "
+        "bytes32), uint256) >> 159, int256)"
+    ) in result.source
+    assert "unsafe_sub(convert(159, int256), k)" not in result.source
+
+
 def test_unsigned_unsafe_shift_return_casts_to_signed_return_type(config) -> None:
     source = """# @version 0.3.10
 @external

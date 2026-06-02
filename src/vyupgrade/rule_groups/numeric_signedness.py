@@ -336,6 +336,8 @@ def _mixed_signed_unsigned_arithmetic(
             match.end() + expr_start,
             target_type,
             line_no,
+            vars_for_line,
+            facts,
         )
         edits.extend(unsafe_edits)
         fixes.extend(unsafe_fixes)
@@ -758,6 +760,10 @@ def _signed_convert_mixed_integer_casts(
             end = expr_start + match.end()
             if _inside_nested_convert_call(source, start, expr_start - 1) or _inside_type_subscript(
                 source, start
+            ) or _unsigned_internal_call_arg_context(
+                source, start, facts
+            ) or _unsigned_external_call_arg_context(
+                source, start, name, facts, vars_for_line
             ):
                 continue
             replacement = f"convert({name}, {normalize_type(target_type)})"
@@ -788,12 +794,16 @@ def _signed_convert_unsafe_literal_casts(
     expr_start: int,
     target_type: str,
     line_no: int,
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
 ) -> tuple[list[TextEdit], list[Fix]]:
     if not _is_signed_integer_type(target_type):
         return [], []
     replacements: list[tuple[int, int, str, str]] = []
     for match in re.finditer(r"\bunsafe_(?:add|mul|sub)\s*\(", expr):
         absolute_open = expr_start + match.end() - 1
+        if _inside_nested_convert_call(source, absolute_open, expr_start - 1):
+            continue
         absolute_close = find_matching(source, absolute_open)
         if absolute_close is None:
             continue
@@ -808,6 +818,9 @@ def _signed_convert_unsafe_literal_casts(
             if not _nonnegative_integer_literal(arg):
                 continue
             other_arg = args[1 - index][2]
+            other_type = infer_expr_type(other_arg, vars_for_line, facts)
+            if _is_unsigned_integer_type(other_type):
+                continue
             if not _integer_expression_suggests_wide_type(other_arg):
                 continue
             replacement = f"convert({arg}, {normalize_type(target_type)})"
