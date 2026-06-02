@@ -65,6 +65,21 @@ def f() -> int128:
     assert "upper: int128 = max_value(int128)" in result.source
 
 
+def test_signed_boundary_return_array_literals_rewrite_to_min_max_value(config) -> None:
+    source = """# @version 0.3.10
+@internal
+def f(value: int256) -> int256[2]:
+    if value < 0:
+        return [-2**255, -value]
+    return [-value, 2**255 - 1]
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return [min_value(int256), -value]" in result.source
+    assert "return [-value, max_value(int256)]" in result.source
+
+
 def test_bytes32_convert_exponent_max_literal_is_folded(config) -> None:
     source = """# @version 0.3.7
 @external

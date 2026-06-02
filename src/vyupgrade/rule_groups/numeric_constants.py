@@ -121,9 +121,13 @@ def _constant_exponent_literals_context(
                 replacement,
             )
         )
+    signed_boundary_expr = (
+        r"(?:\(\s*(?:-\s*)?2\s*\*\*\s*[0-9][0-9_]*\s*(?:-\s*1)?\s*\)"
+        r"|(?:-\s*)?2\s*\*\*\s*[0-9][0-9_]*\s*(?:-\s*1)?)"
+    )
     signed_boundary_re = re.compile(
         rf":\s*(?P<type>{_SIGNED_INTEGER_TYPE})\s*=\s*"
-        r"(?P<expr>(?:\(\s*)?-?\s*2\s*\*\*\s*[0-9][0-9_]*\s*(?:-\s*1)?(?:\s*\))?)"
+        rf"(?P<expr>{signed_boundary_expr})"
     )
     for match in signed_boundary_re.finditer(source):
         if not span_is_code(mask, match.start("expr"), match.end("expr")):
@@ -137,6 +141,26 @@ def _constant_exponent_literals_context(
                 "VY054",
                 line_number(source, match.start()),
                 "replaced signed integer boundary literal",
+                match.group("expr"),
+                replacement,
+            )
+        )
+    return_boundary_re = re.compile(rf"(?<![\w.])(?P<expr>{signed_boundary_expr})")
+    for match in return_boundary_re.finditer(source):
+        if not span_is_code(mask, match.start("expr"), match.end("expr")):
+            continue
+        expected_type = _signed_boundary_return_context_type(source, match.start("expr"), facts)
+        if expected_type is None:
+            continue
+        replacement = _signed_boundary_literal_replacement(expected_type, match.group("expr"))
+        if replacement is None:
+            continue
+        edits.append(TextEdit(match.start("expr"), match.end("expr"), replacement))
+        fixes.append(
+            Fix(
+                "VY054",
+                line_number(source, match.start()),
+                "replaced signed integer return boundary literal",
                 match.group("expr"),
                 replacement,
             )
@@ -222,6 +246,21 @@ def _signed_boundary_literal_replacement(type_name: str, expr: str) -> str | Non
         return f"min_value({type_name})"
     if literal == f"2**{bits - 1}-1":
         return f"max_value({type_name})"
+    return None
+
+
+def _signed_boundary_return_context_type(source: str, index: int, facts: SourceFacts) -> str | None:
+    line_no = line_number(source, index)
+    return_type = normalize_type(facts.return_type_at_line(line_no) or "")
+    if not re.fullmatch(_SIGNED_INTEGER_TYPE, return_type):
+        return None
+    line_start = source.rfind("\n", 0, index) + 1
+    line_end = source.find("\n", index)
+    if line_end == -1:
+        line_end = len(source)
+    line_prefix = source[line_start:index]
+    if re.search(r"\breturn\b", line_prefix):
+        return return_type
     return None
 
 
