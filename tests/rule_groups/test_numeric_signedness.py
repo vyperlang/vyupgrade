@@ -94,6 +94,23 @@ def f() -> uint256:
     assert "n_coins = convert(i, uint256)" in result.source
 
 
+def test_signed_constant_comparison_ignores_neighbor_unsigned_comparison(config) -> None:
+    source = """# @version 0.3.7
+PROXY_SLASH: constant(int128) = 7
+
+@external
+def f(flag: int128, end: uint256) -> bool:
+    if ((flag == PROXY_SLASH) and (end < block.timestamp)):
+        return True
+    return False
+"""
+
+    result = apply_rules(source, config())
+
+    assert "flag == PROXY_SLASH" in result.source
+    assert "convert(PROXY_SLASH, uint256)" not in result.source
+
+
 def test_signed_loop_index_converted_in_uint_index_arithmetic(config) -> None:
     source = """# @version 0.2.8
 MAX_COIN: constant(int128) = 1

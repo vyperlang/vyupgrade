@@ -1177,6 +1177,7 @@ def _unsigned_comparison_target_type_at(
 def _comparison_peer(expr: str, name: str) -> str | None:
     expr = expr.strip().removesuffix(":").strip()
     expr = re.sub(r"^(?:if|elif|assert|return)\s+", "", expr)
+    expr = _strip_comparison_wrappers(expr)
     for separator in (" and ", " or "):
         if separator in expr:
             for part in expr.split(separator):
@@ -1187,12 +1188,21 @@ def _comparison_peer(expr: str, name: str) -> str | None:
     match = re.match(r"(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)\Z", expr)
     if match is None:
         return None
-    left, _op, right = (part.strip() for part in match.groups())
+    left, _op, right = (_strip_comparison_wrappers(part) for part in match.groups())
     if left == name:
         return right
     if right == name:
         return left
     return None
+
+
+def _strip_comparison_wrappers(expr: str) -> str:
+    expr = expr.strip()
+    while expr.startswith("("):
+        expr = expr[1:].strip()
+    while expr.endswith(")"):
+        expr = expr[:-1].strip()
+    return expr
 
 
 def _comparison_expression_at(source: str, index: int) -> str:
