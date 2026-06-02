@@ -448,16 +448,22 @@ def _replace_shift_builtin(
                 replacement = f"({value} {operator} {abs(amount)})"
             elif negative_expr is not None:
                 vars_for_line = facts.vars_at_line(line_number(current, match.start()))
-                replacement = (
-                    f"({value} >> "
-                    f"({_unsigned_shift_amount_expr(negative_expr.group(1).strip(), vars_for_line, constant_values)}))"
-                )
+                negative_amount = negative_expr.group(1).strip()
+                if _local_name_assigned_negative_integer(current, match.start(), negative_amount, vars_for_line):
+                    replacement = f"({value} << convert(-{negative_amount}, uint256))"
+                else:
+                    replacement = (
+                        f"({value} >> "
+                        f"({_unsigned_shift_amount_expr(negative_amount, vars_for_line, constant_values)}))"
+                    )
             elif positive is not None:
                 replacement = f"({value} << {positive.group(1)})"
             elif positive_constant is not None and positive_constant.group(1) in constant_values:
                 amount = constant_values[positive_constant.group(1)]
                 operator = "<<" if amount >= 0 else ">>"
                 replacement = f"({value} {operator} {abs(amount)})"
+            elif _local_name_assigned_negative_integer(current, match.start(), shift_by, facts.vars_at_line(line_number(current, match.start()))):
+                replacement = f"({value} >> convert(-{shift_by}, uint256))"
             elif convert_constant is not None and convert_constant.group(1) in constant_values:
                 amount = constant_values[convert_constant.group(1)]
                 operator = "<<" if amount >= 0 else ">>"
@@ -516,6 +522,32 @@ def _unsigned_shift_amount_expr(
         lambda match: _unsigned_shift_convert_replacement(match.group(1).strip(), vars_for_line),
         expr,
     )
+
+
+def _local_name_assigned_negative_integer(
+    source: str, index: int, name: str, vars_for_line: dict[str, str]
+) -> bool:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return False
+    if not _is_signed_integer_type(vars_for_line.get(name)):
+        return False
+    line_start = source.rfind("\n", 0, index) + 1
+    current_line = source[line_start : source.find("\n", line_start) if source.find("\n", line_start) != -1 else len(source)]
+    current_indent = len(current_line) - len(current_line.lstrip(" \t"))
+    for line in reversed(source[:line_start].splitlines()):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        if indent < current_indent and re.match(r"(?:@|def\s+)", stripped):
+            return False
+        if indent > current_indent:
+            continue
+        if re.match(rf"{re.escape(name)}\s*(?::\s*int\d+)?\s*=\s*-", stripped):
+            return True
+        if re.match(rf"{re.escape(name)}\s*(?::[^=]+)?\s*=", stripped):
+            return False
+    return False
 
 
 def _unsigned_shift_convert_replacement(expr: str, vars_for_line: dict[str, str]) -> str:

@@ -871,6 +871,21 @@ def f(x: uint256, i: uint256) -> uint256:
     assert "return (x >> (128 * (i - 1)))" in result.source
 
 
+def test_shift_builtin_rewrites_local_negative_offset(config) -> None:
+    source = """# @version 0.4.1
+@external
+def f(x: uint256, i: int128) -> uint256:
+    offset: int128 = -8 * i
+    return shift(shift(x, offset) % 256, -offset)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.2"))
+
+    assert "shift(" not in result.source
+    assert "(x >> convert(-offset, uint256))" in result.source
+    assert "<< convert(-offset, uint256)" in result.source
+
+
 def test_shift_builtin_folds_constants_inside_dynamic_amount(config) -> None:
     source = """# @version 0.3.10
 N_COINS: constant(int128) = 3
