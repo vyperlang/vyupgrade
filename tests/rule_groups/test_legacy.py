@@ -269,6 +269,32 @@ def _g():
     }
 
 
+def test_legacy_public_fixed_array_getter_preserves_int128_selector(config) -> None:
+    source = """# @version 0.1.0b17
+coins: public(address[2])
+balances: public(uint256[N_COINS])
+N_COINS: constant(uint256) = 2
+
+@public
+@constant
+def first() -> address:
+    return self.coins[0]
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "__coins: address[2]" in result.source
+    assert "__balances: uint256[N_COINS]" in result.source
+    assert "coins: public(address[2])" not in result.source
+    assert "balances: public(uint256[N_COINS])" not in result.source
+    assert "def coins(i: int128) -> address:" in result.source
+    assert "return self.__coins[convert(i, uint256)]" in result.source
+    assert "def balances(i: int128) -> uint256:" in result.source
+    assert "return self.__balances[convert(i, uint256)]" in result.source
+    assert "return self.__coins[0]" in result.source
+    assert any(fix.rule == "VY223" for fix in result.fixes)
+
+
 def test_delegate_raw_call_value_kwarg_removed(config) -> None:
     source = """# pragma version ^0.3.10
 @external

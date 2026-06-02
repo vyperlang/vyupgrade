@@ -26,6 +26,7 @@ from ..source import (
     TextEdit,
     apply_edits,
     code_mask,
+    code_identifiers,
     find_matching,
     line_number,
     split_top_level_args,
@@ -258,6 +259,114 @@ def _event_kwargs(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagn
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+def _legacy_public_fixed_array_getters(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    if not _pre_021_context(rule_context.migration):
+        return rule_context.source, [], []
+    source = rule_context.source
+    mask = rule_context.code_mask
+    declarations = list(_legacy_public_fixed_array_declarations(source, mask))
+    if not declarations:
+        return source, [], []
+
+    used = code_identifiers(source)
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    getters: list[str] = []
+    renames: dict[str, str] = {}
+    for declaration in declarations:
+        name = declaration.group("name")
+        if re.search(rf"^[ \t]*def[ \t]+{re.escape(name)}[ \t]*\(", source, re.MULTILINE):
+            continue
+        backing_name = _legacy_public_getter_backing_name(name, used)
+        used.add(backing_name)
+        value_type = declaration.group("type").strip()
+        bound = declaration.group("bound").strip()
+        replacement = (
+            f"{declaration.group('indent')}{backing_name}: {value_type}[{bound}]"
+            f"{declaration.group('comment')}"
+        )
+        edits.append(TextEdit(declaration.start(), declaration.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY223",
+                line_number(source, declaration.start()),
+                "renamed legacy public fixed array backing storage",
+                declaration.group(0),
+                replacement,
+            )
+        )
+        renames[name] = backing_name
+        getters.append(
+            "\n"
+            "@view\n"
+            "@external\n"
+            f"def {name}(i: int128) -> {value_type}:\n"
+            f"    return self.{backing_name}[convert(i, uint256)]\n"
+        )
+
+    if not renames:
+        return source, [], []
+
+    for name, backing_name in renames.items():
+        for match in re.finditer(rf"\bself\.{re.escape(name)}\b", source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            edits.append(TextEdit(match.start(), match.end(), f"self.{backing_name}"))
+            fixes.append(
+                Fix(
+                    "VY223",
+                    line_number(source, match.start()),
+                    "renamed legacy public fixed array storage reference",
+                    f"self.{name}",
+                    f"self.{backing_name}",
+                )
+            )
+
+    insert_at = len(source)
+    prefix = "" if source.endswith("\n") else "\n"
+    getter_source = prefix + "\n".join(getters).lstrip("\n") + "\n"
+    edits.append(TextEdit(insert_at, insert_at, getter_source))
+    fixes.append(
+        Fix(
+            "VY223",
+            line_number(source, insert_at),
+            "added legacy int128 public fixed array getter",
+            "",
+            getter_source.rstrip(),
+        )
+    )
+    return apply_edits(source, edits), fixes, []
+
+
+def _legacy_public_fixed_array_declarations(source: str, mask: list[bool]):
+    pattern = re.compile(
+        r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*:[ \t]*"
+        r"public[ \t]*\([ \t]*(?P<type>[^()\n\[\]]+)[ \t]*"
+        r"\[[ \t]*(?P<bound>[^\]\n]+)[ \t]*\][ \t]*\)"
+        r"(?P<comment>[ \t]*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if match.group("indent") or not span_is_code(mask, match.start(), match.end()):
+            continue
+        value_type = match.group("type").strip()
+        if value_type.startswith(("Bytes", "String", "DynArray", "HashMap")):
+            continue
+        yield match
+
+
+def _legacy_public_getter_backing_name(name: str, used: set[str]) -> str:
+    candidate = f"__{name}"
+    if candidate not in used:
+        return candidate
+    index = 2
+    while f"__{name}_{index}" in used:
+        index += 1
+    return f"__{name}_{index}"
 
 
 def _legacy_dynamic_types(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -880,6 +989,11 @@ EARLY_RULES = (
             target_floor("VY203", (0, 2, 1)),
             target_floor("VY204", (0, 2, 1)),
         ),
+    ),
+    Rule(
+        "legacy_public_fixed_array_getters",
+        runner=_legacy_public_fixed_array_getters,
+        changes=(target_floor("VY223", (0, 2, 1)),),
     ),
     Rule("event_kwargs", runner=_event_kwargs, changes=(crossing("VY112", (0, 4, 1)),)),
 )

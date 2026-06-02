@@ -403,6 +403,8 @@ modern Python interpreter.
   legacy `contract Foo():` headers, `address(Interface)` annotations,
   interface-typed storage variables lowered to `address` with call-site casts,
   and interface methods that must become `payable` because calls pass `value=`.
+- Public fixed-array getters used `int128` indexes in pre-0.2.1 ABIs:
+  `VY223` adds explicit compatibility getters and renames backing storage.
 - Dynamic byte and string type names capitalized: `VY207`.
 - Byte and string literals are no longer interchangeable: `VYD210`.
 - `assert_modifiable()` and `as_unitless_number()` removed: `VY208`.
