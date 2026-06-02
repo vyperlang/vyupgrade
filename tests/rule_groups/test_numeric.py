@@ -678,6 +678,21 @@ def f() -> Bytes[32]:
     assert "convert(block.prevrandao, bytes32)" not in result.source
 
 
+def test_redundant_bytes32_convert_keeps_uint256_storage_read(config) -> None:
+    source = """# @version 0.2.16
+aave_referral: uint256
+
+@external
+def f():
+    aave_referral: bytes32 = convert(self.aave_referral, bytes32)
+    raw_call(empty(address), concat(aave_referral))
+"""
+
+    result = apply_rules(source, config())
+
+    assert "aave_referral: bytes32 = convert(self.aave_referral, bytes32)" in result.source
+
+
 def test_prevhash_uint256_convert_kept_for_target_arithmetic(config) -> None:
     source = """# @version 0.2.8
 ticket_count: uint256

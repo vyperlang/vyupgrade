@@ -15,7 +15,6 @@ from .vyper_builtins import (
 INT_TYPE_RE = re.compile(
     r"u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?$"
 )
-TYPE_NAME_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 DEF_RE = re.compile(
     r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)(?:\s*->\s*([^:]+?))?\s*:\s*(\w+)?\s*$"
 )
@@ -447,6 +446,9 @@ def infer_expr_type(
     if empty_match:
         return empty_match.group(1).strip()
     if facts is not None:
+        storage_type = _infer_self_storage_type(expr, facts)
+        if storage_type is not None:
+            return storage_type
         internal_call_type = _infer_internal_call_type(expr, facts)
         if internal_call_type is not None:
             return internal_call_type
@@ -458,8 +460,6 @@ def infer_expr_type(
             return attr_type
     if expr in vars_for_line:
         return normalize_type(vars_for_line[expr])
-    if expr.startswith("self.") and expr[5:] in vars_for_line:
-        return normalize_type(vars_for_line[expr[5:]])
     indexed_type = _infer_indexed_type(expr, vars_for_line, facts)
     if indexed_type is not None:
         return indexed_type
@@ -519,6 +519,14 @@ def _infer_internal_call_type(expr: str, facts: SourceFacts) -> str | None:
     if not match:
         return None
     return facts.function_return_names.get(match.group(1))
+
+
+def _infer_self_storage_type(expr: str, facts: SourceFacts) -> str | None:
+    match = re.fullmatch(r"self\.([A-Za-z_][A-Za-z0-9_]*)", expr)
+    if match is None:
+        return None
+    storage_type = facts.storage_vars.get(match.group(1))
+    return normalize_type(storage_type) if storage_type is not None else None
 
 
 def _infer_attribute_type(
@@ -690,7 +698,7 @@ def _unwrap_public_or_constant(type_name: str, known_types: set[str] | None = No
     match = TYPE_WRAPPER_RE.match(type_name)
     if match:
         return match.group(1).strip()
-    if TYPE_NAME_RE.fullmatch(type_name) or type_name in (known_types or set()):
+    if _looks_like_type(type_name, known_types or set()):
         return type_name
     return None
 

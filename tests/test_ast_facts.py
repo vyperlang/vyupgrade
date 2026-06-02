@@ -134,6 +134,24 @@ def wrappedAsset() -> address: return SHARE
     assert facts.function_returns[3] == "address"
 
 
+def test_source_facts_record_primitive_storage_vars() -> None:
+    source = """owner: public(address)
+aave_referral: uint256
+balances: HashMap[address, uint256]
+
+@external
+def f():
+    aave_referral: bytes32 = convert(self.aave_referral, bytes32)
+"""
+
+    facts = parse_source_facts(source)
+
+    assert facts.storage_vars["owner"] == "address"
+    assert facts.storage_vars["aave_referral"] == "uint256"
+    assert facts.storage_vars["balances"] == "HashMap[address, uint256]"
+    assert infer_expr_type("self.aave_referral", facts.vars_at_line(6), facts) == "uint256"
+
+
 def test_source_facts_do_not_mutate_builtin_interface_registry() -> None:
     source = """interface IERC20:
     def foo(): view
