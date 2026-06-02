@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from vyupgrade.compiler import (
+    compare_artifact_details,
     compare_artifacts,
     compile_source_file,
     compile_target_source,
@@ -992,6 +993,13 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
         abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
             source_compile, target_compile
         )
+        artifact_details = _artifact_detail_fields(
+            source_compile,
+            target_compile,
+            abi_equal,
+            method_ids_equal,
+            storage_layout_equal,
+        )
         return {
             **item,
             "changed": original != rewrite.source,
@@ -1004,6 +1012,7 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             "abi_equal": abi_equal,
             "method_ids_equal": method_ids_equal,
             "storage_layout_equal": storage_layout_equal,
+            **artifact_details,
             "seconds": round(time.time() - started, 3),
         }
     except Exception as exc:
@@ -1015,6 +1024,31 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             "target_error": traceback.format_exc()[-2000:],
             "seconds": round(time.time() - started, 3),
         }
+
+
+def _artifact_detail_fields(
+    source_compile,
+    target_compile,
+    abi_equal: bool | None,
+    method_ids_equal: bool | None,
+    storage_layout_equal: bool | None,
+) -> dict[str, list[str]]:
+    requested = {
+        "abi_diff": abi_equal is False,
+        "method_id_diff": method_ids_equal is False,
+        "storage_layout_diff": storage_layout_equal is False,
+    }
+    if not any(requested.values()):
+        return {}
+    abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
+        source_compile, target_compile
+    )
+    details = {
+        "abi_diff": abi_diff,
+        "method_id_diff": method_id_diff,
+        "storage_layout_diff": storage_layout_diff,
+    }
+    return {field: details[field] for field, include in requested.items() if include}
 
 
 def _smoke_summary(

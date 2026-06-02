@@ -390,6 +390,59 @@ def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Pat
     assert result["target_compile"] == "passed"
 
 
+def test_smoke_records_artifact_diff_details_for_mismatches(monkeypatch, tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "0xabc.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("x: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+        "pragma": "0.3.10",
+    }
+
+    monkeypatch.setattr(
+        corpus,
+        "compile_source_file",
+        lambda path, config, source_version: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+    monkeypatch.setattr(
+        corpus,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+    monkeypatch.setattr(
+        corpus,
+        "apply_rules",
+        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
+    )
+    monkeypatch.setattr(corpus, "compare_artifacts", lambda source, target: (False, True, False))
+    monkeypatch.setattr(
+        corpus,
+        "compare_artifact_details",
+        lambda source, target: (
+            ["changed ABI entry: f(): stateMutability 'view' -> 'nonpayable'"],
+            ["changed selector: f() 0x11111111 -> 0x22222222"],
+            ["changed storage: x slot 0 uint256 -> 1 uint256"],
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert result["abi_diff"] == [
+        "changed ABI entry: f(): stateMutability 'view' -> 'nonpayable'"
+    ]
+    assert "method_id_diff" not in result
+    assert result["storage_layout_diff"] == [
+        "changed storage: x slot 0 uint256 -> 1 uint256"
+    ]
+
+
 def test_smoke_raises_broad_pragma_source_version_from_syntax(monkeypatch, tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     contract = tmp_path / "contracts" / "chainsecurity_flat" / "0xabc.vy"
