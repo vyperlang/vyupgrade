@@ -264,6 +264,27 @@ def supportsInterface(interface_id: bytes4) -> bool:
     assert any(fix.rule == "VY014" for fix in result.fixes)
 
 
+def test_no_return_view_interface_call_statement_becomes_nonpayable(config) -> None:
+    source = """# @version 0.3.10
+interface Blast:
+    def configureClaimableGas(): view
+    def claimMaxGas() -> uint256: view
+
+@external
+def __init__():
+    Blast(0x4300000000000000000000000000000000000002).configureClaimableGas()
+    gas: uint256 = Blast(0x4300000000000000000000000000000000000002).claimMaxGas()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "def configureClaimableGas(): nonpayable" in result.source
+    assert "extcall Blast(0x4300000000000000000000000000000000000002).configureClaimableGas()" in result.source
+    assert "def claimMaxGas() -> uint256: view" in result.source
+    assert "staticcall Blast(0x4300000000000000000000000000000000000002).claimMaxGas()" in result.source
+    assert any(fix.rule == "VY014" for fix in result.fixes)
+
+
 def test_snekmate_create2_address_import_renamed(config) -> None:
     source = """# @version 0.4.0
 from snekmate.utils import create2_address

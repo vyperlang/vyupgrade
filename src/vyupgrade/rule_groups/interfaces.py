@@ -251,6 +251,97 @@ def _interface_view_mutability(
     return apply_edits(source, edits), fixes, []
 
 
+def _side_effecting_view_interface_calls(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    methods = _side_effecting_view_interface_methods(source, facts)
+    if not methods:
+        return source, [], []
+
+    lines = source.splitlines(keepends=True)
+    offsets = _line_offsets(source)
+    current_interface: str | None = None
+    current_indent = 0
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    mask = rule_context.code_mask
+    for index, line in enumerate(lines):
+        offset = offsets[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not _line_match_starts_outside_string(source, mask, offset):
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        header = line.split("#", 1)[0].strip()
+        interface_match = re.match(
+            r"interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*$", header
+        )
+        if interface_match is not None:
+            current_interface = interface_match.group(1)
+            current_indent = indent
+            continue
+        if current_interface is not None and indent <= current_indent:
+            current_interface = None
+        if current_interface is None:
+            continue
+        method_match = re.match(
+            r"(?P<prefix>[ \t]*def[ \t]+(?P<method>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^#\n]*\)[ \t]*:[ \t]*)(?P<mutability>view|pure)\b",
+            line,
+        )
+        if method_match is None:
+            continue
+        if (current_interface, method_match.group("method")) not in methods:
+            continue
+        start = offset + method_match.start("mutability")
+        end = offset + method_match.end("mutability")
+        edits.append(TextEdit(start, end, "nonpayable"))
+        fixes.append(
+            Fix(
+                "VY014",
+                index + 1,
+                "changed no-return view interface method used as a statement to nonpayable",
+                method_match.group("mutability"),
+                "nonpayable",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _side_effecting_view_interface_methods(
+    source: str, facts: SourceFacts
+) -> set[tuple[str, str]]:
+    methods: set[tuple[str, str]] = set()
+    mask = code_mask(source)
+    for start, _end, target, method, cast_type in external_call_matches(source, facts):
+        if not span_is_code(mask, start, min(start + 1, len(source))):
+            continue
+        if not _is_standalone_call_statement(source, start):
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, start))
+        if target.startswith("self."):
+            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(
+                target, vars_for_line, facts
+            )
+        else:
+            target_type = cast_type or infer_expr_type(target, vars_for_line, facts)
+        type_name = normalize_type(target_type or "")
+        mutability = facts.interfaces.get(type_name, {}).get(method)
+        if mutability not in {"view", "pure"}:
+            continue
+        if method in facts.interface_returns.get(type_name, {}):
+            continue
+        methods.add((type_name, method))
+    return methods
+
+
+def _is_standalone_call_statement(source: str, start: int) -> bool:
+    line_start = source.rfind("\n", 0, start) + 1
+    return source[line_start:start].strip() in {"", "staticcall", "extcall"}
+
+
 def _implemented_view_mutability(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -987,6 +1078,11 @@ RULES = (
     Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
     Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(crossing("VY016", (0, 4, 0)),)),
     Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(crossing("VY014", (0, 4, 0)),)),
+    Rule(
+        "side_effecting_view_interface_calls",
+        runner=_side_effecting_view_interface_calls,
+        changes=(crossing("VY014", (0, 4, 0)),),
+    ),
     Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
     Rule("view_log_mutability", runner=_view_log_mutability, changes=(crossing("VY017", (0, 4, 0)),)),
     Rule(
