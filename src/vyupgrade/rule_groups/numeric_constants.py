@@ -374,6 +374,11 @@ CONSTANT_DECL_RULES = (
         runner=_constant_integer_decl_casts,
         changes=(crossing("VY052", (0, 4, 0)),),
     ),
+    Rule(
+        "constant_exponent_literals_after_decl_folding",
+        runner=_constant_exponent_literals_context,
+        changes=(crossing("VY054", (0, 4, 0)),),
+    ),
 )
 
 BYTES_LITERAL_RULES = (

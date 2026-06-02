@@ -41,6 +41,7 @@ LEGACY_IMPLEMENTED_INTERFACE_STUBS = {
     def setApprovalForAll(_operator: address, _approved: bool): {setApprovalForAll}
 """,
     "ERC4626": """interface ERC4626:
+{asset}
     def totalAssets() -> uint256: {totalAssets}
     def convertToAssets(shareAmount: uint256) -> uint256: {convertToAssets}
     def convertToShares(assetAmount: uint256) -> uint256: {convertToShares}
@@ -903,10 +904,13 @@ def _legacy_implemented_interface_stub(name: str, facts: SourceFacts) -> str:
             stub = stub.replace("{" + key + "}", value)
         return stub
     if name == "ERC4626":
-        replacements = {
-            method: _implementation_mutability(facts, method, default)
-            for method, default in {
-                "totalAssets": "view",
+        asset_type = _public_getter_return_type(facts, "asset")
+        replacements = {"asset": f"    def asset() -> {asset_type}: view" if asset_type else ""}
+        replacements.update(
+            {
+                method: _implementation_mutability(facts, method, default)
+                for method, default in {
+                    "totalAssets": "view",
                 "convertToAssets": "view",
                 "convertToShares": "view",
                 "maxDeposit": "view",
@@ -920,13 +924,28 @@ def _legacy_implemented_interface_stub(name: str, facts: SourceFacts) -> str:
                 "withdraw": "nonpayable",
                 "maxRedeem": "view",
                 "previewRedeem": "view",
-                "redeem": "nonpayable",
-            }.items()
-        }
+                    "redeem": "nonpayable",
+                }.items()
+            }
+        )
         for key, value in replacements.items():
             stub = stub.replace("{" + key + "}", value)
         return stub
     return stub
+
+
+def _public_getter_return_type(facts: SourceFacts, name: str) -> str | None:
+    type_name = facts.global_vars.get(name)
+    if type_name is None or not type_name.strip().startswith("public("):
+        return None
+    previous = ""
+    while type_name != previous:
+        previous = type_name
+        match = re.fullmatch(r"(?:public|constant|immutable)\((.+)\)", type_name.strip())
+        if match is None:
+            break
+        type_name = match.group(1).strip()
+    return type_name.strip() or None
 
 
 def _implementation_mutability(facts: SourceFacts, name: str, default: str) -> str:

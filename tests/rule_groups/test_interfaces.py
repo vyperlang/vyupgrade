@@ -356,6 +356,26 @@ def redeem(shares: uint256, receiver: address=msg.sender, owner: address=msg.sen
     assert any(fix.rule == "VY020" for fix in result.fixes)
 
 
+def test_legacy_implemented_erc4626_stub_keeps_public_asset_getter(config) -> None:
+    source = """# @version 0.3.10
+from vyper.interfaces import ERC4626
+
+implements: ERC4626
+
+asset: public(immutable(address))
+
+@external
+def __init__(vault: address):
+    asset = ERC4626(vault).asset()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "interface ERC4626:" in result.source
+    assert "def asset() -> address: view" in result.source
+    assert "asset = staticcall ERC4626(vault).asset()" in result.source
+
+
 def test_pure_local_interface_view_implementation_becomes_view(config) -> None:
     source = """# @version 0.3.3
 interface ERC165:

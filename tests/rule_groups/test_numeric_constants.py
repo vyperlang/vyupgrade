@@ -18,6 +18,20 @@ MAX_A: constant(uint256) = N_COINS**N_COINS * 1000
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
+def test_unsigned_constant_exponent_uses_late_folded_integer_constants(config) -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(uint256) = 3
+PRICE_SIZE: constant(int128) = 256 / (N_COINS - 1)
+PRICE_MASK: constant(uint256) = 2**PRICE_SIZE - 1
+"""
+
+    result = apply_rules(source, config())
+
+    assert "PRICE_SIZE: constant(int128) = 128" in result.source
+    assert "PRICE_MASK: constant(uint256) = 2**128 - 1" in result.source
+    assert any(fix.rule == "VY054" for fix in result.fixes)
+
+
 def test_int128_max_literal_rewrites_to_max_value(config) -> None:
     source = """# @version 0.3.10
 @external

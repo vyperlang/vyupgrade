@@ -472,6 +472,10 @@ def _scan_terminal_block(
             index += 1
             continue
         stripped = line.strip()
+        quote = _triple_quote_start(stripped)
+        if quote is not None:
+            index = _triple_quoted_string_end(lines, index, end, quote) + 1
+            continue
         if _is_if_header(stripped):
             chain_end, terminates = _if_chain_terminates(lines, index, end, indent, remove)
             if terminates:
@@ -601,6 +605,25 @@ def _is_terminator(stripped: str) -> bool:
             "continue ",
         )
     )
+
+
+def _triple_quote_start(stripped: str) -> str | None:
+    for quote in ('"""', "'''"):
+        if stripped.startswith(quote):
+            return quote
+    return None
+
+
+def _triple_quoted_string_end(lines: list[str], start: int, end: int, quote: str) -> int:
+    limit = min(end, len(lines))
+    if lines[start].strip().count(quote) >= 2:
+        return start
+    index = start + 1
+    while index < limit:
+        if quote in lines[index]:
+            return index
+        index += 1
+    return limit - 1
 
 
 def _continued_statement_end(lines: list[str], index: int, end: int) -> int:

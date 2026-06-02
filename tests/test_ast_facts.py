@@ -197,3 +197,15 @@ def test_expr_type_extracts_min_max_value_type() -> None:
 
 def test_expr_type_extracts_prevrandao_type() -> None:
     assert infer_expr_type("block.prevrandao", {}, None) == "bytes32"
+
+
+def test_expr_type_extracts_indexed_tuple_call_component() -> None:
+    source = """interface Aggregator:
+    def latestRoundData() -> (uint256, int256, uint256): view
+
+agg: Aggregator
+"""
+
+    facts = parse_source_facts(source)
+
+    assert infer_expr_type("(agg.latestRoundData())[1]", facts.vars_at_line(4), facts) == "int256"

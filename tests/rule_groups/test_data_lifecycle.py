@@ -125,6 +125,25 @@ def f(flag: bool) -> uint256:
     assert any(fix.rule == "VY092" for fix in result.fixes)
 
 
+def test_unreachable_code_ignores_return_text_in_docstring(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> uint256:
+    \"\"\"
+    @notice The next line documents the return payload.
+    return [value, other_value]
+    \"\"\"
+    value: uint256 = 1
+    return value
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "value: uint256 = 1" in result.source
+    assert "return value" in result.source
+    assert not any(fix.rule == "VY092" for fix in result.fixes)
+
+
 def test_unreachable_code_after_exhaustive_if_chain_is_removed(config) -> None:
     source = """# @version 0.3.10
 @external

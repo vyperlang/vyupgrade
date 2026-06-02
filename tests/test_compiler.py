@@ -597,6 +597,24 @@ VALUE: constant(String[32]) = """literal"""
     assert 'VALUE: constant(String[32]) = """literal"""' in result
 
 
+def test_target_validation_source_keeps_multiline_string_literals() -> None:
+    source = '''# @version 0.3.10
+@external
+def tokenURI(token_id: uint256) -> String[256]:
+    return concat(
+        """data:application/json,{
+    "name": "Token #"""
+        ,
+        uint2str(token_id),
+    )
+'''
+
+    result = _target_validation_source(source, "0.4.3")
+
+    assert '"""data:application/json,{' in result
+    assert "return concat(\n        ," not in result
+
+
 def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contracts" / "contract.vy"
     contract.parent.mkdir()
@@ -815,7 +833,12 @@ def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) ->
         assert overlay is not None
         overlay_contract = overlay.paths[contract.resolve()]
         overlay_project = overlay_contract.parents[1]
-        assert (overlay_project / "snekmate" / "utils" / "create2.vy").exists()
+        alias_source = (
+            overlay_project / "snekmate" / "utils" / "create2.vy"
+        ).read_text(encoding="utf-8")
+
+    assert "def _compute_create2_address(" in alias_source
+    assert "def _compute_address(" not in alias_source
 
 
 def test_target_overlay_resolves_dependency_imports_from_search_roots(tmp_path) -> None:

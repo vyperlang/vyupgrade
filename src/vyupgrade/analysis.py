@@ -559,7 +559,7 @@ def _infer_indexed_type(
             close = _matching_local_bracket(rest, 0)
             if close is None:
                 return None
-            base_type = indexed_value_type(base_type)
+            base_type = _indexed_value_type_at(base_type, rest[1:close].strip())
             if base_type is None:
                 return None
             rest = rest[close + 1 :]
@@ -577,11 +577,29 @@ def _infer_indexed_type(
         close = rest.find("]")
         if close == -1:
             return None
-        type_name = indexed_value_type(type_name)
+        type_name = _indexed_value_type_at(type_name, rest[1:close].strip())
         if type_name is None:
             return None
         rest = rest[close + 1 :]
     return normalize_type(type_name) if rest == "" else None
+
+
+def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None:
+    if type_name is None:
+        return None
+    unwrapped = unwrap_type(type_name)
+    if unwrapped.startswith("(") and unwrapped.endswith(")"):
+        parts = split_top_level_args(unwrapped[1:-1])
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return indexed_value_type(parts[0].strip())
+        if re.fullmatch(r"\d(?:_?\d)*", index_expr):
+            index = int(index_expr.replace("_", ""))
+            if 0 <= index < len(parts):
+                return parts[index].strip()
+        return parts[0].strip()
+    return indexed_value_type(type_name)
 
 
 def _raw_index_base_type(

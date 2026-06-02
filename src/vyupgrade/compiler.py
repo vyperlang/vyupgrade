@@ -411,7 +411,11 @@ def _copy_validation_source(
     if source_path.name == "create2_address.vy":
         alias = target.with_name("create2.vy")
         alias.write_text(
-            _target_validation_source(source, target_version, is_interface=False),
+            _target_validation_source(
+                _target_validation_create2_alias_source(source),
+                target_version,
+                is_interface=False,
+            ),
             encoding="utf-8",
         )
 
@@ -650,6 +654,10 @@ def _strip_target_validation_docstrings(source: str) -> str:
             result.append(line)
             index += 1
             continue
+        if not _target_validation_docstring_context(lines, index):
+            result.append(line)
+            index += 1
+            continue
         index += 1
         if stripped.count(quote) >= 2:
             continue
@@ -668,6 +676,47 @@ def _standalone_docstring_quote(stripped_line: str) -> str | None:
     return None
 
 
+def _target_validation_docstring_context(lines: list[str], index: int) -> bool:
+    indent = len(lines[index]) - len(lines[index].lstrip(" \t"))
+    previous = _previous_significant_line(lines, index)
+    if previous is None:
+        return indent == 0
+    previous_index, previous_line = previous
+    previous_stripped = previous_line.strip()
+    previous_indent = len(previous_line) - len(previous_line.lstrip(" \t"))
+    if indent == 0:
+        return previous_stripped.startswith("#pragma version")
+    if previous_indent >= indent or not previous_stripped.endswith(":"):
+        return False
+    if previous_stripped.startswith("def "):
+        return True
+    return _previous_function_header(lines, previous_index, previous_indent) is not None
+
+
+def _previous_significant_line(lines: list[str], index: int) -> tuple[int, str] | None:
+    cursor = index - 1
+    while cursor >= 0:
+        stripped = lines[cursor].strip()
+        if stripped and not stripped.startswith("#"):
+            return cursor, lines[cursor]
+        cursor -= 1
+    return None
+
+
+def _previous_function_header(lines: list[str], index: int, indent: int) -> int | None:
+    cursor = index
+    while cursor >= 0:
+        line = lines[cursor]
+        stripped = line.strip()
+        current_indent = len(line) - len(line.lstrip(" \t"))
+        if current_indent < indent:
+            return None
+        if current_indent == indent and stripped.startswith("def "):
+            return cursor
+        cursor -= 1
+    return None
+
+
 def _target_validation_dependency_source(source: str) -> str:
     source = re.sub(
         r"(^[ \t]*from[ \t]+snekmate\.utils[ \t]+import[ \t]+.*?)\bcreate2_address\b",
@@ -681,6 +730,12 @@ def _target_validation_dependency_source(source: str) -> str:
         source,
     )
     return source
+
+
+def _target_validation_create2_alias_source(source: str) -> str:
+    if "_compute_create2_address" in source or "_compute_address" not in source:
+        return source
+    return re.sub(r"\b_compute_address\b", "_compute_create2_address", source)
 
 
 def _target_validation_interface_source(source: str) -> str:
