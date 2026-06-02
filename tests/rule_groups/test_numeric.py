@@ -918,6 +918,27 @@ def f(x: uint256) -> uint256:
     assert "PRICE_SIZE * (i - 1)" not in result.source
 
 
+def test_shift_builtin_removes_unsigned_amount_convert(config) -> None:
+    source = """# @version 0.3.10
+MAX_COINS: constant(uint256) = 8
+interface ERC20:
+    def decimals() -> uint256: view
+
+@external
+def f(coins: address[MAX_COINS]) -> uint256:
+    decimals: uint256 = 0
+    for i in range(MAX_COINS):
+        coin: address = coins[i]
+        decimals += shift(ERC20(coin).decimals(), convert(i*8, int128))
+    return decimals
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "decimals += (staticcall ERC20(coin).decimals() << (i*8))" in result.source
+    assert "convert(i*8, uint256)" not in result.source
+
+
 def test_shift_builtin_rewrites_signed_constant_amounts(config) -> None:
     source = """# @version 0.4.1
 BAL_SHIFT: constant(int128) = -16

@@ -471,7 +471,11 @@ def _replace_shift_builtin(
             elif positive_convert is not None and not positive_convert.group(1).lstrip().startswith(
                 "-"
             ):
-                replacement = f"({value} << convert({positive_convert.group(1).strip()}, uint256))"
+                vars_for_line = facts.vars_at_line(line_number(current, match.start()))
+                amount = _unsigned_shift_convert_replacement(
+                    positive_convert.group(1).strip(), vars_for_line
+                )
+                replacement = f"({value} << {amount})"
             else:
                 if rule_context.is_enabled("VYD012"):
                     diagnostics.append(
