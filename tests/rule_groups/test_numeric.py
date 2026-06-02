@@ -678,6 +678,21 @@ def f() -> Bytes[32]:
     assert "convert(block.prevrandao, bytes32)" not in result.source
 
 
+def test_prevhash_uint256_convert_kept_for_target_arithmetic(config) -> None:
+    source = """# @version 0.2.8
+ticket_count: uint256
+
+@external
+def choosewinner() -> uint256:
+    return convert(block.prevhash, uint256) % self.ticket_count
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "convert(block.prevhash, uint256) % self.ticket_count" in result.source
+    assert "block.prevhash % self.ticket_count" not in result.source
+
+
 def test_literal_convert_kept_for_abi_encoding_context(config) -> None:
     source = """# @version 0.3.10
 @external

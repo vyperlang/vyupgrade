@@ -650,6 +650,7 @@ def _redundant_integer_convert(
             (is_integer_type(target) or normalize_type(target) == "bytes32")
             and normalize_type(expr_type or "") == normalize_type(target)
             and _simple_nonliteral_expr(expr)
+            and not _target_semantic_convert(expr, target)
         ):
             replacement = _redundant_convert_replacement(expr)
             edits.append(TextEdit(match.start(), close + 1, replacement))
@@ -682,6 +683,10 @@ def _redundant_integer_convert(
                 )
             )
     return apply_edits(source, edits), fixes, []
+
+
+def _target_semantic_convert(expr: str, target: str) -> bool:
+    return expr == "block.prevhash" and normalize_type(target) == "uint256"
 
 
 def _redundant_convert_replacement(expr: str) -> str:
