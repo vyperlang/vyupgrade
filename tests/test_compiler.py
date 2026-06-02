@@ -153,6 +153,36 @@ def test_compile_retries_without_legacy_keyerror_format(monkeypatch) -> None:
     assert calls[-1][calls[-1].index("-f") + 1] == "abi"
 
 
+def test_compile_retries_without_ast_for_legacy_span_error(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        requested = command[command.index("-f") + 1]
+        if requested in {
+            "abi,method_identifiers,layout,ast",
+            "abi,method_identifiers,layout",
+            "abi,method_identifiers",
+        }:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                "ValueError: start (57,7) precedes previous end (58,0)",
+            )
+        return subprocess.CompletedProcess(command, 0, "[]\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile_with_formats_for_test(
+        ["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "layout", "ast")
+    )
+
+    assert result.status == "passed"
+    assert result.artifacts == {"abi": []}
+    assert calls[-1][calls[-1].index("-f") + 1] == "abi"
+
+
 def _run_compile_with_formats_for_test(command: list[str], path: Path, formats: tuple[str, ...]) -> CompileResult:
     from vyupgrade.compiler import _run_compile_with_formats
 
@@ -424,6 +454,43 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
     assert result.status == "passed"
     assert calls["compiler"] == (None, "0.4.3", None)
     assert calls["run"] == (["vyper"], contract, ("abi", "method_identifiers", "layout", "ast"), (), True)
+
+
+def test_compile_source_file_retries_legacy_span_error_with_final_newline(
+    monkeypatch, tmp_path
+) -> None:
+    contract = tmp_path / "contract.vy"
+    source = "# @version 0.2.8\n# eof"
+    contract.write_text(source, encoding="utf-8")
+    calls: list[tuple[Path, bytes]] = []
+
+    def fake_run_compile_with_formats(
+        command: list[str],
+        path: Path,
+        config: Config,
+        formats: tuple[str, ...],
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls.append((path, path.read_bytes()))
+        if len(calls) == 1:
+            return CompileResult(
+                "failed", stderr="ValueError: start (2,0) precedes previous end (3,0)"
+            )
+        return CompileResult("passed", artifacts={"abi": []})
+
+    monkeypatch.setattr("vyupgrade.compiler._prepare_command", lambda *args: (["vyper"], False))
+    monkeypatch.setattr("vyupgrade.compiler._run_compile_with_formats", fake_run_compile_with_formats)
+
+    result = compile_source_file(contract, Config(paths=(contract,)), "0.2.8")
+
+    assert result.status == "passed"
+    assert calls[0] == (contract, source.encode())
+    assert calls[1][0].parent == contract.parent
+    assert calls[1][0] != contract
+    assert calls[1][1] == source.encode() + b"\n"
+    assert not calls[1][0].exists()
+    assert contract.read_text(encoding="utf-8") == source
 
 
 def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tmp_path) -> None:

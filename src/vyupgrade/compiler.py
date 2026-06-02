@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
@@ -77,7 +77,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         source_version or infer_pragma(path.read_text()),
         config.source_python,
     )
-    return _run_compile_with_formats(
+    result = _run_compile_with_formats(
         command,
         path,
         config,
@@ -85,6 +85,53 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         (),
         suppress_warnings,
     )
+    if _should_retry_source_with_final_newline(path, result):
+        return _compile_source_file_with_final_newline(command, path, config, suppress_warnings)
+    return result
+
+
+def _compile_source_file_with_final_newline(
+    command: list[str], path: Path, config: Config, suppress_warnings: bool
+) -> CompileResult:
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return CompileResult("failed", stderr="could not read source for final-newline retry")
+    tmp = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        prefix=f".{path.stem}.vyupgrade.source.",
+        suffix=path.suffix,
+        dir=path.parent,
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
+    try:
+        with tmp:
+            tmp.write(source)
+            tmp.write("\n")
+        return _run_compile_with_formats(
+            command,
+            tmp_path,
+            config,
+            SOURCE_FORMATS,
+            (),
+            suppress_warnings,
+        )
+    finally:
+        with suppress(OSError):
+            tmp_path.unlink()
+
+
+def _should_retry_source_with_final_newline(path: Path, result: CompileResult) -> bool:
+    if result.status != "failed" or result.stderr is None:
+        return False
+    if not _legacy_span_error(result.stderr):
+        return False
+    try:
+        return not path.read_bytes().endswith(b"\n")
+    except OSError:
+        return False
 
 
 def compile_target_source(
@@ -1114,6 +1161,12 @@ def _run_compile_with_formats(
             return _run_compile_with_formats(
                 command, path, config, fallback_formats, extra_paths, suppress_warnings
             )
+        span_error_format = _legacy_span_error_format(stderr, formats)
+        if span_error_format is not None:
+            fallback_formats = tuple(name for name in formats if name != span_error_format)
+            return _run_compile_with_formats(
+                command, path, config, fallback_formats, extra_paths, suppress_warnings
+            )
         retry_command = _command_with_missing_module_dependency(command, path, stderr)
         if retry_command is not None:
             return _run_compile_with_formats(
@@ -1138,6 +1191,19 @@ def _unsupported_output_format(stderr: str, formats: tuple[str, ...]) -> str | N
         if f"Unsupported format type '{name}'" in stderr or f"KeyError: '{name}'" in stderr:
             return name
     return None
+
+
+def _legacy_span_error_format(stderr: str, formats: tuple[str, ...]) -> str | None:
+    if not _legacy_span_error(stderr):
+        return None
+    for name in ("ast", "layout", "method_identifiers"):
+        if name in formats:
+            return name
+    return None
+
+
+def _legacy_span_error(stderr: str) -> bool:
+    return "ValueError: start (" in stderr and "precedes previous end" in stderr
 
 
 def _supports_search_paths(command: list[str]) -> bool:
