@@ -746,14 +746,22 @@ def _canonical_abi(abi: object) -> object:
 
 def _strip_abi_metadata(value: object) -> object:
     if isinstance(value, dict):
-        return {
+        stripped = {
             key: _canonical_abi_value(key, item, value)
             for key, item in sorted(value.items())
-            if key not in {"gas", "internalType"}
-            and not (key == "name" and item == "")
+            if key not in {"gas", "internalType", "unit"}
+            and not (key == "name" and not _is_abi_entry(value))
+            and not (value.get("type") == "constructor" and key == "stateMutability" and item == "nonpayable")
+            and key != "constant"
+            and key != "payable"
             and not (value.get("type") == "constructor" and key == "outputs")
             and not (key == "components" and _is_tuple_abi_type(value.get("type")))
         }
+        if _is_abi_entry(value) and "stateMutability" not in stripped:
+            mutability = _legacy_abi_mutability(value)
+            if mutability is not None:
+                stripped["stateMutability"] = mutability
+        return stripped
     if isinstance(value, list):
         return [_strip_abi_metadata(item) for item in value]
     return value
@@ -767,6 +775,22 @@ def _canonical_abi_value(key: str, value: object, parent: Mapping[str, object]) 
     if key == "type" and isinstance(value, str):
         return _canonical_abi_type(value, parent.get("components"))
     return _strip_abi_metadata(value)
+
+
+def _is_abi_entry(value: Mapping[str, object]) -> bool:
+    return value.get("type") in {"function", "event", "error"}
+
+
+def _legacy_abi_mutability(value: Mapping[str, object]) -> str | None:
+    if value.get("payable") is True:
+        return "payable"
+    if value.get("constant") is True:
+        return "view"
+    if value.get("type") in {"function", "constructor"} and (
+        value.get("payable") is False or value.get("constant") is False
+    ):
+        return "nonpayable"
+    return None
 
 
 def _canonical_abi_outputs(value: object) -> object:

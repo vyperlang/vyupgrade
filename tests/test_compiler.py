@@ -1156,6 +1156,139 @@ def test_compare_artifacts_normalizes_legacy_abi_type_spellings() -> None:
     assert compare_artifact_details(source, target)[0] == []
 
 
+def test_compare_artifacts_ignores_legacy_abi_metadata_names_and_readonly_mutability() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "constructor",
+                    "inputs": [],
+                    "outputs": [],
+                },
+                {
+                    "type": "function",
+                    "name": "coins",
+                    "constant": True,
+                    "payable": False,
+                    "inputs": [{"name": "arg0", "type": "int128"}],
+                    "outputs": [{"name": "out", "type": "address"}],
+                },
+                {
+                    "type": "function",
+                    "name": "update",
+                    "constant": False,
+                    "payable": False,
+                    "inputs": [{"name": "value", "type": "uint256"}],
+                    "outputs": [{"name": "deadline", "type": "uint256", "unit": "sec"}],
+                },
+            ]
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "constructor",
+                    "stateMutability": "nonpayable",
+                    "inputs": [],
+                    "outputs": [],
+                },
+                {
+                    "type": "function",
+                    "name": "coins",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "i", "type": "int128"}],
+                    "outputs": [{"name": "", "type": "address"}],
+                },
+                {
+                    "type": "function",
+                    "name": "update",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "new_value", "type": "uint256"}],
+                    "outputs": [{"name": "", "type": "uint256"}],
+                },
+            ]
+        },
+    )
+
+    assert compare_artifacts(source, target) == (True, None, None)
+    assert compare_artifact_details(source, target)[0] == []
+
+
+def test_compare_artifacts_keeps_payable_abi_mutability_changes_visible() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "receiveFlashLoan",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "tokens", "type": "address[]"}],
+                    "outputs": [],
+                }
+            ]
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "receiveFlashLoan",
+                    "stateMutability": "payable",
+                    "inputs": [{"name": "tokens", "type": "address[]"}],
+                    "outputs": [],
+                }
+            ]
+        },
+    )
+
+    assert compare_artifacts(source, target) == (False, None, None)
+    assert compare_artifact_details(source, target)[0] == [
+        "changed ABI entry: function receiveFlashLoan(address[]): stateMutability 'nonpayable' -> 'payable'"
+    ]
+
+
+def test_compare_artifacts_keeps_view_to_nonpayable_abi_changes_visible() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "record",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "value", "type": "uint256"}],
+                    "outputs": [],
+                }
+            ]
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "function",
+                    "name": "record",
+                    "stateMutability": "nonpayable",
+                    "inputs": [{"name": "value", "type": "uint256"}],
+                    "outputs": [],
+                }
+            ]
+        },
+    )
+
+    assert compare_artifacts(source, target) == (False, None, None)
+    assert compare_artifact_details(source, target)[0] == [
+        "changed ABI entry: function record(uint256): stateMutability 'view' -> 'nonpayable'"
+    ]
+
+
 def test_compare_artifact_details_ignores_constructor_selector() -> None:
     source = CompileResult(
         "passed",
