@@ -497,6 +497,39 @@ def test_target_validation_source_removes_duplicate_vyper_pragmas() -> None:
     assert result == "#pragma version 0.4.3\n\n"
 
 
+def test_target_validation_source_strips_natspec_docstrings() -> None:
+    source = '''# @version 0.3.10
+"""
+@custom:dev first
+@custom:dev duplicate
+"""
+
+@external
+def f():
+    """
+    @returns legacy tag
+    """
+    pass
+'''
+
+    result = _target_validation_source(source, "0.4.3")
+
+    assert '"""' not in result
+    assert "@custom:dev" not in result
+    assert "@returns" not in result
+    assert "@external\ndef f():" in result
+
+
+def test_target_validation_source_keeps_assigned_triple_quoted_strings() -> None:
+    source = '''# @version 0.3.10
+VALUE: constant(String[32]) = """literal"""
+'''
+
+    result = _target_validation_source(source, "0.4.3")
+
+    assert 'VALUE: constant(String[32]) = """literal"""' in result
+
+
 def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contracts" / "contract.vy"
     contract.parent.mkdir()

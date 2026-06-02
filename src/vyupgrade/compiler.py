@@ -519,9 +519,40 @@ def _target_validation_source(
         flags=re.MULTILINE,
     )
     rewritten = _target_validation_dependency_source(rewritten)
+    rewritten = _strip_target_validation_docstrings(rewritten)
     if is_interface:
         return _target_validation_interface_source(rewritten)
     return rewritten
+
+
+def _strip_target_validation_docstrings(source: str) -> str:
+    lines = source.splitlines(keepends=True)
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.lstrip()
+        quote = _standalone_docstring_quote(stripped)
+        if quote is None:
+            result.append(line)
+            index += 1
+            continue
+        index += 1
+        if stripped.count(quote) >= 2:
+            continue
+        while index < len(lines):
+            current = lines[index]
+            index += 1
+            if quote in current:
+                break
+    return "".join(result)
+
+
+def _standalone_docstring_quote(stripped_line: str) -> str | None:
+    for quote in ('"""', "'''"):
+        if stripped_line.startswith(quote):
+            return quote
+    return None
 
 
 def _target_validation_dependency_source(source: str) -> str:
