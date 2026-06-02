@@ -26,6 +26,7 @@ from vyupgrade.models import Config
 from vyupgrade.rules import apply_rules
 from vyupgrade.versions import (
     KNOWN_VERSIONS,
+    compiler_version_for_source,
     compiler_version_for_spec,
     infer_pragma,
     is_supported_source_version,
@@ -1268,7 +1269,12 @@ def _item_source_version(item: dict[str, Any]) -> str:
     compiler = compiler_version_for_spec(item.get("compiler_version"))
     if compiler is not None and item.get("standard_json"):
         return compiler
-    return str(item["pragma"])
+    pragma = str(item["pragma"])
+    try:
+        source = Path(item["corpus_path"]).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return pragma
+    return compiler_version_for_source(pragma, source) or pragma
 
 
 def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: Path) -> tuple[Path, ...]:

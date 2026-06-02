@@ -114,6 +114,37 @@ def compiler_version_for_spec(spec: str | None) -> str | None:
     return str(version) if version else None
 
 
+def compiler_version_for_source(spec: str | None, source: str) -> str | None:
+    version = parse_version(compiler_version_for_spec(spec))
+    versions = known_versions_satisfying(spec)
+    if version is None or not versions:
+        return str(version) if version else None
+    hinted = _source_syntax_floor(source)
+    if hinted is None or version >= hinted:
+        return str(version)
+    for candidate in versions:
+        if candidate >= hinted:
+            return str(candidate)
+    return str(version)
+
+
+def _source_syntax_floor(source: str) -> VyperVersion | None:
+    floors: list[VyperVersion] = []
+    if re.search(r"\buint(?:8|16|32|64)\b", source):
+        floors.append(Version("0.3.4"))
+    if re.search(r"\bDynArray\s*\[[^\]]+,\s*[A-Z_][A-Z0-9_]*\s*\]", source):
+        floors.append(Version("0.3.7"))
+    elif re.search(r"\bDynArray\s*\[", source):
+        floors.append(Version("0.3.4"))
+    if re.search(r"(?m)^enum\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):
+        floors.append(Version("0.3.4"))
+    if re.search(r"\bimmutable\s*\(", source):
+        floors.append(Version("0.3.7"))
+    if re.search(r"\bsend\s*\([^)]*\bgas\s*=", source):
+        floors.append(Version("0.3.8"))
+    return max(floors) if floors else None
+
+
 def default_evm_version_for_spec(spec: str | None) -> str | None:
     compiler_version = compiler_version_for_spec(spec)
     version = parse_version(compiler_version)

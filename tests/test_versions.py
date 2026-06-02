@@ -7,6 +7,7 @@ from vyupgrade.versions import (
     LEGACY_PRERELEASE_VERSIONS,
     MigrationContext,
     VyperVersion,
+    compiler_version_for_source,
     compiler_version_for_spec,
     default_evm_version_for_spec,
     is_supported_source_version,
@@ -47,6 +48,17 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert compiler_version_for_spec("<=0.3.10") == "0.3.10"
     assert compiler_version_for_spec(">=0.5.0a1,<0.5.0") == "0.5.0a1"
     assert compiler_version_for_spec("<=0.5.0a2") == "0.5.0a2"
+
+
+def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
+    assert compiler_version_for_source("^0.3.0", "xs: DynArray[String[32], 100]") == "0.3.4"
+    assert compiler_version_for_source("^0.3.0", "xs: DynArray[Reward, MAX_REWARDS]") == "0.3.7"
+    assert compiler_version_for_source("^0.3.3", "TOKEN: immutable(address)") == "0.3.7"
+    assert compiler_version_for_source(">=0.3.2", "enum Side:\n    BUY\n") == "0.3.4"
+    assert compiler_version_for_source("^0.3.0", "decimals: public(uint8)") == "0.3.4"
+    assert compiler_version_for_source("^0.3.0", "send(self.owner, fee, gas=msg.gas)") == "0.3.8"
+    assert compiler_version_for_source(">=0.3.8,<0.4.0", "TOKEN: immutable(address)") == "0.3.8"
+    assert compiler_version_for_source(">=0.3.0,<0.3.4", "enum Side:\n    BUY\n") == "0.3.0"
 
 
 def test_migration_context_tracks_patch_level_crossings() -> None:
