@@ -531,6 +531,39 @@ def checked_coin(i: int128) -> int128:
     assert any(fix.rule == "VY015" for fix in result.fixes)
 
 
+def test_inline_pure_function_reading_immutable_becomes_view(config) -> None:
+    source = """# @version 0.3.10
+SHARE: immutable(address)
+
+@external
+def __init__(_share: address):
+    SHARE = _share
+
+@external
+@pure
+def wrappedAsset() -> address: return SHARE
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@external\n@view\ndef wrappedAsset" in result.source
+    assert any(fix.rule == "VY015" for fix in result.fixes)
+
+
+def test_internal_pure_function_querying_self_becomes_view(config) -> None:
+    source = """# @version 0.2.8
+@internal
+@pure
+def _getHash(_amount: uint256) -> bytes32:
+    return keccak256(concat(convert(self, bytes32), convert(_amount, bytes32)))
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@internal\n@view\ndef _getHash" in result.source
+    assert any(fix.rule == "VY015" for fix in result.fixes)
+
+
 def test_pure_function_without_immutable_read_stays_pure(config) -> None:
     source = """# @version 0.3.10
 N_COINS: immutable(int128)

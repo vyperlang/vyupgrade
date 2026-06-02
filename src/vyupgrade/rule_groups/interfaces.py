@@ -481,11 +481,19 @@ def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], li
         read_name = _function_read_name(
             source, mask, line_offsets, facts, function_line, immutable_names
         )
+        has_self_read = _function_contains(
+            source, mask, line_offsets, facts, function_line, "self"
+        )
         has_static_raw_call = _function_contains(
             source, mask, line_offsets, facts, function_line, "raw_call"
         )
         has_external_view_call = _function_contains_external_view_call(source, facts, function_line)
-        if read_name is None and not has_static_raw_call and not has_external_view_call:
+        if (
+            read_name is None
+            and not has_self_read
+            and not has_static_raw_call
+            and not has_external_view_call
+        ):
             continue
         decorator_line = facts.function_decorator_lines.get(function_line, {}).get("pure")
         if decorator_line is None or decorator_line > len(lines):
@@ -503,9 +511,13 @@ def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], li
             f"relaxed pure function that reads immutable {read_name}"
             if read_name is not None
             else (
-                "relaxed pure function that performs static raw_call"
-                if has_static_raw_call
-                else "relaxed pure function that calls a view external function"
+                "relaxed pure function that queries self"
+                if has_self_read
+                else (
+                    "relaxed pure function that performs static raw_call"
+                    if has_static_raw_call
+                    else "relaxed pure function that calls a view external function"
+                )
             )
         )
         fixes.append(
@@ -675,10 +687,37 @@ def _function_body_span(
     facts: SourceFacts,
     function_line: int,
 ) -> tuple[int, int]:
-    start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
+    def_line_start = line_offsets[function_line - 1]
+    next_line_start = line_offsets[function_line] if function_line < len(line_offsets) else len(source)
+    def_line = source[def_line_start:next_line_start]
+    colon = _function_header_colon(def_line)
+    start = def_line_start + colon + 1 if colon is not None else next_line_start
     end_line = facts.function_ends.get(function_line, len(line_offsets))
     end = line_offsets[end_line] if end_line < len(line_offsets) else len(source)
     return start, end
+
+
+def _function_header_colon(line: str) -> int | None:
+    depth = 0
+    quote: str | None = None
+    for index, char in enumerate(line):
+        if quote is not None:
+            if char == "\\":
+                continue
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "#":
+            return None
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ":" and depth == 0:
+            return index
+    return None
 
 
 def _interface_imports(

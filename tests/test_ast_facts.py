@@ -121,6 +121,19 @@ def f(_expire_time: int256):
     assert facts.vars_at_line(8)["_expire_time"] == "int256"
 
 
+def test_source_facts_record_inline_function_body_headers() -> None:
+    source = """@external
+@pure
+def wrappedAsset() -> address: return SHARE
+"""
+
+    facts = parse_source_facts(source)
+
+    assert facts.function_names == {3: "wrappedAsset"}
+    assert facts.function_decorators[3] == ("external", "pure")
+    assert facts.function_returns[3] == "address"
+
+
 def test_source_facts_do_not_mutate_builtin_interface_registry() -> None:
     source = """interface IERC20:
     def foo(): view

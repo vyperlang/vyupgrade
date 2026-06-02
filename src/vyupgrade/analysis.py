@@ -226,7 +226,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             pending_decorators.append((decorator_match.group(1), line_no))
             continue
 
-        function_header = _strip_inline_comment(stripped).strip()
+        function_header = _function_signature_header(_strip_inline_comment(stripped).strip())
         def_match = DEF_RE.match(function_header)
         if def_match:
             if current_function_line is not None:
@@ -651,6 +651,39 @@ def _strip_inline_comment(line: str) -> str:
 
 def _header_fragment(line: str) -> str:
     return line.rstrip("\\").strip()
+
+
+def _function_signature_header(line: str) -> str:
+    if not line.startswith("def "):
+        return line
+    colon = _top_level_colon(line)
+    if colon is None:
+        return line
+    suffix = line[colon + 1 :].strip()
+    if suffix in {"", "view", "pure", "nonpayable", "payable"}:
+        return line
+    return line[: colon + 1]
+
+
+def _top_level_colon(line: str) -> int | None:
+    depth = 0
+    quote: str | None = None
+    for index, char in enumerate(line):
+        if quote is not None:
+            if char == "\\":
+                continue
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == ":" and depth == 0:
+            return index
+    return None
 
 
 def _unwrap_public_or_constant(type_name: str, known_types: set[str] | None = None) -> str | None:
