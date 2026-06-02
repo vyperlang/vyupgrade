@@ -71,6 +71,24 @@ def f() -> uint256:
     assert any(fix.rule == "VY056" for fix in result.fixes)
 
 
+def test_unsigned_range_bound_converts_narrow_unsigned_constant(config) -> None:
+    source = """# @version 0.3.7
+MAX_PATHS: constant(uint8) = 10
+
+@internal
+def f() -> uint256:
+    total: uint256 = 0
+    for i in range(MAX_PATHS + 1):
+        total += i
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint256 in range(convert(MAX_PATHS, uint256) + 1, bound=11):" in result.source
+    assert any(fix.rule == "VY056" for fix in result.fixes)
+
+
 def test_loop_type_uses_nearest_loop_after_same_name_local_decl(config) -> None:
     source = """# @version 0.2.16
 MAX_COINS: constant(int128) = 4

@@ -192,7 +192,11 @@ def _unsigned_range_bound_signed_constants(
         for name, type_name in sorted(
             vars_for_line.items(), key=lambda item: len(item[0]), reverse=True
         ):
-            if not _is_signed_integer_type(type_name):
+            normalized_type = normalize_type(type_name)
+            if not (
+                _is_signed_integer_type(normalized_type)
+                or _is_narrow_unsigned_integer_type(normalized_type)
+            ):
                 continue
             for name_match in re.finditer(rf"\b{re.escape(name)}\b", args):
                 if not any(
@@ -211,7 +215,7 @@ def _unsigned_range_bound_signed_constants(
                     Fix(
                         "VY056",
                         line_no,
-                        "converted signed range bound for unsigned loop variable",
+                        "converted integer range bound for unsigned loop variable",
                         name,
                         replacement,
                     )
@@ -234,6 +238,11 @@ def _unsigned_range_bound_signed_constants(
                 )
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _is_narrow_unsigned_integer_type(type_name: str) -> bool:
+    match = re.fullmatch(r"uint(\d+)", normalize_type(type_name))
+    return match is not None and int(match.group(1)) < 256
 
 
 def _typed_external_call_arguments(
