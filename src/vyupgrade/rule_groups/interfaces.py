@@ -99,6 +99,43 @@ def _constant_accessor_collisions(
     return current, fixes, []
 
 
+def _interface_storage_assignment_casts(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    mask = rule_context.code_mask
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    pattern = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)self\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"(?P<cast>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start("name"), match.end("cast")):
+            continue
+        name = match.group("name")
+        storage_type = normalize_type(facts.storage_vars.get(name, ""))
+        cast_type = normalize_type(match.group("cast"))
+        if (
+            storage_type == cast_type
+            or storage_type not in facts.interfaces
+            or cast_type not in facts.interfaces
+        ):
+            continue
+        edits.append(TextEdit(match.start("cast"), match.end("cast"), storage_type))
+        fixes.append(
+            Fix(
+                "VY019",
+                line_number(source, match.start()),
+                "matched interface storage assignment cast to declared type",
+                match.group("cast"),
+                storage_type,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
 def _accessor_collision_rewrites(
     source: str,
     declaration_pattern: str,
@@ -1116,6 +1153,7 @@ RULES = (
     Rule("legacy_constants", runner=_legacy_constants, changes=(crossing("VY012", (0, 4, 0)),)),
     Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
     Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(crossing("VY016", (0, 4, 0)),)),
+    Rule("interface_storage_assignment_casts", runner=_interface_storage_assignment_casts, changes=(crossing("VY019", (0, 4, 0)),)),
     Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(crossing("VY014", (0, 4, 0)),)),
     Rule(
         "side_effecting_view_interface_calls",

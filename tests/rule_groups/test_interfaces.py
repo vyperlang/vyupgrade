@@ -78,6 +78,31 @@ asset: public(ERC4626)
     assert "asset: public(IERC4626)" in result.source
 
 
+def test_interface_storage_assignment_cast_matches_declared_type(config) -> None:
+    source = """# @version 0.2.12
+interface VaultV1:
+    def token() -> address: view
+
+interface VaultV2:
+    def token() -> address: view
+    def deposit(amount: uint256) -> uint256: nonpayable
+
+v1: public(VaultV1)
+v2: public(VaultV2)
+
+@external
+def __init__(v1: address, v2: address):
+    self.v1 = VaultV1(v1)
+    self.v2 = VaultV1(v2)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "self.v1 = VaultV1(v1)" in result.source
+    assert "self.v2 = VaultV2(v2)" in result.source
+    assert any(fix.rule == "VY019" for fix in result.fixes)
+
+
 def test_modern_erc_interface_imports_alias_when_new_name_exists(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC20
