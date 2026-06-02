@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import normalize_type
+from ..analysis import infer_expr_type, normalize_type
 from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import TextEdit, apply_edits, line_number, span_is_code
@@ -82,6 +82,48 @@ def fixed_array_empty_comparisons(
     return apply_edits(source, edits), fixes, []
 
 
+def struct_empty_comparisons(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    mask = rule_context.code_mask
+    pattern = re.compile(
+        r"(?P<expr>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)"
+        r"(?P<left_space>\s*)(?P<op>==|!=)(?P<right_space>\s*)"
+        r"empty\s*\(\s*(?P<struct>[A-Za-z_][A-Za-z0-9_]*)\s*\)"
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        struct_name = match.group("struct")
+        struct_fields = rule_context.facts.struct_fields.get(struct_name)
+        if not struct_fields:
+            continue
+        line_no = line_number(source, match.start())
+        expr = match.group("expr")
+        vars_for_line = rule_context.facts.vars_at_line(line_no)
+        expr_type = infer_expr_type(expr, vars_for_line, rule_context.facts)
+        if normalize_type(expr_type or "") != struct_name:
+            continue
+        op = match.group("op")
+        joiner = " and " if op == "==" else " or "
+        parts = [f"{expr}.{field} {op} empty({field_type})" for field, field_type in struct_fields.items()]
+        replacement = f"({joiner.join(parts)})"
+        edits.append(TextEdit(match.start(), match.end(), replacement))
+        fixes.append(
+            Fix(
+                "VY214",
+                line_no,
+                "expanded struct empty comparison",
+                match.group(0),
+                replacement,
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
 RULES = (
     Rule(
         "not_in_comparator",
@@ -92,5 +134,10 @@ RULES = (
         "fixed_array_empty_comparisons",
         runner=fixed_array_empty_comparisons,
         changes=(crossing("VY213", (0, 4, 0)),),
+    ),
+    Rule(
+        "struct_empty_comparisons",
+        runner=struct_empty_comparisons,
+        changes=(crossing("VY214", (0, 4, 0)),),
     ),
 )

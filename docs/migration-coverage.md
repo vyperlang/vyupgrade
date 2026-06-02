@@ -151,6 +151,8 @@ modern Python interpreter.
   in constant initializers.
 - Fixed-size array equality remains unsupported for some element types:
   `VY213` expands comparisons against `empty(T[N])` into elementwise checks.
+- Struct equality remains unsupported: `VY214` expands comparisons against
+  `empty(Struct)` into field-wise checks.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
   arithmetic expressions. It also casts signed operands of `unsafe_sub(...)`

@@ -44,3 +44,47 @@ def f(values: address[2]) -> bool:
     assert (
         "return (values[0] != empty(address) or values[1] != empty(address))" in result.source
     )
+
+
+def test_struct_empty_equality_expands_to_field_checks(config) -> None:
+    source = """# @version 0.2.15
+struct Claim:
+    claimAddress: address
+    claimTotalAmount: uint256
+    isAdded: bool
+
+claims: public(HashMap[address, Claim])
+
+@internal
+def _addClaim(_claimAddress: address):
+    existclaim: Claim = self.claims[_claimAddress]
+    assert existclaim == empty(Claim), "already exists"
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "assert (existclaim.claimAddress == empty(address) and "
+        "existclaim.claimTotalAmount == empty(uint256) and "
+        "existclaim.isAdded == empty(bool)), \"already exists\""
+    ) in result.source
+    assert any(fix.rule == "VY214" for fix in result.fixes)
+
+
+def test_struct_empty_inequality_expands_to_field_checks(config) -> None:
+    source = """# @version 0.2.15
+struct Claim:
+    claimAddress: address
+    claimTotalAmount: uint256
+
+@external
+def f(claim: Claim) -> bool:
+    return claim != empty(Claim)
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "return (claim.claimAddress != empty(address) or "
+        "claim.claimTotalAmount != empty(uint256))"
+    ) in result.source
