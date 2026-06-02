@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-06-02
+
+- Added corpus import tooling and targeted corpus smoke selection for repeatable large-corpus regression checks.
+- Fixed broad migration failures found in large-corpus validation, including overlapping bitwise rewrites, integer division detection, signedness casts, external-call inference, struct literal ordering, NatSpec validation cleanup, and dependency import resolution.
+- Improved source and target compiler validation for standard-json packages, overlay import trees, broad version pragmas, old compiler span crashes, and common dependency hints.
+- Normalized noisy ABI, method identifier, and storage layout metadata so corpus reports focus on meaningful behavior changes.
+- Preserved legacy public fixed-array getter selectors and legacy storage/interface type surfaces when comparing upgraded artifacts.
+- Kept storage layout movements surfaced by default, including nonreentrant transient-storage moves, instead of inserting compatibility gaps automatically.
+
 ## 0.3.1 - 2026-05-31
 
 - Fixed `--format mamushi` write runs so missing, timed out, or failing formatter executions are captured in report output instead of crashing.

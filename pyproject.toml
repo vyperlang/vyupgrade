@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "vyupgrade"
-version = "0.3.1"
+version = "0.4.0"
 description = "Compiler-backed tool for upgrading Vyper contracts."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Topic :: Software Development :: Compilers",
