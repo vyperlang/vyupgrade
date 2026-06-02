@@ -61,6 +61,126 @@ def f(idx: uint256, gauge: address):
     assert any(fix.rule == "VY091" for fix in result.fixes)
 
 
+def test_unreachable_code_after_return_is_removed(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(flag: bool) -> uint256:
+    if flag:
+        return 1
+        unreachable: uint256 = 2
+    return 0
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "unreachable" not in result.source
+    assert "return 0" in result.source
+    assert any(fix.rule == "VY092" for fix in result.fixes)
+
+
+def test_unreachable_code_after_exhaustive_if_chain_is_removed(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(kind: uint256) -> uint256:
+    if kind == 1:
+        return 1
+    elif kind == 2:
+        return 2
+    else:
+        raise
+
+    return 0
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return 0" not in result.source
+    assert any(fix.rule == "VY092" for fix in result.fixes)
+
+
+def test_unreachable_code_inside_loop_is_removed(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> uint256:
+    for i in range(3):
+        return i
+        value: uint256 = i + 1
+    return 0
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "value: uint256" not in result.source
+    assert "return 0" in result.source
+    assert any(fix.rule == "VY092" for fix in result.fixes)
+
+
+def test_unreachable_code_after_nested_exhaustive_if_chain_is_removed(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(gain: uint256, loss: uint256, fee: uint256) -> uint256:
+    if gain >= loss:
+        gross_profit: uint256 = gain - loss
+        if gross_profit >= fee:
+            return 0
+        else:
+            return fee - gross_profit
+    else:
+        return loss - gain + fee
+
+    return 0
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert result.source.count("return 0") == 1
+    assert "return loss - gain + fee" in result.source
+    assert any(fix.rule == "VY092" for fix in result.fixes)
+
+
+def test_unreachable_code_after_multiline_signature_if_chain_is_removed(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(
+    gain: uint256,
+    loss: uint256,
+    fee: uint256
+) -> uint256:
+    if gain >= loss:
+        gross_profit: uint256 = gain - loss
+        if gross_profit >= fee:
+            return 0
+        else:
+            return fee - gross_profit
+    else:
+        return loss - gain + fee
+
+    return 0
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert result.source.count("return 0") == 1
+    assert "return loss - gain + fee" in result.source
+    assert any(fix.rule == "VY092" for fix in result.fixes)
+
+
+def test_non_exhaustive_if_chain_is_not_removed_as_unreachable(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(kind: uint256) -> uint256:
+    if kind == 1:
+        return 1
+    value: uint256 = 2
+    return value
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "value: uint256 = 2" in result.source
+    assert not any(fix.rule == "VY092" for fix in result.fixes)
+
+
 def test_pr_3777_struct_dict_instantiation_to_kwargs(config) -> None:
     source = """# @version 0.3.10
 struct Point:

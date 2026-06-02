@@ -249,6 +249,257 @@ def _max_value_array_type_to_hashmap(type_expr: str) -> str | None:
     return f"HashMap[uint256, {element}]"
 
 
+def _unreachable_code(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    lines = source.splitlines(keepends=True)
+    offsets = _line_offsets(lines)
+    remove: set[int] = set()
+    for function_line, end_line in sorted(rule_context.facts.function_ends.items()):
+        def_index = function_line - 1
+        if def_index < 0 or def_index >= len(lines):
+            continue
+        function_indent = _line_indent(lines[def_index])
+        body_start = _function_body_start_line(lines, def_index, end_line)
+        body_indent = _first_child_indent(lines, body_start, end_line, function_indent)
+        if body_indent is None:
+            continue
+        _scan_terminal_block(lines, body_start, end_line, body_indent, remove)
+    if not remove:
+        return source, [], []
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    for start, end in _contiguous_line_ranges(remove):
+        edit_start = offsets[start]
+        edit_end = offsets[end]
+        before = source[edit_start:edit_end].rstrip("\n")
+        edits.append(TextEdit(edit_start, edit_end, ""))
+        fixes.append(
+            Fix(
+                "VY092",
+                start + 1,
+                "removed unreachable code",
+                before,
+                "",
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+def _line_offsets(lines: list[str]) -> list[int]:
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
+    offsets.append(cursor)
+    return offsets
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _function_body_start_line(lines: list[str], def_index: int, end: int) -> int:
+    balance = 0
+    for index in range(def_index, min(end, len(lines))):
+        statement = lines[index].split("#", 1)[0]
+        for char in statement:
+            if char in "([{":
+                balance += 1
+            elif char in ")]}" and balance > 0:
+                balance -= 1
+        if balance == 0 and statement.rstrip().endswith(":"):
+            return index + 1
+    return def_index + 1
+
+
+def _significant_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and not stripped.startswith("#")
+
+
+def _first_child_indent(
+    lines: list[str], start: int, end: int, parent_indent: int
+) -> int | None:
+    for index in range(start, min(end, len(lines))):
+        if not _significant_line(lines[index]):
+            continue
+        indent = _line_indent(lines[index])
+        if indent > parent_indent:
+            return indent
+        if indent <= parent_indent:
+            return None
+    return None
+
+
+def _scan_terminal_block(
+    lines: list[str], start: int, end: int, indent: int, remove: set[int]
+) -> bool:
+    index = start
+    while index < min(end, len(lines)):
+        line = lines[index]
+        if not _significant_line(line):
+            index += 1
+            continue
+        current_indent = _line_indent(line)
+        if current_indent < indent:
+            break
+        if current_indent > indent:
+            index += 1
+            continue
+        stripped = line.strip()
+        if _is_if_header(stripped):
+            chain_end, terminates = _if_chain_terminates(lines, index, end, indent, remove)
+            if terminates:
+                _mark_unreachable_after(lines, chain_end, end, indent, remove)
+                return True
+            index = chain_end
+            continue
+        if _is_terminator(stripped):
+            _mark_unreachable_after(lines, index + 1, end, indent, remove)
+            return True
+        child_indent = _first_child_indent(lines, index + 1, end, indent)
+        if child_indent is not None:
+            block_end = _next_statement_index(lines, index + 1, end, indent)
+            _scan_terminal_block(lines, index + 1, block_end, child_indent, remove)
+        index = _next_statement_index(lines, index + 1, end, indent)
+    return False
+
+
+def _if_chain_terminates(
+    lines: list[str], start: int, end: int, indent: int, remove: set[int]
+) -> tuple[int, bool]:
+    index = start
+    has_else = False
+    branch_results: list[bool] = []
+    while index < min(end, len(lines)):
+        stripped = lines[index].strip()
+        if index == start:
+            if not _is_if_header(stripped):
+                break
+        elif _is_elif_header(stripped):
+            pass
+        elif _is_else_header(stripped):
+            has_else = True
+        else:
+            break
+        branch_start = index + 1
+        branch_end = _next_if_branch_or_block_end(lines, branch_start, end, indent)
+        body_indent = _first_child_indent(lines, branch_start, branch_end, indent)
+        branch_results.append(
+            body_indent is not None
+            and _scan_terminal_block(lines, branch_start, branch_end, body_indent, remove)
+        )
+        index = branch_end
+        if index >= min(end, len(lines)):
+            break
+        next_line = lines[index]
+        if not _significant_line(next_line) or _line_indent(next_line) != indent:
+            break
+        next_stripped = next_line.strip()
+        if not (_is_elif_header(next_stripped) or _is_else_header(next_stripped)):
+            break
+    return index, has_else and all(branch_results)
+
+
+def _next_if_branch_or_block_end(lines: list[str], start: int, end: int, indent: int) -> int:
+    index = start
+    while index < min(end, len(lines)):
+        if not _significant_line(lines[index]):
+            index += 1
+            continue
+        current_indent = _line_indent(lines[index])
+        if current_indent == indent and (
+            _is_elif_header(lines[index].strip()) or _is_else_header(lines[index].strip())
+        ):
+            return index
+        if current_indent <= indent:
+            return index
+        index += 1
+    return min(end, len(lines))
+
+
+def _next_statement_index(lines: list[str], start: int, end: int, indent: int) -> int:
+    index = start
+    while index < min(end, len(lines)):
+        if not _significant_line(lines[index]):
+            index += 1
+            continue
+        current_indent = _line_indent(lines[index])
+        if current_indent <= indent:
+            return index
+        index += 1
+    return min(end, len(lines))
+
+
+def _mark_unreachable_after(
+    lines: list[str], start: int, end: int, indent: int, remove: set[int]
+) -> None:
+    first_unreachable: int | None = None
+    for index in range(start, min(end, len(lines))):
+        if not _significant_line(lines[index]):
+            continue
+        current_indent = _line_indent(lines[index])
+        if current_indent < indent:
+            return
+        first_unreachable = index
+        break
+    if first_unreachable is None:
+        return
+    for index in range(start, min(end, len(lines))):
+        if _significant_line(lines[index]) and _line_indent(lines[index]) < indent:
+            break
+        remove.add(index)
+
+
+def _contiguous_line_ranges(lines: set[int]) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for line in sorted(lines):
+        if not ranges or line != ranges[-1][1]:
+            ranges.append((line, line + 1))
+        else:
+            ranges[-1] = (ranges[-1][0], line + 1)
+    return ranges
+
+
+def _is_terminator(stripped: str) -> bool:
+    statement = stripped.split("#", 1)[0].rstrip()
+    if not _balanced_delimiters(statement):
+        return False
+    return statement in {"return", "raise", "break", "continue"} or statement.startswith(
+        (
+            "return ",
+            "return(",
+            "raise ",
+            "break ",
+            "continue ",
+        )
+    )
+
+
+def _balanced_delimiters(text: str) -> bool:
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack: list[str] = []
+    for char in text:
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in pairs.values() and (not stack or stack.pop() != char):
+            return False
+    return not stack
+
+
+def _is_if_header(stripped: str) -> bool:
+    return stripped.startswith(("if ", "if("))
+
+
+def _is_elif_header(stripped: str) -> bool:
+    return stripped.startswith(("elif ", "elif("))
+
+
+def _is_else_header(stripped: str) -> bool:
+    return stripped.startswith("else:")
+
+
 def _struct_kwargs(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     current = rule_context.source
     all_fixes: list[Fix] = []
@@ -604,6 +855,7 @@ POST_NUMERIC_RULES = (
     Rule("struct_kwargs", runner=_struct_kwargs, changes=(crossing("VY060", (0, 4, 0)),)),
     Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
     Rule("max_value_storage_arrays", runner=_max_value_storage_arrays, changes=(crossing("VY091", (0, 4, 0)),)),
+    Rule("unreachable_code", runner=_unreachable_code, changes=(crossing("VY092", (0, 4, 0)),)),
     Rule(
         "nonreentrant",
         runner=_nonreentrant,

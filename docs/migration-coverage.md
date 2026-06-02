@@ -131,6 +131,8 @@ modern Python interpreter.
 - Storage arrays bounded by `max_value(uint256)` or the max-uint256 literal:
   `VY091` lowers top-level declarations to `HashMap[uint256, T]` while
   preserving public getter shape.
+- Unreachable code validation is stricter: `VY092` removes code in a block
+  after unconditional terminators and after exhaustive terminating if-chains.
 - `_abi_encode` and `_abi_decode` renamed: `VY010` and `VY011`.
 - `@internal` became optional: no-op. Existing `@internal` source remains valid.
 - External calls require keywords: `VY040` adds `extcall`; `VY041` adds
