@@ -193,9 +193,20 @@ def _ordered_struct_args(
     facts: SourceFacts,
 ) -> str | None:
     field_order = list(struct_fields)
-    if "\n" in raw_inner and _has_line_comment(raw_inner):
-        return None
     stripped = raw_inner.strip()
+    if "\n" in raw_inner and _has_line_comment(raw_inner):
+        if _has_inline_comment(raw_inner):
+            return None
+        sep = ":" if stripped.startswith("{") and stripped.endswith("}") else "="
+        commented = _ordered_commented_struct_args(
+            stripped,
+            sep,
+            field_order,
+            struct_fields,
+            vars_for_line,
+            facts,
+        )
+        return commented
     if stripped.startswith("{") and stripped.endswith("}"):
         fields = split_top_level_args(_strip_arg_comments(stripped[1:-1]))
         if fields is None:
@@ -229,6 +240,61 @@ def _split_struct_pair(raw: str, sep: str) -> tuple[str, str] | None:
     if match is None:
         return None
     return match.group(1), match.group(2).strip()
+
+
+def _has_inline_comment(text: str) -> bool:
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _has_line_comment(line):
+            return True
+    return False
+
+
+def _ordered_commented_struct_args(
+    stripped: str,
+    sep: str,
+    field_order: list[str],
+    struct_fields: dict[str, str],
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
+) -> str | None:
+    body = stripped[1:-1] if sep == ":" else stripped
+    records: list[tuple[str, str, list[str]]] = []
+    pending_comments: list[str] = []
+    indent = ""
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        stripped_line = line.strip()
+        if stripped_line.startswith("#"):
+            pending_comments.append(stripped_line)
+            continue
+        indent = indent or line[: len(line) - len(line.lstrip())]
+        pair = _split_struct_pair(stripped_line.rstrip(","), sep)
+        if pair is None:
+            return None
+        name, value = pair
+        records.append((name, value, pending_comments))
+        pending_comments = []
+    if pending_comments:
+        return None
+    if not records:
+        return None
+
+    indent = indent or "    "
+    close_indent = indent[:-4] if len(indent) >= 4 else ""
+    by_name = {name: (value, comments) for name, value, comments in records}
+    ordered_names = [name for name in field_order if name in by_name]
+    ordered_names.extend(name for name, _value, _comments in records if name not in field_order)
+    lines: list[str] = []
+    for name in ordered_names:
+        value, comments = by_name[name]
+        lines.extend(f"{indent}{comment}" for comment in comments)
+        casted = cast_integer_arg_to_expected(value, struct_fields.get(name), vars_for_line, facts)
+        lines.append(f"{indent}{name}={casted},")
+    return "\n" + "\n".join(lines) + f"\n{close_indent}"
 
 
 def _ordered_kwarg_string(

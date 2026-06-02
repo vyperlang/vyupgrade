@@ -73,6 +73,39 @@ def f(slope: uint256, power: uint256, lock_end: uint256):
     assert "VotedSlope(slope=slope, power=power, end=lock_end)" in result.source
 
 
+def test_struct_constructor_reorders_with_full_line_comments(config) -> None:
+    source = """# @version 0.3.10
+struct StrategyParams:
+    performanceFee: uint256
+    activation: uint256
+    enforceChangeLimit: bool
+    profitLimitRatio: uint256
+    lossLimitRatio: uint256
+    customCheck: address
+
+@external
+def f(strategy: StrategyParams) -> StrategyParams:
+    return StrategyParams({
+        performanceFee: strategy.performanceFee,
+        # NOTE: keep old activation time
+        activation: strategy.activation,
+        profitLimitRatio: strategy.profitLimitRatio,
+        lossLimitRatio: strategy.lossLimitRatio,
+        enforceChangeLimit: True,
+        customCheck: strategy.customCheck,
+    })
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "activation=strategy.activation,\n"
+        "        enforceChangeLimit=True,\n"
+        "        profitLimitRatio=strategy.profitLimitRatio,"
+    ) in result.source
+    assert "# NOTE: keep old activation time" in result.source
+
+
 def test_struct_constructor_casts_integer_field_arguments(config) -> None:
     source = """# @version 0.2.7
 struct SwapData:
@@ -113,7 +146,8 @@ def f(fee: uint256, ts: uint256, ratio: uint256):
     result = apply_rules(source, config())
 
     assert "# use current timestamp" in result.source
-    assert "StrategyParams({" in result.source
+    assert "StrategyParams({" not in result.source
+    assert "activation=ts,\n        enforceChangeLimit=True,\n        profitLimitRatio=ratio," in result.source
     assert "StrategyParams(performanceFee=fee" not in result.source
 
 
