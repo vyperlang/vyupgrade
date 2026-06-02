@@ -784,6 +784,74 @@ def test_target_overlay_resolves_dependency_imports_from_search_roots(tmp_path) 
         ).exists()
 
 
+def test_target_overlay_preserves_nested_package_search_roots(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "gnosis" / "TokenizedValidator.vy"
+    ownable = (
+        project
+        / "lib"
+        / "github"
+        / "pcaversaccio"
+        / "snekmate"
+        / "src"
+        / "snekmate"
+        / "auth"
+        / "ownable.vy"
+    )
+    contract.parent.mkdir(parents=True)
+    ownable.parent.mkdir(parents=True)
+    contract.write_text(
+        "# @version 0.4.3\n"
+        "from pcaversaccio.snekmate.src.snekmate.auth import ownable\n",
+        encoding="utf-8",
+    )
+    ownable.write_text("# @version 0.4.3\nOWNER: public(address)\n", encoding="utf-8")
+
+    with target_overlay(
+        {
+            contract: (
+                "#pragma version 0.4.3\n"
+                "from pcaversaccio.snekmate.src.snekmate.auth import ownable\n"
+            )
+        },
+        "0.4.3",
+        (project / "lib", project / "lib" / "github", project / "src", project),
+    ) as overlay:
+        assert overlay is not None
+        assert (
+            overlay.root
+            / "lib"
+            / "github"
+            / "pcaversaccio"
+            / "snekmate"
+            / "src"
+            / "snekmate"
+            / "auth"
+            / "ownable.vy"
+        ).exists()
+        assert overlay.root / "lib" / "github" in overlay.search_paths
+
+
+def test_target_overlay_copies_imported_site_package_sources(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "curve_stablecoin" / "mpolicies" / "AggMonetaryPolicy4.vy"
+    ema = project / "venv" / "lib" / "python3.10" / "site-packages" / "curve_std" / "ema.vy"
+    contract.parent.mkdir(parents=True)
+    ema.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.4.3\nfrom curve_std import ema\n", encoding="utf-8")
+    ema.write_text("# @version 0.4.3\nWINDOW: constant(uint256) = 10\n", encoding="utf-8")
+
+    site_packages = project / "venv" / "lib" / "python3.10" / "site-packages"
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nfrom curve_std import ema\n"},
+        "0.4.3",
+        (project, site_packages),
+    ) as overlay:
+        assert overlay is not None
+        assert (overlay.root / "venv" / "lib" / "python3.10" / "site-packages" / "curve_std" / "ema.vy").exists()
+        assert overlay.root / "venv" / "lib" / "python3.10" / "site-packages" in overlay.search_paths
+
+
 def test_target_overlay_resolves_relative_dependency_imports(tmp_path) -> None:
     project = tmp_path / "project"
     contract = project / "src" / "token.vy"

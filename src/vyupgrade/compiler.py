@@ -187,6 +187,7 @@ def target_overlay(
                     resolved_sources,
                 )
             )
+        overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
         for path, source in resolved_sources.items():
             try:
                 relative = path.relative_to(common)
@@ -217,6 +218,21 @@ def target_overlay(
                 )
             ),
         )
+
+
+def _overlay_configured_search_paths(
+    search_paths: tuple[Path, ...], common_root: Path, target_root: Path
+) -> set[Path]:
+    paths: set[Path] = set()
+    for search_path in search_paths:
+        try:
+            relative = search_path.resolve().relative_to(common_root)
+        except ValueError:
+            continue
+        target = target_root / relative
+        if target.exists():
+            paths.add(target)
+    return paths
 
 
 def _overlay_search_paths(
@@ -302,8 +318,6 @@ def _copy_validation_sources(
                     continue
             queue.append((resolved, source))
             if resolved in override_paths:
-                continue
-            if any(part in OVERLAY_EXCLUDED_PARTS for part in resolved.parts):
                 continue
             _copy_validation_source(
                 resolved,
