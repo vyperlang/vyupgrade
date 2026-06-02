@@ -179,6 +179,24 @@ def __init__():
     assert "@deploy\ndef __init__" in result.source
 
 
+def test_constructor_deploy_removes_return_type(config) -> None:
+    source = """# @version 0.3.10
+@external
+def __init__(owner: address) -> bool:
+    self.owner = owner
+    return owner
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@deploy\ndef __init__(owner: address):" in result.source
+    assert "-> bool" not in result.source
+    assert "    return\n" in result.source
+    assert "return owner" not in result.source
+    assert any(fix.rule == "VY002" and "return type" in fix.message for fix in result.fixes)
+    assert any(fix.rule == "VY002" and "return value" in fix.message for fix in result.fixes)
+
+
 def test_pr_3769_single_named_reentrancy_lock_is_rewritten(config) -> None:
     source = """# @version 0.3.10
 @nonreentrant("lock")

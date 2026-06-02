@@ -37,7 +37,67 @@ def _constructor_deploy(rule_context: RuleContext) -> tuple[str, list[Fix], list
         add_deploy=True,
     )
     fixes.extend(insertions)
+    edits: list[TextEdit] = []
+    for match in re.finditer(
+        r"^(?P<prefix>[ \t]*def[ \t]+__init__\s*\([^)\n]*\))\s*->\s*(?P<return_type>[^:\n#]+)(?P<suffix>\s*:.*)$",
+        current,
+        re.MULTILINE,
+    ):
+        if not _line_match_starts_outside_string(current, code_mask(current), match.start()):
+            continue
+        before = match.group(0)
+        after = f"{match.group('prefix')}{match.group('suffix')}"
+        edits.append(TextEdit(match.start(), match.end(), after))
+        fixes.append(
+            Fix(
+                "VY002",
+                line_number(current, match.start()),
+                "removed constructor return type",
+                before,
+                after,
+            )
+        )
+    if edits:
+        current = apply_edits(current, edits)
+    return_edits: list[TextEdit] = []
+    for start, end, before, after in _constructor_value_returns(current):
+        return_edits.append(TextEdit(start, end, after))
+        fixes.append(
+            Fix(
+                "VY002",
+                line_number(current, start),
+                "removed constructor return value",
+                before,
+                after,
+            )
+        )
+    if return_edits:
+        current = apply_edits(current, return_edits)
     return current, fixes, []
+
+
+def _constructor_value_returns(source: str) -> list[tuple[int, int, str, str]]:
+    edits: list[tuple[int, int, str, str]] = []
+    offset = 0
+    in_constructor = False
+    constructor_indent = 0
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip(" \t"))
+        if in_constructor and stripped and not stripped.startswith("#") and indent <= constructor_indent:
+            in_constructor = False
+        if re.match(r"[ \t]*def[ \t]+__init__\s*\(", line):
+            in_constructor = True
+            constructor_indent = indent
+        elif in_constructor:
+            match = re.match(r"(?P<indent>[ \t]*)return[ \t]+(?P<value>[^#\n]+)(?P<comment>[ \t]*(?:#.*)?)$", line)
+            if match is not None:
+                before = line
+                after = f"{match.group('indent')}return{match.group('comment')}"
+                edits.append((offset, offset + len(line), before, after))
+        offset += len(raw_line)
+    return edits
 
 
 def _abi_builtins(
