@@ -221,7 +221,7 @@ def _integer_assignment_casts(
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
     pattern = re.compile(
-        r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
+        r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<annotation>\s*:\s*[^=\n#]+)?\s*=\s*(?P<value>[^\n#]+)(?P<comment>[ \t]*(?:#.*)?)$",
         re.MULTILINE,
     )
     for match in pattern.finditer(source):
@@ -230,15 +230,27 @@ def _integer_assignment_casts(
         value = match.group("value").strip()
         if value.startswith("convert(") or _literal_integer(value):
             continue
+        if not re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value) and re.search(r"\d", value):
+            continue
         vars_for_line = facts.vars_at_line(line_number(source, match.start()))
-        expected_type = normalize_type(vars_for_line.get(match.group("name"), ""))
+        expected_type = normalize_type(
+            match.group("annotation").strip().removeprefix(":").strip()
+            if match.group("annotation")
+            else vars_for_line.get(match.group("name"), "")
+        )
         if not _is_signed_integer_type(expected_type):
             continue
         actual_type = infer_expr_type(value, vars_for_line, facts)
-        if not _is_unsigned_integer_type(actual_type):
+        if not _is_unsigned_integer_type(actual_type) and not _unsigned_integer_expression(
+            value, vars_for_line
+        ):
             continue
         before = match.group(0)
-        after = f"{match.group('indent')}{match.group('name')} = convert({value}, {expected_type}){match.group('comment')}"
+        annotation = (match.group("annotation") or "").rstrip()
+        after = (
+            f"{match.group('indent')}{match.group('name')}{annotation} = "
+            f"convert({value}, {expected_type}){match.group('comment')}"
+        )
         edits.append(TextEdit(match.start(), match.end(), after))
         fixes.append(
             Fix(
@@ -250,6 +262,15 @@ def _integer_assignment_casts(
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+def _unsigned_integer_expression(expr: str, vars_for_line: dict[str, str]) -> bool:
+    if re.search(r"\bdecimal\b|\d+\.\d+", expr):
+        return False
+    identifiers = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr)
+    if not identifiers:
+        return bool(re.search(r"\d", expr))
+    return all(_is_unsigned_integer_type(infer_expr_type(name, vars_for_line)) for name in identifiers)
 
 
 def _loop_var_type(iterable: str, vars_for_line: dict[str, str], facts: SourceFacts) -> str | None:

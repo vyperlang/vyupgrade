@@ -50,6 +50,22 @@ def f():
     )
 
 
+def test_signed_integer_declaration_casts_unsigned_loop_expression(config) -> None:
+    source = """# @version 0.3.10
+N_COINS: constant(uint256) = 3
+
+@internal
+def f():
+    for i in range(N_COINS - 1):
+        index: int128 = i + 1
+"""
+
+    result = apply_rules(source, config())
+
+    assert "index: int128 = convert(i + 1, int128)" in result.source
+    assert any(fix.rule == "VY052" for fix in result.fixes)
+
+
 def test_unsigned_range_bound_converts_signed_constant(config) -> None:
     source = """# @version 0.3.10
 N_COINS: constant(int128) = 3
