@@ -367,6 +367,11 @@ def _mixed_signed_unsigned_arithmetic(
     max_value_edits, max_value_fixes = _max_value_comparison_casts(source, facts, mask)
     edits.extend(max_value_edits)
     fixes.extend(max_value_fixes)
+    bitwise_max_value_edits, bitwise_max_value_fixes = _max_value_bitwise_casts(
+        source, facts, mask
+    )
+    edits.extend(bitwise_max_value_edits)
+    fixes.extend(bitwise_max_value_fixes)
     narrow_comparison_edits, narrow_comparison_fixes = (
         _narrow_unsigned_comparison_arithmetic_casts(source, facts, mask)
     )
@@ -469,6 +474,55 @@ def _max_value_comparison_casts(
                 after,
             )
         )
+    return edits, fixes
+
+
+def _max_value_bitwise_casts(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> tuple[list[TextEdit], list[Fix]]:
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    uint_type = (
+        r"uint(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|"
+        r"168|176|184|192|200|208|216|224|232|240|248|256)?"
+    )
+    value = (
+        r"convert\s*\([^()\n]+,\s*uint(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|"
+        r"120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)"
+        r"|(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])?(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+    )
+    max_value = rf"max_value\s*\(\s*(?P<max_type>{uint_type})\s*\)"
+    patterns = (
+        re.compile(
+            rf"(?P<peer>{value})(?P<space_left>\s*)(?P<op>[&|^])(?P<space_right>\s*)"
+            rf"(?P<max>{max_value})"
+        ),
+        re.compile(
+            rf"(?P<max>{max_value})(?P<space_left>\s*)(?P<op>[&|^])(?P<space_right>\s*)"
+            rf"(?P<peer>{value})"
+        ),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(source):
+            if not span_is_code(mask, match.start(), match.end()):
+                continue
+            vars_for_line = facts.vars_at_line(line_number(source, match.start()))
+            peer_type = normalize_type(infer_expr_type(match.group("peer"), vars_for_line, facts) or "")
+            max_type = normalize_type(match.group("max_type"))
+            if not (_is_unsigned_integer_type(peer_type) and peer_type != max_type):
+                continue
+            before = match.group("max")
+            after = f"convert({before}, {peer_type})"
+            edits.append(TextEdit(match.start("max"), match.end("max"), after))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_number(source, match.start("max")),
+                    "converted max_value bitwise operand to unsigned peer type",
+                    before,
+                    after,
+                )
+            )
     return edits, fixes
 
 

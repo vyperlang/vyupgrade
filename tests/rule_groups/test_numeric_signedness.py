@@ -175,6 +175,23 @@ def rebase():
     assert "self.totalSupply = convert(max_value(int128), uint256)" in result.source
 
 
+def test_max_value_bitwise_operand_casts_to_unsigned_peer_type(config) -> None:
+    source = """# @version 0.3.7
+@internal
+@pure
+def f(digest: bytes32) -> address:
+    return convert(convert(digest, uint256) & max_value(uint160), address)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert (
+        "convert(convert(digest, uint256) & convert(max_value(uint160), uint256), address)"
+        in result.source
+    )
+    assert any(fix.rule == "VY052" for fix in result.fixes)
+
+
 def test_narrow_unsigned_comparison_arithmetic_casts_to_peer_type(config) -> None:
     source = """# @version 0.3.10
 interface ERC20:
