@@ -271,6 +271,21 @@ def f() -> uint256:
     assert "if convert(i, int128) < BASE_N_COINS:" in result.source
 
 
+def test_narrow_unsigned_loop_variable_converted_in_wide_unsigned_comparison(config) -> None:
+    source = """# @version 0.3.10
+@internal
+def f(_mint_num: uint256):
+    for i in range(0, max_value(uint8)):
+        if i == _mint_num:
+            break
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint8 in range(0, max_value(uint8)):" in result.source
+    assert "if convert(i, uint256) == _mint_num:" in result.source
+
+
 def test_unsigned_loop_variable_converted_in_elif_signed_comparison(config) -> None:
     source = """# @version 0.2.16
 @external

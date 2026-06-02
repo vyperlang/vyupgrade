@@ -192,10 +192,19 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_range_header(source, start)
                 ):
                     continue
+                loop_type = normalize_type(
+                    _nearest_loop_var_type(source, start, name) or vars_for_line.get(name) or ""
+                )
+                unsigned_comparison_target = _unsigned_comparison_target_type_at(
+                    source, start, name, vars_for_line, facts
+                )
+                if unsigned_comparison_target == loop_type:
+                    unsigned_comparison_target = None
                 target_type = (
                     _signed_comparison_target_type(
                         _comparison_expression_at(source, start), name, vars_for_line
                     )
+                    or unsigned_comparison_target
                     or _unsigned_name_signed_arithmetic_target_type(
                         _local_expression(source, start), name, lhs_type, vars_for_line, facts
                     )
