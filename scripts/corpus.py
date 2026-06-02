@@ -30,6 +30,8 @@ from vyupgrade.versions import (
     compiler_version_for_spec,
     infer_pragma,
     is_supported_source_version,
+    known_versions_satisfying,
+    parse_version,
 )
 
 
@@ -975,6 +977,9 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             compiler_search_paths=compiler_search_paths,
         )
         source_compile = compile_source_file(path, config, source_version)
+        source_version, config, source_compile = _retry_source_compile_with_newer_version(
+            item, path, config, source_version, source_compile
+        )
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         file_config = replace(
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
@@ -1275,6 +1280,32 @@ def _item_source_version(item: dict[str, Any]) -> str:
     except (OSError, UnicodeDecodeError):
         return pragma
     return compiler_version_for_source(pragma, source) or pragma
+
+
+def _retry_source_compile_with_newer_version(
+    item: dict[str, Any],
+    path: Path,
+    config: Config,
+    source_version: str,
+    source_compile: Any,
+) -> tuple[str, Config, Any]:
+    if source_compile.status == "passed" or _has_exact_source_compiler(item):
+        return source_version, config, source_compile
+    current = parse_version(source_version)
+    candidates = known_versions_satisfying(item.get("pragma"))
+    for candidate in candidates:
+        if current is not None and candidate <= current:
+            continue
+        retry_version = str(candidate)
+        retry_config = replace(config, source_version=retry_version)
+        retry_compile = compile_source_file(path, retry_config, retry_version)
+        if retry_compile.status == "passed":
+            return retry_version, retry_config, retry_compile
+    return source_version, config, source_compile
+
+
+def _has_exact_source_compiler(item: dict[str, Any]) -> bool:
+    return bool(item.get("standard_json")) and compiler_version_for_spec(item.get("compiler_version")) is not None
 
 
 def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: Path) -> tuple[Path, ...]:

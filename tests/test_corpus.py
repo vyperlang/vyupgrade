@@ -431,6 +431,48 @@ def test_smoke_raises_broad_pragma_source_version_from_syntax(monkeypatch, tmp_p
     assert result["source_compile"] == "passed"
 
 
+def test_smoke_retries_broad_pragma_with_newer_source_compiler(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "0xabc.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("#pragma version ^0.3.0\nx: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+        "pragma": "^0.3.0",
+    }
+    seen: dict[str, object] = {"compile_versions": []}
+
+    def fake_compile_source_file(path, config, source_version):
+        seen["compile_versions"].append(source_version)
+        if source_version == "0.3.0":
+            return SimpleNamespace(status="failed", artifacts=None, stderr="old compiler failed")
+        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+
+    def fake_apply_rules(source, config, path):
+        seen["rewrite_version"] = config.source_version
+        return SimpleNamespace(source=source, fixes=[], diagnostics=[])
+
+    monkeypatch.setattr(corpus, "compile_source_file", fake_compile_source_file)
+    monkeypatch.setattr(corpus, "apply_rules", fake_apply_rules)
+    monkeypatch.setattr(
+        corpus,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert seen["compile_versions"][:2] == ["0.3.0", "0.3.1"]
+    assert seen["rewrite_version"] == "0.3.1"
+    assert result["source_compile"] == "passed"
+
+
 def test_smoke_uses_standard_json_compiler_version_for_source(monkeypatch, tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     contract = tmp_path / "contracts" / "chainsecurity" / "main.vy"
