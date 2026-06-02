@@ -643,7 +643,7 @@ def _redundant_integer_convert(
             continue
         expr_type = infer_expr_type(expr, vars_for_line, facts)
         if (
-            is_integer_type(target)
+            (is_integer_type(target) or normalize_type(target) == "bytes32")
             and normalize_type(expr_type or "") == normalize_type(target)
             and _simple_nonliteral_expr(expr)
         ):

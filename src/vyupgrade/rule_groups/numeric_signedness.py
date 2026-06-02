@@ -346,6 +346,11 @@ def _mixed_signed_unsigned_arithmetic(
     max_value_edits, max_value_fixes = _max_value_comparison_casts(source, facts, mask)
     edits.extend(max_value_edits)
     fixes.extend(max_value_fixes)
+    narrow_comparison_edits, narrow_comparison_fixes = (
+        _narrow_unsigned_comparison_arithmetic_casts(source, facts, mask)
+    )
+    edits.extend(narrow_comparison_edits)
+    fixes.extend(narrow_comparison_fixes)
     subscript_convert_edits, subscript_convert_fixes = _unsigned_subscript_signed_convert_casts(
         source, facts, mask
     )
@@ -439,6 +444,66 @@ def _max_value_comparison_casts(
                 after,
             )
         )
+    return edits, fixes
+
+
+def _narrow_unsigned_comparison_arithmetic_casts(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> tuple[list[TextEdit], list[Fix]]:
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    offset = 0
+    for raw_line in source.splitlines(keepends=True):
+        line = raw_line.rstrip("\n")
+        code_line = line.split("#", 1)[0]
+        match = re.match(r"(?P<prefix>\s*(?:if|elif|assert|return)\s+)(?P<expr>.+?)(?P<suffix>:\s*)?$", code_line)
+        if match is None or not any(op in match.group("expr") for op in (">=", "<=", ">", "<", "==", "!=")):
+            offset += len(raw_line)
+            continue
+        comparison = re.match(r"(?P<left>.+?)\s*(?P<op>==|!=|<=|>=|<|>)\s*(?P<right>.+)\Z", match.group("expr").strip())
+        if comparison is None:
+            offset += len(raw_line)
+            continue
+        line_no = line_number(source, offset)
+        vars_for_line = facts.vars_at_line(line_no)
+        left = comparison.group("left").strip()
+        right = comparison.group("right").strip().removesuffix(":").strip()
+        left_type = normalize_type(infer_expr_type(left, vars_for_line, facts) or "")
+        right_type = normalize_type(infer_expr_type(right, vars_for_line, facts) or "")
+        if _is_unsigned_integer_type(left_type) and not _is_unsigned_integer_type(right_type):
+            target_expr = right
+            target_start = offset + code_line.find(right)
+            target_type = left_type
+        elif _is_unsigned_integer_type(right_type) and not _is_unsigned_integer_type(left_type):
+            target_expr = left
+            target_start = offset + code_line.find(left)
+            target_type = right_type
+        else:
+            offset += len(raw_line)
+            continue
+        if not re.search(r"[-+*/%]", target_expr):
+            offset += len(raw_line)
+            continue
+        for name, type_name in sorted(vars_for_line.items(), key=lambda item: len(item[0]), reverse=True):
+            if not _is_narrow_unsigned_integer_type(type_name):
+                continue
+            for name_match in re.finditer(rf"\b{re.escape(name)}\b", target_expr):
+                start = target_start + name_match.start()
+                end = target_start + name_match.end()
+                if inside_convert_call(source, start) or not span_is_code(mask, start, end):
+                    continue
+                replacement = f"convert({name}, {target_type})"
+                edits.append(TextEdit(start, end, replacement))
+                fixes.append(
+                    Fix(
+                        "VY052",
+                        line_no,
+                        "converted narrow unsigned comparison operand to peer type",
+                        name,
+                        replacement,
+                    )
+                )
+        offset += len(raw_line)
     return edits, fixes
 
 
@@ -817,6 +882,11 @@ def _integer_value_fits_type(value: int, type_name: str) -> bool:
     if match.group(1):
         return 0 <= value < 2**bits
     return -(2 ** (bits - 1)) <= value < 2 ** (bits - 1)
+
+
+def _is_narrow_unsigned_integer_type(type_name: str | None) -> bool:
+    match = re.fullmatch(r"uint(\d+)", normalize_type(type_name or ""))
+    return match is not None and int(match.group(1)) < 256
 
 
 def _unsigned_name_signed_division_target_type(

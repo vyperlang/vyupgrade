@@ -665,6 +665,19 @@ def f() -> uint256:
     assert any(fix.rule == "VY051" for fix in result.fixes)
 
 
+def test_redundant_prevrandao_bytes32_convert_removed(config) -> None:
+    source = """# @version 0.3.6
+@external
+def f() -> Bytes[32]:
+    return concat(convert(block.difficulty, bytes32))
+"""
+
+    result = apply_rules(source, config())
+
+    assert "concat(block.prevrandao)" in result.source
+    assert "convert(block.prevrandao, bytes32)" not in result.source
+
+
 def test_literal_convert_kept_for_abi_encoding_context(config) -> None:
     source = """# @version 0.3.10
 @external

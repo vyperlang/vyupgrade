@@ -175,6 +175,29 @@ def rebase():
     assert "self.totalSupply = convert(max_value(int128), uint256)" in result.source
 
 
+def test_narrow_unsigned_comparison_arithmetic_casts_to_peer_type(config) -> None:
+    source = """# @version 0.3.10
+interface ERC20:
+    def balanceOf(owner: address) -> uint256: view
+
+token: ERC20
+amount_per_draw: constant(uint8) = 10
+ultra_rare_bonus: constant(uint8) = 10
+
+@external
+@view
+def f() -> bool:
+    return self.token.balanceOf(self) >= amount_per_draw * ultra_rare_bonus * 10
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "staticcall self.token.balanceOf(self) >= "
+        "convert(amount_per_draw, uint256) * convert(ultra_rare_bonus, uint256) * 10"
+    ) in result.source
+
+
 def test_signed_constant_converted_in_unsigned_index_comparison(config) -> None:
     source = """# @version 0.2.8
 PRECISION: constant(int128) = 10 ** 18

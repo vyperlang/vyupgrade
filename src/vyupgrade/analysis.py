@@ -427,6 +427,8 @@ def infer_expr_type(
         "self.balance",
     }:
         return "uint256"
+    if expr == "block.prevrandao":
+        return "bytes32"
     convert_match = re.fullmatch(
         r"convert\s*\(.+,\s*([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)\s*\)", expr
     )

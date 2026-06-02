@@ -162,3 +162,7 @@ def second(_gauge: address)\\
 def test_expr_type_extracts_min_max_value_type() -> None:
     assert infer_expr_type("max_value(int128)", {}, None) == "int128"
     assert infer_expr_type("min_value(int256)", {}, None) == "int256"
+
+
+def test_expr_type_extracts_prevrandao_type() -> None:
+    assert infer_expr_type("block.prevrandao", {}, None) == "bytes32"
