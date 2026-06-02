@@ -410,6 +410,33 @@ def f(old_locked: LockedBalance):
     assert "convert(MAXTIME, int128)" not in result.source
 
 
+def test_unsigned_constant_folds_in_signed_division_with_multiplied_numerator(config) -> None:
+    source = """# @version 0.2.4
+MAXTIME: constant(uint256) = 4 * 365 * 86400
+
+struct LockedBalance:
+    amount: int128
+    end: uint256
+
+struct Point:
+    bias: int128
+
+@external
+def f(old_locked: LockedBalance):
+    u_old: Point = empty(Point)
+    u_old.bias = old_locked.amount * convert(old_locked.end - block.timestamp, int128) / MAXTIME
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "u_old.bias = old_locked.amount * convert(old_locked.end - block.timestamp, int128) // 126144000"
+        in result.source
+    )
+    assert "MAXTIME" in result.source
+    assert "/ MAXTIME" not in result.source
+
+
 def test_unsigned_constant_converted_in_signed_param_comparison(config) -> None:
     source = """# @version 0.2.8
 MAX_PCT: constant(uint256) = 10_000

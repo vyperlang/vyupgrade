@@ -62,7 +62,11 @@ def _mixed_signed_unsigned_arithmetic(
             continue
         line_no = line_number(source, offset)
         vars_for_line = facts.vars_at_line(line_no)
-        lhs_type = _lhs_declared_type(code_line) or _lhs_assigned_type(code_line, vars_for_line)
+        lhs_type = (
+            _lhs_declared_type(code_line)
+            or _lhs_assigned_type(code_line, vars_for_line)
+            or _lhs_assigned_expr_type(code_line, vars_for_line, facts)
+        )
         rhs_offset = _expression_start_offset(code_line)
         rhs_start = offset + rhs_offset
         rhs = code_line[rhs_offset:]
@@ -1017,6 +1021,18 @@ def _signed_comparison_target_type(
     else:
         return None
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
+
+
+def _lhs_assigned_expr_type(
+    line: str, vars_for_line: dict[str, str], facts: SourceFacts
+) -> str | None:
+    match = re.match(
+        r"\s*(?P<lhs>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^=]+\])?(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^=]+\])?)*)\s*(?://=|[-+*/%]?=)",
+        line,
+    )
+    if match is None:
+        return None
+    return infer_expr_type(match.group("lhs"), vars_for_line, facts)
 
 
 def _signed_division_unsigned_constant_literal(
