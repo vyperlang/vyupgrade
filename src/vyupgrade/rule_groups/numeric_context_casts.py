@@ -288,6 +288,20 @@ def _typed_external_call_arguments(
                 cursor += len(arg) + 1
                 continue
             vars_for_arg = _vars_for_argument(source, arg_start, arg, vars_for_line)
+            bytes_replacement = _dynamic_bytes_hex_arg_replacement(arg, expected)
+            if bytes_replacement is not None:
+                edits.append(TextEdit(arg_start, arg_start + len(arg), bytes_replacement))
+                fixes.append(
+                    Fix(
+                        "VY053",
+                        line_number(source, arg_start),
+                        "changed dynamic bytes call argument to byte string literal",
+                        arg,
+                        bytes_replacement,
+                    )
+                )
+                cursor = arg_start + len(arg) + 1
+                continue
             replacement = cast_integer_arg_to_expected(arg, expected, vars_for_arg, facts)
             if replacement == arg:
                 cursor = arg_start + len(arg) + 1
@@ -305,6 +319,18 @@ def _typed_external_call_arguments(
             cursor = arg_start + len(arg) + 1
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     return apply_edits(source, selected_edits), selected_fixes, []
+
+
+def _dynamic_bytes_hex_arg_replacement(arg: str, expected: str) -> str | None:
+    if re.fullmatch(r"Bytes\s*\[\s*\d+\s*\]", expected.strip()) is None:
+        return None
+    literal = arg.strip()
+    if re.fullmatch(r"0x[0-9A-Fa-f]*", literal) is None:
+        return None
+    raw = literal.removeprefix("0x")
+    if len(raw) % 2 != 0:
+        return None
+    return 'b"' + "".join(f"\\x{raw[index : index + 2].lower()}" for index in range(0, len(raw), 2)) + '"'
 
 
 def _unsafe_subscript_index_arguments(
@@ -390,7 +416,7 @@ RULES = (
     Rule(
         "typed_external_call_arguments",
         runner=_typed_external_call_arguments,
-        changes=(crossing("VY052", (0, 4, 0)),),
+        changes=(crossing("VY052", (0, 4, 0)), crossing("VY053", (0, 4, 0))),
     ),
     Rule(
         "unsafe_subscript_index_arguments",

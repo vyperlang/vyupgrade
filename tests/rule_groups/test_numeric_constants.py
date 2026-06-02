@@ -149,6 +149,22 @@ def f() -> Bytes[256]:
     assert 'call_data: Bytes[256] = b"\\x00"' in result.source
 
 
+def test_dynamic_bytes_hex_external_call_argument_becomes_byte_string_literal(config) -> None:
+    source = """# @version 0.3.10
+interface Geyser:
+    def stakeFor(user: address, amount: uint256, data: Bytes[32]): nonpayable
+
+@external
+def f(geyser: address):
+    Geyser(geyser).stakeFor(msg.sender, 1, 0x00)
+"""
+
+    result = apply_rules(source, config())
+
+    assert 'extcall Geyser(geyser).stakeFor(msg.sender, 1, b"\\x00")' in result.source
+    assert any(fix.rule == "VY053" for fix in result.fixes)
+
+
 def test_fixed_bytes_hex_literal_is_left_alone(config) -> None:
     source = """# @version 0.3.10
 value: bytes32 = 0x00

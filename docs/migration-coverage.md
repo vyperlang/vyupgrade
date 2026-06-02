@@ -155,8 +155,9 @@ modern Python interpreter.
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
   arithmetic expressions. It also casts signed operands of `unsafe_sub(...)`
   when the call is used as an unsigned array index.
-- Dynamic `Bytes[N]` declarations initialized from hex byte literals: `VY053`
-  rewrites the literal to a byte string form accepted by modern Vyper.
+- Dynamic `Bytes[N]` declarations and call arguments initialized from hex byte
+  literals: `VY053` rewrites the literal to a byte string form accepted by
+  modern Vyper.
 - Exponentiation typing became stricter: `VY054` folds known integer constants
   used as operands in unsigned exponent expressions, and `VY055` rewrites
   dynamic `uint256 ** uint256` expressions to `pow_mod256(...)`. `VY054` also
