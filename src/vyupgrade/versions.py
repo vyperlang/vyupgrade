@@ -135,7 +135,7 @@ def _source_syntax_floor(source: str) -> VyperVersion | None:
     if re.search(r"\bDynArray\s*\[[^\]]+,\s*[A-Z_][A-Z0-9_]*\s*\]", source):
         floors.append(Version("0.3.7"))
     elif re.search(r"\bDynArray\s*\[", source):
-        floors.append(Version("0.3.4"))
+        floors.append(Version("0.3.3"))
     if re.search(r"(?m)^enum\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):
         floors.append(Version("0.3.4"))
     if re.search(r"\bimmutable\s*\(", source):

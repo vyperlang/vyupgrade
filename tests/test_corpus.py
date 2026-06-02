@@ -448,7 +448,7 @@ def test_smoke_raises_broad_pragma_source_version_from_syntax(monkeypatch, tmp_p
     contract = tmp_path / "contracts" / "chainsecurity_flat" / "0xabc.vy"
     contract.parent.mkdir(parents=True)
     contract.write_text(
-        "#pragma version ^0.3.0\ncustomers: DynArray[String[32], 100]\n",
+        "#pragma version ^0.3.0\ndecimals: public(uint8)\n",
         encoding="utf-8",
     )
     item = {

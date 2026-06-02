@@ -51,7 +51,8 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
 
 
 def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
-    assert compiler_version_for_source("^0.3.0", "xs: DynArray[String[32], 100]") == "0.3.4"
+    assert compiler_version_for_source("^0.3.0", "xs: DynArray[String[32], 100]") == "0.3.3"
+    assert compiler_version_for_source("^0.3.3", "xs: DynArray[address, 50_000]") == "0.3.3"
     assert compiler_version_for_source("^0.3.0", "xs: DynArray[Reward, MAX_REWARDS]") == "0.3.7"
     assert compiler_version_for_source("^0.3.3", "TOKEN: immutable(address)") == "0.3.7"
     assert compiler_version_for_source(">=0.3.2", "enum Side:\n    BUY\n") == "0.3.4"
