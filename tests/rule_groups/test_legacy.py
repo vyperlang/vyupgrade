@@ -66,6 +66,24 @@ def f(receiver: address, value: uint256):
     assert "log Transfer(sender=msg.sender, receiver=receiver, value=value)" in result.source
 
 
+def test_timestamp_parameter_name_is_not_rewritten_as_type(config) -> None:
+    source = """# @version 0.2.8
+@view
+def _balanceOf(user: address, timestamp: uint256) -> uint256:
+    return timestamp
+
+@view
+def expires_at(ts: timestamp) -> timestamp:
+    return ts
+"""
+
+    result = apply_rules(source, config())
+
+    assert "def _balanceOf(user: address, timestamp: uint256) -> uint256:" in result.source
+    assert "def expires_at(ts: uint256) -> uint256:" in result.source
+    assert "uint256: uint256" not in result.source
+
+
 def test_event_logs_rewrite_multiline_arguments_with_comments(config) -> None:
     source = """# @version 0.3.10
 event StrategyReported:

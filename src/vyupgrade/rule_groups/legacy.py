@@ -158,6 +158,10 @@ def _legacy_timestamp_type_edits(source: str, mask: list[bool]) -> list[TextEdit
                 spans.append((colon + 1, end))
         for start, end in spans:
             for match in re.finditer(r"\btimestamp\b", code[start:end]):
+                if re.match(r"\s*def\b", code) and not _timestamp_in_def_type_position(
+                    code, start + match.start(), start + match.end()
+                ):
+                    continue
                 absolute_start = offset + start + match.start()
                 absolute_end = offset + start + match.end()
                 if absolute_start > 0 and source[absolute_start - 1] == ".":
@@ -166,6 +170,18 @@ def _legacy_timestamp_type_edits(source: str, mask: list[bool]) -> list[TextEdit
                     edits.append(TextEdit(absolute_start, absolute_end, "uint256"))
         offset += len(raw_line)
     return edits
+
+
+def _timestamp_in_def_type_position(code: str, start: int, end: int) -> bool:
+    prev_index = start - 1
+    while prev_index >= 0 and code[prev_index].isspace():
+        prev_index -= 1
+    if prev_index >= 0 and code[prev_index] in {":", ">"}:
+        return True
+    next_index = end
+    while next_index < len(code) and code[next_index].isspace():
+        next_index += 1
+    return not (next_index < len(code) and code[next_index] == ":")
 
 
 def _legacy_events(
