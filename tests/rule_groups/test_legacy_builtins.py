@@ -101,3 +101,28 @@ def f(return_value: bytes32):
         in result.source
     )
     assert "output_type=bytes32" not in result.source
+
+
+def test_multiline_method_id_bytes32_comparison_converts_full_left_operand(config) -> None:
+    source = """# @version 0.2.15
+interface ERC721Receiver:
+    def onERC721Received(_operator: address, _from: address, _tokenId: uint256, _data: Bytes[1024]) -> bytes32: view
+
+@internal
+def f(_to: address, _sender: address, _from: address, _token_id: uint256, _data: Bytes[1024]):
+    assert ERC721Receiver(_to).onERC721Received(
+        _sender, _from, _token_id, _data
+    ) == method_id(
+        "onERC721Received(address,address,uint256,bytes)", output_type=bytes32
+    )
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "convert(), bytes4)" not in result.source
+    assert (
+        "convert(staticcall ERC721Receiver(_to).onERC721Received(\n"
+        "        _sender, _from, _token_id, _data\n"
+        "    ), bytes4) == method_id("
+    ) in result.source
+    assert "output_type=bytes32" not in result.source

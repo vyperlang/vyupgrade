@@ -368,10 +368,7 @@ def _method_id_comparison_operand(
         line_end = len(source)
     eq_left = source.rfind("==", line_start, call_start)
     if eq_left != -1:
-        expr_start = line_start
-        prefix_match = re.match(r"\s*(?:assert|return)\s+", source[line_start:eq_left])
-        if prefix_match is not None:
-            expr_start = line_start + prefix_match.end()
+        expr_start = _statement_expression_start(source, eq_left, line_start)
         while expr_start < eq_left and source[expr_start].isspace():
             expr_start += 1
         expr_end = eq_left
@@ -392,6 +389,24 @@ def _method_id_comparison_operand(
         if expr and not expr.startswith("convert("):
             return expr_start, expr_end, expr
     return None
+
+
+def _statement_expression_start(source: str, index: int, fallback: int) -> int:
+    prefix = source[:index]
+    starts = list(re.finditer(r"(?m)^[ \t]*(?:assert|return)\s+", prefix))
+    if not starts:
+        return fallback
+    start = starts[-1].end()
+    while start < index and source[start].isspace():
+        start += 1
+    if start < index and source[start] == "(":
+        close = source.find(")", start + 1, index)
+        if close == -1:
+            start += 1
+            while start < index and source[start].isspace():
+                start += 1
+    return start
+
 
 RULES = (
     Rule(
