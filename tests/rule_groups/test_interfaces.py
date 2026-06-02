@@ -455,6 +455,24 @@ rate: public(HashMap[address, uint256])
     assert any(fix.rule == "VY014" for fix in result.fixes)
 
 
+def test_payable_implemented_interface_adds_payable_decorator(config) -> None:
+    source = """# @version 0.3.10
+interface Receiver:
+    def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]): payable
+
+implements: Receiver
+
+@external
+def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]):
+    pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@external\n@payable\ndef receiveFlashLoan" in result.source
+    assert any(fix.rule == "VY014" for fix in result.fixes)
+
+
 def test_pure_function_reading_immutable_becomes_view(config) -> None:
     source = """# @version 0.3.10
 TARGET: immutable(address)

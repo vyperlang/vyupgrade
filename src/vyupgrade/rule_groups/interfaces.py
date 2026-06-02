@@ -288,6 +288,49 @@ def _implemented_view_mutability(
     return apply_edits(source, edits), fixes, []
 
 
+def _implemented_payable_mutability(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    facts = rule_context.facts
+    payable_methods = _implemented_interface_methods(source, facts, "payable")
+    if not payable_methods:
+        return source, [], []
+    lines = source.splitlines(keepends=True)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    for function_line, decorators in facts.function_decorators.items():
+        function_name = facts.function_names.get(function_line)
+        if (
+            function_name not in payable_methods
+            or "payable" in decorators
+            or "external" not in decorators
+            or "view" in decorators
+            or "pure" in decorators
+        ):
+            continue
+        external_line = facts.function_decorator_lines.get(function_line, {}).get("external")
+        if external_line is None or external_line > len(lines):
+            continue
+        line = lines[external_line - 1]
+        decorator_match = re.match(r"([ \t]*)@external\b", line)
+        if decorator_match is None:
+            continue
+        insert_at = rule_context.line_offsets[external_line - 1] + len(line)
+        replacement = f"{decorator_match.group(1)}@payable\n"
+        edits.append(TextEdit(insert_at, insert_at, replacement))
+        fixes.append(
+            Fix(
+                "VY014",
+                external_line + 1,
+                "changed implementation mutability to match payable interface",
+                "",
+                replacement.rstrip("\n"),
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
 def _implemented_interface_methods(
     source: str, facts: SourceFacts, mutability: str
 ) -> set[str]:
@@ -957,6 +1000,11 @@ RULES = (
     Rule(
         "implemented_view_mutability",
         runner=_implemented_view_mutability,
+        changes=(crossing("VY014", (0, 4, 0)),),
+    ),
+    Rule(
+        "implemented_payable_mutability",
+        runner=_implemented_payable_mutability,
         changes=(crossing("VY014", (0, 4, 0)),),
     ),
     Rule(
