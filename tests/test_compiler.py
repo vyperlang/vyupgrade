@@ -1078,6 +1078,84 @@ def test_compare_artifacts_treats_pure_and_view_as_readonly_abi() -> None:
     assert compare_artifact_details(source, target)[0] == []
 
 
+def test_compare_artifacts_normalizes_legacy_abi_type_spellings() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "constructor",
+                    "stateMutability": "nonpayable",
+                    "inputs": [],
+                    "outputs": [{"type": "address", "name": ""}],
+                },
+                {
+                    "type": "function",
+                    "name": "getAverageRating",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "target", "type": "address"}],
+                    "outputs": [{"name": "", "type": "fixed168x10"}],
+                },
+                {
+                    "type": "function",
+                    "name": "deposit",
+                    "stateMutability": "payable",
+                    "inputs": [
+                        {
+                            "name": "swap_route",
+                            "type": "(address,address,int128,int128,bool,bool)[]",
+                        }
+                    ],
+                    "outputs": [{"name": "", "type": "uint256"}],
+                },
+            ]
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "abi": [
+                {
+                    "type": "constructor",
+                    "stateMutability": "nonpayable",
+                    "inputs": [],
+                    "outputs": [],
+                },
+                {
+                    "type": "function",
+                    "name": "getAverageRating",
+                    "stateMutability": "view",
+                    "inputs": [{"name": "target", "type": "address"}],
+                    "outputs": [{"name": "", "type": "int168"}],
+                },
+                {
+                    "type": "function",
+                    "name": "deposit",
+                    "stateMutability": "payable",
+                    "inputs": [
+                        {
+                            "name": "swap_route",
+                            "type": "tuple[]",
+                            "components": [
+                                {"name": "swap_pool", "type": "address"},
+                                {"name": "j_token", "type": "address"},
+                                {"name": "i", "type": "int128"},
+                                {"name": "j", "type": "int128"},
+                                {"name": "is_underlying", "type": "bool"},
+                                {"name": "is_crypto_pool", "type": "bool"},
+                            ],
+                        }
+                    ],
+                    "outputs": [{"name": "", "type": "uint256"}],
+                },
+            ]
+        },
+    )
+
+    assert compare_artifacts(source, target) == (True, None, None)
+    assert compare_artifact_details(source, target)[0] == []
+
+
 def test_compare_artifact_details_ignores_constructor_selector() -> None:
     source = CompileResult(
         "passed",
@@ -1149,7 +1227,7 @@ def test_compare_artifact_details_reports_abi_output_shape_changes() -> None:
     abi_diff, _method_diff, _storage_diff = compare_artifact_details(source, target)
 
     assert abi_diff == [
-        "changed ABI entry: function points_sum(int128, uint256): outputs (bias: uint256, slope: uint256) -> (tuple(bias: uint256, slope: uint256))",
+        "changed ABI entry: function points_sum(int128, uint256): outputs (bias: uint256, slope: uint256) -> ((uint256,uint256))",
     ]
 
 

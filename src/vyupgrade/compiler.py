@@ -744,19 +744,45 @@ def _canonical_abi(abi: object) -> object:
 def _strip_abi_metadata(value: object) -> object:
     if isinstance(value, dict):
         return {
-            key: _canonical_abi_value(key, item)
+            key: _canonical_abi_value(key, item, value)
             for key, item in sorted(value.items())
             if key not in {"gas"}
+            and not (value.get("type") == "constructor" and key == "outputs")
+            and not (key == "components" and _is_tuple_abi_type(value.get("type")))
         }
     if isinstance(value, list):
         return [_strip_abi_metadata(item) for item in value]
     return value
 
 
-def _canonical_abi_value(key: str, value: object) -> object:
+def _canonical_abi_value(key: str, value: object, parent: Mapping[str, object]) -> object:
     if key == "stateMutability" and value == "pure":
         return "view"
+    if key == "type" and isinstance(value, str):
+        return _canonical_abi_type(value, parent.get("components"))
     return _strip_abi_metadata(value)
+
+
+def _canonical_abi_type(type_name: str, components: object = None) -> str:
+    fixed_match = re.fullmatch(r"u?fixed(?P<bits>\d+)x(?P<scale>\d+)", type_name)
+    if fixed_match is not None:
+        prefix = "uint" if type_name.startswith("ufixed") else "int"
+        return f"{prefix}{fixed_match.group('bits')}"
+    if _is_tuple_abi_type(type_name):
+        suffix = type_name.removeprefix("tuple")
+        if isinstance(components, list):
+            inner = ",".join(
+                _canonical_abi_type(str(component.get("type", "?")), component.get("components"))
+                if isinstance(component, dict)
+                else "?"
+                for component in components
+            )
+            return f"({inner}){suffix}"
+    return type_name
+
+
+def _is_tuple_abi_type(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"tuple(?:\[[0-9]*\])*", value) is not None
 
 
 def _abi_sort_key(entry: dict[str, object]) -> tuple[object, ...]:
