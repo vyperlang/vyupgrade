@@ -661,6 +661,27 @@ def wrappedAsset() -> address: return SHARE
     assert any(fix.rule == "VY015" for fix in result.fixes)
 
 
+def test_pure_function_reading_enum_namespace_becomes_view(config) -> None:
+    source = """# @version 0.3.10
+enum Agent:
+    OWNERSHIP
+    PARAMETER
+    EMERGENCY
+
+@pure
+@internal
+def is_emergency(agent: Agent) -> bool:
+    return agent == Agent.EMERGENCY
+"""
+
+    result = apply_rules(source, config())
+
+    assert "@view\n@internal\ndef is_emergency" in result.source
+    assert any(
+        fix.rule == "VY015" and "enum or flag Agent" in fix.message for fix in result.fixes
+    )
+
+
 def test_internal_pure_function_querying_self_becomes_view(config) -> None:
     source = """# @version 0.2.8
 @internal

@@ -524,6 +524,7 @@ def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], li
     source = rule_context.source
     facts = rule_context.facts
     immutable_names = _immutable_names(facts)
+    pure_read_names = immutable_names | facts.flags_or_enums
     mask = rule_context.code_mask
     line_offsets = rule_context.line_offsets
     lines = source.splitlines(keepends=True)
@@ -533,7 +534,7 @@ def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], li
         if "pure" not in decorators:
             continue
         read_name = _function_read_name(
-            source, mask, line_offsets, facts, function_line, immutable_names
+            source, mask, line_offsets, facts, function_line, pure_read_names
         )
         has_self_read = _function_contains(
             source, mask, line_offsets, facts, function_line, "self"
@@ -563,14 +564,18 @@ def _pure_immutable_reads(rule_context: RuleContext) -> tuple[str, list[Fix], li
         )
         message = (
             f"relaxed pure function that reads immutable {read_name}"
-            if read_name is not None
+            if read_name in immutable_names
             else (
-                "relaxed pure function that queries self"
-                if has_self_read
+                f"relaxed pure function that reads enum or flag {read_name}"
+                if read_name is not None
                 else (
-                    "relaxed pure function that performs static raw_call"
-                    if has_static_raw_call
-                    else "relaxed pure function that calls a view external function"
+                    "relaxed pure function that queries self"
+                    if has_self_read
+                    else (
+                        "relaxed pure function that performs static raw_call"
+                        if has_static_raw_call
+                        else "relaxed pure function that calls a view external function"
+                    )
                 )
             )
         )
