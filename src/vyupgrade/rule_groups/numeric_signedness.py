@@ -110,6 +110,7 @@ def _mixed_signed_unsigned_arithmetic(
                     _inside_attribute_access(source, start, end)
                     or _inside_dict_key(source, start, end)
                     or inside_convert_call(source, start)
+                    or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
                     or (name in constant_values and _inside_shift_amount(source, start))
                     or _inside_type_subscript(source, start)
@@ -160,6 +161,7 @@ def _mixed_signed_unsigned_arithmetic(
                     _inside_attribute_access(source, start, end)
                     or _inside_dict_key(source, start, end)
                     or inside_convert_call(source, start)
+                    or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
                 ):
                     continue
@@ -207,6 +209,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_dict_key(source, start, end)
                     or inside_convert_call(source, start)
                     or _inside_any_convert_call(source, start)
+                    or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
                     or _inside_type_subscript(source, start)
                     or _is_unsigned_integer_type(lhs_type)
@@ -810,6 +813,19 @@ def _inside_range_header(source: str, index: int) -> bool:
     prefix = source[line_start:index]
     return bool(
         re.search(r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*(?::[^:]+)?\s+in\s+range\s*\([^)]*$", prefix)
+    )
+
+
+def _inside_loop_declaration(source: str, start: int, end: int) -> bool:
+    line_start = source.rfind("\n", 0, start) + 1
+    line_end = source.find("\n", end)
+    if line_end == -1:
+        line_end = len(source)
+    prefix = source[line_start:start]
+    suffix = source[end:line_end]
+    return bool(
+        re.match(r"[ \t]*for[ \t]+$", prefix)
+        and re.match(r"[ \t]*(?::[^:]+)?[ \t]+in[ \t]+", suffix)
     )
 
 

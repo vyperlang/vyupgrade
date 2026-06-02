@@ -643,6 +643,39 @@ def f(pool: address) -> uint256:
     assert "staticcall Curve(pool).price_scale(k)" in result.source
 
 
+def test_signed_loop_declaration_is_not_cast_when_name_reused_by_later_uint_loop(config) -> None:
+    source = """# @version 0.2.12
+interface Curve:
+    def balances(i: uint256) -> uint256: view
+    def price_scale(i: uint256) -> uint256: view
+
+N_COINS: constant(int128) = 3
+PRECISION: constant(uint256) = 10 ** 18
+
+@external
+def f(amounts: uint256[N_COINS], deposit: bool):
+    xp: uint256[N_COINS] = empty(uint256[N_COINS])
+    for k in range(N_COINS):
+        xp[k] = Curve(msg.sender).balances(k)
+    if deposit:
+        for k in range(N_COINS):
+            xp[k] += amounts[k]
+    else:
+        for k in range(N_COINS):
+            xp[k] -= amounts[k]
+    for k in range(N_COINS-1):
+        p: uint256 = Curve(msg.sender).price_scale(k)
+        xp[k+1] = xp[k+1] * p / PRECISION
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for convert(k, uint256):" not in result.source
+    assert result.source.count("for k: int128 in range(N_COINS):") == 3
+    assert "xp[convert(k, uint256)] += amounts[convert(k, uint256)]" in result.source
+    assert "for k: uint256 in range(convert(N_COINS, uint256)-1, bound=2):" in result.source
+
+
 def test_unsafe_sub_array_index_operands_cast_to_unsigned_context(config) -> None:
     source = """# @version 0.3.10
 MAX_TICKS: constant(int256) = 5
