@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 - 2026-06-06
+
+- Fixed standard-json corpus imports so only declared compilation targets are
+  smoked while helper package modules remain available for dependency
+  resolution.
+- Fixed target validation for multiline function NatSpec docstrings,
+  package-local helper imports, and decimal-enabled math imports.
+- Added a migration rewrite for non-ASCII string literal characters that modern
+  target compilers reject.
+- Kept confirmed decimal selector changes surfaced as method identifier diffs.
+
 ## 0.4.0 - 2026-06-02
 
 - Added corpus import tooling and targeted corpus smoke selection for repeatable large-corpus regression checks.
