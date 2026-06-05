@@ -526,6 +526,35 @@ def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tm
     assert calls["run"] == (["vyper"], True, (contract.parent,), True)
 
 
+def test_compile_target_source_enables_decimals_for_math_import(monkeypatch, tmp_path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# @version 0.4.0\n", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._compiler_command", lambda *_args: ["vyper"])
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["enable_decimals"] = config.enable_decimals
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    result = compile_target_source(
+        contract,
+        "#pragma version 0.4.3\nimport math\n@external\ndef f(x: uint256, y: uint256) -> uint256:\n    return math.mul(x, y)\n",
+        Config(paths=(contract,), target_version="0.4.3"),
+    )
+
+    assert result.status == "passed"
+    assert calls["enable_decimals"] is True
+
+
 def test_compile_target_source_bumps_temp_pragma_for_validation(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.2.11\n", encoding="utf-8")
@@ -585,6 +614,27 @@ def f():
     assert "@custom:dev" not in result
     assert "@returns" not in result
     assert "@external\ndef f():" in result
+
+
+def test_target_validation_source_strips_multiline_function_natspec_docstrings() -> None:
+    source = '''# @version 0.3.10
+@external
+def callback_deposit(
+    user: address,
+    callback_args: DynArray[uint256, 5]
+  ) -> uint256[2]:
+    """
+    @notice Migrate loan
+    @returns legacy plural tag
+    """
+    return [0, 0]
+'''
+
+    result = _target_validation_source(source, "0.4.3")
+
+    assert '"""' not in result
+    assert "@returns" not in result
+    assert "def callback_deposit(" in result
 
 
 def test_target_validation_source_keeps_assigned_triple_quoted_strings() -> None:
@@ -991,6 +1041,25 @@ def test_target_overlay_rewrites_standard_json_src_package_imports(tmp_path) -> 
             encoding="utf-8"
         )
         assert (overlay.root / "utils" / "interfaces" / "IERC5267.vyi").exists()
+
+
+def test_target_overlay_rewrites_local_sibling_absolute_imports(tmp_path) -> None:
+    package = tmp_path / "package"
+    contract = package / "multijson.vy"
+    math = package / "math.vy"
+    package.mkdir()
+    contract.write_text("# @version 0.4.0\nimport math\n", encoding="utf-8")
+    math.write_text("# @version 0.4.0\n@internal\ndef mul(x: uint256, y: uint256) -> uint256:\n    return x * y\n", encoding="utf-8")
+
+    with target_overlay(
+        {contract: "#pragma version 0.4.3\nimport math\n"},
+        "0.4.3",
+        (package,),
+    ) as overlay:
+        assert overlay is not None
+        contract_overlay = overlay.root / "multijson.vy"
+        assert "from . import math" in contract_overlay.read_text(encoding="utf-8")
+        assert (overlay.root / "math.vy").exists()
 
 
 def test_compile_target_source_keeps_decimal_flag_off_without_decimal(monkeypatch, tmp_path) -> None:

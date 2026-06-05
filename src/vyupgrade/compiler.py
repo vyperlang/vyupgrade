@@ -421,6 +421,7 @@ def _copy_validation_source(
 
 
 def _standard_json_package_dependency_source(source_path: Path, source: str, common_root: Path) -> str:
+    source = _local_sibling_import_source(source_path, source)
     if source_path.parent.name != "src":
         return source
     replacements = {
@@ -434,6 +435,22 @@ def _standard_json_package_dependency_source(source_path: Path, source: str, com
     return re.sub(
         rf"(^[ \t]*from[ \t]+)\.({names})(?=\b)",
         r"\1..\2",
+        source,
+        flags=re.MULTILINE,
+    )
+
+
+def _local_sibling_import_source(source_path: Path, source: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        module = match.group("module")
+        if not (source_path.parent / f"{module}.vy").exists():
+            return match.group(0)
+        alias = match.group("alias") or ""
+        return f"{match.group('indent')}from . import {module}{alias}{match.group('trailing')}"
+
+    return re.sub(
+        r"^(?P<indent>[ \t]*)import[ \t]+(?P<module>[A-Za-z_][A-Za-z0-9_]*)(?P<alias>[ \t]+as[ \t]+[A-Za-z_][A-Za-z0-9_]*)?(?P<trailing>[ \t]*(?:#.*)?)$",
+        replacement,
         source,
         flags=re.MULTILINE,
     )
@@ -709,10 +726,12 @@ def _previous_function_header(lines: list[str], index: int, indent: int) -> int 
         line = lines[cursor]
         stripped = line.strip()
         current_indent = len(line) - len(line.lstrip(" \t"))
-        if current_indent < indent:
-            return None
         if current_indent == indent and stripped.startswith("def "):
             return cursor
+        if current_indent < indent and stripped.startswith("def "):
+            return cursor
+        if current_indent < indent:
+            return None
         cursor -= 1
     return None
 
@@ -1269,7 +1288,9 @@ def _target_compile_config(source: str, config: Config) -> Config:
 
 
 def _uses_decimal(source: str) -> bool:
-    return bool(re.search(r"\bdecimal\b", source))
+    if re.search(r"\bdecimal\b", source):
+        return True
+    return bool(re.search(r"^\s*(?:from\s+math\s+import\b|import\s+math(?:\s|,|$))", source, re.MULTILINE))
 
 
 def _run_compile(

@@ -139,6 +139,64 @@ def _legacy_type_units(rule_context: RuleContext) -> tuple[str, list[Fix], list[
     return apply_edits(source, edits), fixes, []
 
 
+def _ascii_string_literals(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "#":
+            newline = source.find("\n", index)
+            index = len(source) if newline == -1 else newline + 1
+            continue
+        if char not in {"'", '"'}:
+            index += 1
+            continue
+        if index > 0 and source[index - 1] in {"b", "B"}:
+            index += 1
+            continue
+        quote = char
+        if source.startswith(quote * 3, index):
+            close = source.find(quote * 3, index + 3)
+            index = len(source) if close == -1 else close + 3
+            continue
+        close = _string_literal_end(source, index)
+        if close is None:
+            break
+        content = source[index + 1 : close]
+        if any(ord(item) > 127 for item in content):
+            replacement = "".join(item if ord(item) <= 127 else "?" for item in content)
+            edits.append(TextEdit(index + 1, close, replacement))
+            fixes.append(
+                Fix(
+                    "VY224",
+                    line_number(source, index),
+                    "replaced non-ASCII string literal characters",
+                    source[index : close + 1],
+                    f"{quote}{replacement}{quote}",
+                )
+            )
+        index = close + 1
+    return apply_edits(source, edits), fixes, []
+
+
+def _string_literal_end(source: str, start: int) -> int | None:
+    quote = source[start]
+    index = start + 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return index
+        if char == "\n":
+            return None
+        index += 1
+    return None
+
+
 def _legacy_timestamp_type_edits(source: str, mask: list[bool]) -> list[TextEdit]:
     edits: list[TextEdit] = []
     offset = 0
@@ -982,6 +1040,7 @@ EARLY_RULES = (
     Rule("pragma", runner=_pragma, changes=(target_update("VY001", (0, 3, 10)),)),
     Rule("legacy_decorators", runner=_legacy_decorators, changes=(target_floor("VY201", (0, 2, 1)),)),
     Rule("legacy_type_units", runner=_legacy_type_units, changes=(target_floor("VY202", (0, 2, 1)),)),
+    Rule("ascii_string_literals", runner=_ascii_string_literals, changes=(crossing("VY224", (0, 4, 0)),)),
     Rule(
         "legacy_events",
         runner=_legacy_events,

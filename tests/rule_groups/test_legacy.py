@@ -269,6 +269,22 @@ def _g():
     }
 
 
+def test_non_ascii_string_literals_are_sanitized_for_modern_target(config) -> None:
+    source = '''# @version 0.3.7
+minter: address
+
+@external
+def set_uri(_uri: String[100]) -> bool:
+    assert msg.sender == self.minter, "Les charrettes sont libres et indépendantes !"
+    return True
+'''
+
+    result = apply_rules(source, config())
+
+    assert '"Les charrettes sont libres et ind?pendantes !"' in result.source
+    assert any(fix.rule == "VY224" for fix in result.fixes)
+
+
 def test_legacy_public_fixed_array_getter_preserves_int128_selector(config) -> None:
     source = """# @version 0.1.0b17
 coins: public(address[2])
