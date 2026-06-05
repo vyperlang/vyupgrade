@@ -247,7 +247,12 @@ def test_import_vyper_2026_source_enrichment_inventory(tmp_path: Path) -> None:
                 "compiler_version": "vyper:0.3.10",
                 "language": "Vyper",
                 "settings": {"compilationTarget": {"contracts/main.vy": "main"}},
-                "sources": {"contracts/main.vy": {"content": "# @version 0.3.10\ny: uint256\n"}},
+                "sources": {
+                    "contracts/main.vy": {
+                        "content": "# @version 0.3.10\nimport contracts.lib as lib\ny: uint256\n"
+                    },
+                    "contracts/lib.vy": {"content": "# @version 0.3.10\nz: uint256\n"},
+                },
             }
         ),
         encoding="utf-8",
@@ -330,6 +335,20 @@ def test_import_vyper_2026_source_enrichment_inventory(tmp_path: Path) -> None:
     assert {item["address"] for item in manifest["items"]} == {"0xabc", "0xdef"}
     assert all(Path(item["corpus_path"]).exists() for item in manifest["items"])
     assert any(item.get("standard_json") for item in manifest["items"])
+    json_items = [item for item in manifest["items"] if item.get("standard_json")]
+    assert len(json_items) == 1
+    assert json_items[0]["relpath"] == "standard_json/json/contracts/main.vy"
+    assert (
+        tmp_path
+        / "corpus"
+        / "vyper"
+        / "contracts"
+        / "vyper_2026"
+        / "standard_json"
+        / "json"
+        / "contracts"
+        / "lib.vy"
+    ).exists()
 
 
 def test_import_chainsecurity_preserves_standard_json_source_tree(tmp_path: Path) -> None:

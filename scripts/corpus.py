@@ -1765,7 +1765,20 @@ def _chainsecurity_id(path: Path) -> tuple[str | None, str | None]:
 def _chainsecurity_output_sources(
     payload: dict[str, Any], written_sources: dict[str, Path]
 ) -> tuple[str, ...]:
-    output_selection = payload.get("settings", {}).get("outputSelection")
+    settings = payload.get("settings", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    compilation_target = settings.get("compilationTarget")
+    if isinstance(compilation_target, dict):
+        selected = [
+            source_name
+            for source_name in compilation_target
+            if source_name in written_sources and written_sources[source_name].suffix == ".vy"
+        ]
+        if selected:
+            return tuple(dict.fromkeys(selected))
+
+    output_selection = settings.get("outputSelection")
     if not isinstance(output_selection, dict):
         return tuple(name for name, path in written_sources.items() if path.suffix == ".vy")
     selected: list[str] = []
