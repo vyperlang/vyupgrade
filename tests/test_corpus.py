@@ -228,6 +228,110 @@ def test_import_vyper_2026_keeps_metadata_when_source_is_not_local(tmp_path: Pat
     assert manifest["by_metadata_compiler"] == [("0.3.7", 1)]
 
 
+def test_import_vyper_2026_source_enrichment_inventory(tmp_path: Path) -> None:
+    import json
+
+    import polars as pl
+
+    corpus = _load_corpus_module()
+    source = tmp_path / "vyper-2026"
+    inventory = source / "data" / "source_enrichment" / "vyper_inventory_20260605"
+    flat = inventory / "source_store" / "vy" / "flat.vy"
+    standard_json = inventory / "source_store" / "standard_json" / "package.json"
+    flat.parent.mkdir(parents=True)
+    standard_json.parent.mkdir(parents=True)
+    flat.write_text("# @version 0.3.10\nx: uint256\n", encoding="utf-8")
+    standard_json.write_text(
+        json.dumps(
+            {
+                "compiler_version": "vyper:0.3.10",
+                "language": "Vyper",
+                "settings": {"compilationTarget": {"contracts/main.vy": "main"}},
+                "sources": {"contracts/main.vy": {"content": "# @version 0.3.10\ny: uint256\n"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    pl.DataFrame(
+        [
+            {
+                "source_id": "sha256:flat",
+                "source_format": "vy",
+                "source_sha256": "flat",
+                "source_len": flat.stat().st_size,
+                "catalog_path": "data/source_enrichment/vyper_inventory_20260605/source_store/vy/flat.vy",
+                "representative_provider": "test",
+                "representative_source_path": str(flat),
+                "duplicate_artifact_count": 1,
+                "providers": ["test"],
+                "match_kinds": ["address"],
+            },
+            {
+                "source_id": "sha256:json",
+                "source_format": "standard_json",
+                "source_sha256": "json",
+                "source_len": standard_json.stat().st_size,
+                "catalog_path": "data/source_enrichment/vyper_inventory_20260605/source_store/standard_json/package.json",
+                "representative_provider": "test",
+                "representative_source_path": str(standard_json),
+                "duplicate_artifact_count": 1,
+                "providers": ["test"],
+                "match_kinds": ["address"],
+            },
+        ]
+    ).write_parquet(inventory / "source_catalog.parquet")
+    pl.DataFrame(
+        [
+            {
+                "provider": "test",
+                "match_kind": "address",
+                "source_format": "vy",
+                "source_path": str(flat),
+                "has_source_file": True,
+                "source_len": flat.stat().st_size,
+                "source_sha256": "flat",
+                "priority": 1,
+                "address": "0xabc",
+                "runtime_code_hash": "0x1",
+                "compiler_version": "vyper:0.3.10",
+                "source_compiler": "0.3.10",
+                "contract_name": "Flat",
+                "note": None,
+                "source_id": "sha256:flat",
+                "catalog_path": "data/source_enrichment/vyper_inventory_20260605/source_store/vy/flat.vy",
+            },
+            {
+                "provider": "test",
+                "match_kind": "address",
+                "source_format": "standard_json",
+                "source_path": str(standard_json),
+                "has_source_file": True,
+                "source_len": standard_json.stat().st_size,
+                "source_sha256": "json",
+                "priority": 1,
+                "address": "0xdef",
+                "runtime_code_hash": "0x2",
+                "compiler_version": "vyper:0.3.10",
+                "source_compiler": "0.3.10",
+                "contract_name": "Json",
+                "note": None,
+                "source_id": "sha256:json",
+                "catalog_path": "data/source_enrichment/vyper_inventory_20260605/source_store/standard_json/package.json",
+            },
+        ]
+    ).write_parquet(inventory / "source_artifacts.parquet")
+
+    manifest = corpus.import_vyper_2026(
+        source / "data" / "source_enrichment", tmp_path / "corpus" / "vyper"
+    )
+
+    assert manifest["counts"]["source_catalog.parquet:rows_seen"] == 2
+    assert len(manifest["items"]) == 2
+    assert {item["address"] for item in manifest["items"]} == {"0xabc", "0xdef"}
+    assert all(Path(item["corpus_path"]).exists() for item in manifest["items"])
+    assert any(item.get("standard_json") for item in manifest["items"])
+
+
 def test_import_chainsecurity_preserves_standard_json_source_tree(tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     source = tmp_path / "vyper-contracts"

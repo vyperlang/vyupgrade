@@ -439,6 +439,10 @@ def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
     import polars as pl
 
     root = source.expanduser()
+    inventory_dir = _vyper_2026_inventory_dir(root)
+    if inventory_dir is not None:
+        return _import_vyper_2026_inventory(root, inventory_dir, output)
+
     data_dir = root / "data"
     contracts_dir = output / "contracts"
     counts: Counter[str] = Counter()
@@ -556,6 +560,381 @@ def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
         "items": items,
     }
     return _write_manifest(manifest_path, manifest)
+
+
+def _vyper_2026_inventory_dir(root: Path) -> Path | None:
+    if (root / "source_catalog.parquet").exists():
+        return root
+    candidates: list[Path] = []
+    if root.is_dir():
+        candidates.extend(path for path in root.iterdir() if path.is_dir())
+    source_enrichment = root / "data" / "source_enrichment"
+    if source_enrichment.exists():
+        candidates.extend(path for path in source_enrichment.iterdir() if path.is_dir())
+    for candidate in sorted(candidates, reverse=True):
+        if (candidate / "source_catalog.parquet").exists():
+            return candidate
+    return None
+
+
+def _import_vyper_2026_inventory(source: Path, inventory_dir: Path, output: Path) -> dict[str, Any]:
+    import polars as pl
+
+    repo_root = _vyper_2026_inventory_repo_root(source, inventory_dir)
+    contracts_dir = output / "contracts"
+    corpus_repo = "vyper_2026"
+    counts: Counter[str] = Counter()
+    by_repo: Counter[str] = Counter()
+    by_compiler: Counter[str] = Counter()
+    by_metadata_compiler: Counter[str] = Counter()
+    items: list[dict[str, Any]] = []
+    metadata_items: list[dict[str, Any]] = []
+    metadata_by_source = _vyper_2026_inventory_metadata(
+        inventory_dir, metadata_items, by_metadata_compiler, counts
+    )
+
+    catalog_path = inventory_dir / "source_catalog.parquet"
+    catalog = pl.read_parquet(catalog_path)
+    for row in catalog.iter_rows(named=True):
+        counts["source_catalog.parquet:rows_seen"] += 1
+        source_id = row.get("source_id")
+        digest = str(row.get("source_sha256") or "").strip()
+        source_format = row.get("source_format")
+        if not source_id or not digest:
+            counts["source_catalog.parquet:missing_source_id"] += 1
+            continue
+        source_path = _resolve_vyper_2026_inventory_path(
+            row.get("catalog_path"), repo_root, inventory_dir
+        )
+        if source_path is None or not source_path.exists():
+            counts["source_catalog.parquet:missing_source_file"] += 1
+            continue
+        metadata = metadata_by_source.get(str(source_id), {})
+
+        if source_format == "vy":
+            item = _import_vyper_2026_inventory_source(
+                row,
+                metadata,
+                source_path,
+                contracts_dir / corpus_repo / "vy",
+                repo_root,
+                counts,
+            )
+            if item is None:
+                continue
+            items.append(item)
+            counts["applicable"] += 1
+            by_repo[corpus_repo] += 1
+            if item["source_compiler"] is not None:
+                by_compiler[item["source_compiler"]] += 1
+            continue
+
+        if source_format == "standard_json":
+            new_items = _import_vyper_2026_inventory_standard_json(
+                row,
+                metadata,
+                source_path,
+                contracts_dir / corpus_repo / "standard_json" / digest,
+                repo_root,
+                counts,
+            )
+            items.extend(new_items)
+            counts["applicable"] += len(new_items)
+            by_repo[corpus_repo] += len(new_items)
+            for item in new_items:
+                if item["source_compiler"] is not None:
+                    by_compiler[item["source_compiler"]] += 1
+            continue
+
+        counts[f"source_catalog.parquet:unsupported_source_format:{source_format}"] += 1
+
+    manifest_path = output / "vyper-2026-manifest.json"
+    manifest = {
+        "manifest": str(manifest_path),
+        "roots": [str(source)],
+        "inventory": str(inventory_dir),
+        "output": str(output),
+        "counts": dict(counts),
+        "by_repo": by_repo.most_common(),
+        "by_source_compiler": by_compiler.most_common(),
+        "by_metadata_compiler": by_metadata_compiler.most_common(),
+        "metadata_items": metadata_items,
+        "items": items,
+    }
+    return _write_manifest(manifest_path, manifest)
+
+
+def _vyper_2026_inventory_repo_root(source: Path, inventory_dir: Path) -> Path:
+    source = source.resolve()
+    inventory_dir = inventory_dir.resolve()
+    for candidate in (source, inventory_dir, *inventory_dir.parents):
+        if (candidate / "data" / "source_enrichment").exists():
+            return candidate
+    return source
+
+
+def _vyper_2026_inventory_metadata(
+    inventory_dir: Path,
+    metadata_items: list[dict[str, Any]],
+    by_metadata_compiler: Counter[str],
+    counts: Counter[str],
+) -> dict[str, dict[str, Any]]:
+    import polars as pl
+
+    metadata_by_source: dict[str, dict[str, Any]] = {}
+    artifacts_path = inventory_dir / "source_artifacts.parquet"
+    if artifacts_path.exists():
+        for row in pl.read_parquet(artifacts_path).iter_rows(named=True):
+            counts["source_artifacts.parquet:rows_seen"] += 1
+            record = _vyper_2026_artifact_record(row, artifacts_path)
+            metadata_items.append(record)
+            _record_vyper_2026_source_metadata(record, metadata_by_source, by_metadata_compiler)
+
+    coverage_path = inventory_dir / "source_coverage.parquet"
+    if coverage_path.exists():
+        coverage = pl.read_parquet(coverage_path)
+        for row in coverage.iter_rows(named=True):
+            counts["source_coverage.parquet:rows_seen"] += 1
+            for scope in ("address", "implementation", "metadata"):
+                record = _vyper_2026_coverage_record(row, scope, coverage_path)
+                if record is not None:
+                    _record_vyper_2026_source_metadata(
+                        record, metadata_by_source, by_metadata_compiler
+                    )
+    return metadata_by_source
+
+
+def _vyper_2026_artifact_record(row: dict[str, Any], parquet_path: Path) -> dict[str, Any]:
+    compiler_raw = row.get("source_compiler") or row.get("compiler_version")
+    compiler = compiler_version_for_spec(compiler_raw)
+    return {
+        "source_id": row.get("source_id"),
+        "source_path": row.get("source_path"),
+        "repo_root": str(parquet_path.parent),
+        "repo": "vyper_2026",
+        "pragma": compiler,
+        "source_compiler": compiler,
+        "compiler_version": row.get("compiler_version"),
+        "contract_name": row.get("contract_name"),
+        "sha256": row.get("source_sha256"),
+        "chain": None,
+        "address": row.get("address"),
+        "source_available": row.get("has_source_file"),
+        "source_origin": row.get("provider"),
+        "source_len": row.get("source_len"),
+        "source_format": row.get("source_format"),
+        "match_kind": row.get("match_kind"),
+        "parquet": str(parquet_path),
+    }
+
+
+def _vyper_2026_coverage_record(
+    row: dict[str, Any], scope: str, parquet_path: Path
+) -> dict[str, Any] | None:
+    source_id = row.get(f"{scope}_source_id")
+    if not source_id:
+        return None
+    compiler_raw = row.get(f"{scope}_source_compiler") or row.get(f"{scope}_compiler_version")
+    compiler = compiler_version_for_spec(compiler_raw)
+    return {
+        "source_id": source_id,
+        "source_path": row.get(f"{scope}_source_path"),
+        "repo_root": str(parquet_path.parent),
+        "repo": "vyper_2026",
+        "pragma": compiler,
+        "source_compiler": compiler,
+        "compiler_version": row.get(f"{scope}_compiler_version"),
+        "contract_name": row.get(f"{scope}_contract_name"),
+        "sha256": row.get(f"{scope}_source_sha256"),
+        "chain": row.get("chain"),
+        "address": row.get("address"),
+        "source_available": row.get(f"{scope}_source_available"),
+        "source_origin": row.get(f"{scope}_source_provider"),
+        "source_len": row.get(f"{scope}_source_len"),
+        "source_format": row.get(f"{scope}_source_format"),
+        "match_kind": row.get(f"{scope}_source_match_kind"),
+        "parquet": str(parquet_path),
+    }
+
+
+def _record_vyper_2026_source_metadata(
+    record: dict[str, Any],
+    metadata_by_source: dict[str, dict[str, Any]],
+    by_metadata_compiler: Counter[str],
+) -> None:
+    compiler = record.get("source_compiler")
+    if compiler is not None:
+        by_metadata_compiler[compiler] += 1
+    if compiler is None or not is_supported_source_version(compiler):
+        return
+    source_id = record.get("source_id")
+    if source_id and source_id not in metadata_by_source:
+        metadata_by_source[str(source_id)] = record
+
+
+def _import_vyper_2026_inventory_source(
+    row: dict[str, Any],
+    metadata: dict[str, Any],
+    source_path: Path,
+    output_dir: Path,
+    repo_root: Path,
+    counts: Counter[str],
+) -> dict[str, Any] | None:
+    try:
+        source_text = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        counts["source_catalog.parquet:read_error"] += 1
+        return None
+    if _looks_like_non_vyper_source(source_text):
+        counts["source_catalog.parquet:non_vyper_source"] += 1
+        return None
+    source_spec = _vyper_2026_source_spec(metadata, source_text, None)
+    if source_spec is None or not is_supported_source_version(source_spec):
+        counts["source_catalog.parquet:unsupported_compiler"] += 1
+        return None
+    digest = _source_hash(source_text)
+    target = output_dir / f"{digest}.vy"
+    corpus_path = _write_corpus_source(source_text, target, digest, counts)
+    item = _vyper_2026_inventory_item(row, metadata, repo_root, source_path)
+    item.update(
+        {
+            "relpath": str(Path("vy") / corpus_path.name),
+            "corpus_path": str(corpus_path),
+            "corpus_repo_root": str(output_dir),
+            "pragma": source_spec,
+            "source_pragma": infer_pragma(source_text),
+            "source_compiler": compiler_version_for_spec(source_spec),
+            "sha256": digest,
+        }
+    )
+    return item
+
+
+def _import_vyper_2026_inventory_standard_json(
+    row: dict[str, Any],
+    metadata: dict[str, Any],
+    source_path: Path,
+    package_root: Path,
+    repo_root: Path,
+    counts: Counter[str],
+) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        counts["source_catalog.parquet:json_read_error"] += 1
+        return []
+    if payload.get("language") != "Vyper":
+        counts["source_catalog.parquet:non_vyper_json"] += 1
+        return []
+    compiler_raw = metadata.get("compiler_version") or metadata.get("source_compiler")
+    compiler = compiler_version_for_spec(compiler_raw or payload.get("compiler_version"))
+    if compiler is None or not is_supported_source_version(compiler):
+        counts["source_catalog.parquet:unsupported_compiler"] += 1
+        return []
+    sources = payload.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        counts["source_catalog.parquet:json_missing_sources"] += 1
+        return []
+
+    written_sources: dict[str, Path] = {}
+    for source_name, source_info in sources.items():
+        content = _standard_json_source_content(source_info)
+        if content is None:
+            counts["source_catalog.parquet:json_source_missing_content"] += 1
+            continue
+        safe_source = Path(*(_safe_filename(part) for part in Path(str(source_name)).parts))
+        digest = _source_hash(content)
+        corpus_path = _write_corpus_source(content, package_root / safe_source, digest, counts)
+        written_sources[str(source_name)] = corpus_path
+        counts["source_catalog.parquet:json_sources_written"] += 1
+
+    items: list[dict[str, Any]] = []
+    selected_sources = _chainsecurity_output_sources(payload, written_sources)
+    compiler_search_paths = _standard_json_compiler_search_paths(payload, package_root)
+    for source_name in selected_sources:
+        corpus_path = written_sources.get(source_name)
+        if corpus_path is None or corpus_path.suffix != ".vy":
+            continue
+        try:
+            source_text = corpus_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            counts["source_catalog.parquet:read_error"] += 1
+            continue
+        if _looks_like_non_vyper_source(source_text):
+            counts["source_catalog.parquet:non_vyper_source"] += 1
+            continue
+        source_spec = _vyper_2026_source_spec(metadata, source_text, payload)
+        if source_spec is None or not is_supported_source_version(source_spec):
+            counts["source_catalog.parquet:unsupported_pragma"] += 1
+            continue
+        item = _vyper_2026_inventory_item(row, metadata, repo_root, source_path)
+        item.update(
+            {
+                "relpath": str(Path("standard_json") / package_root.name / source_name),
+                "corpus_path": str(corpus_path),
+                "corpus_repo_root": str(package_root),
+                "pragma": source_spec,
+                "source_pragma": infer_pragma(source_text),
+                "source_compiler": compiler_version_for_spec(source_spec),
+                "compiler_version": payload.get("compiler_version") or metadata.get("compiler_version"),
+                "sha256": _source_hash(source_text),
+                "compiler_search_paths": [str(path) for path in compiler_search_paths],
+                "standard_json": str(source_path),
+            }
+        )
+        items.append(item)
+    return items
+
+
+def _vyper_2026_inventory_item(
+    row: dict[str, Any], metadata: dict[str, Any], repo_root: Path, source_path: Path
+) -> dict[str, Any]:
+    return {
+        "source_id": row.get("source_id"),
+        "source_path": str(source_path),
+        "repo_root": str(repo_root),
+        "repo": "vyper_2026",
+        "compiler_version": metadata.get("compiler_version"),
+        "contract_name": metadata.get("contract_name"),
+        "chain": metadata.get("chain"),
+        "address": metadata.get("address"),
+        "source_available": True,
+        "source_origin": metadata.get("source_origin") or row.get("representative_provider"),
+        "source_len": row.get("source_len"),
+        "source_format": row.get("source_format"),
+        "representative_source_path": row.get("representative_source_path"),
+        "catalog_path": row.get("catalog_path"),
+    }
+
+
+def _vyper_2026_source_spec(
+    metadata: dict[str, Any], source_text: str, payload: dict[str, Any] | None
+) -> str | None:
+    return (
+        metadata.get("source_compiler")
+        or compiler_version_for_spec(metadata.get("compiler_version"))
+        or compiler_version_for_spec(payload.get("compiler_version") if payload else None)
+        or infer_pragma(source_text)
+    )
+
+
+def _looks_like_non_vyper_source(source: str) -> bool:
+    return source.lstrip().startswith("//")
+
+
+def _resolve_vyper_2026_inventory_path(
+    raw_path: object, repo_root: Path, inventory_dir: Path
+) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if path.is_absolute():
+        return path
+    for base in (repo_root, inventory_dir, inventory_dir.parent):
+        candidate = base / path
+        if candidate.exists():
+            return candidate
+    return repo_root / path
 
 
 def import_chainsecurity(source: Path, output: Path) -> dict[str, Any]:
