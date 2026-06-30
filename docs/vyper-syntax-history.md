@@ -1,6 +1,6 @@
 # Vyper Syntax History
 
-This document tracks Vyper source syntax changes from `v0.5.0a2` back through
+This document tracks Vyper source syntax changes from `v0.5.0a3` back through
 the installable `v0.1.0-beta.*` prereleases. It is intended as upgrade source
 material for `vyupgrade`.
 
@@ -11,6 +11,28 @@ backend-only, ABI-layout-only, optimizer-only, EVM-default, CLI-only, and pure
 runtime semantic changes unless they require source text to change.
 
 ## v0.5.x prereleases
+
+### v0.5.0a3
+
+Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0a3>
+
+- Custom errors added. [#4791](https://github.com/vyperlang/vyper/pull/4791)
+
+  Before:
+
+  ```vyper
+  # No contract-defined custom error declaration syntax.
+  raise "unauthorized"
+  ```
+
+  After:
+
+  ```vyper
+  error Unauthorized:
+      caller: address
+
+  raise Unauthorized(caller=msg.sender)
+  ```
 
 ### v0.5.0a2
 

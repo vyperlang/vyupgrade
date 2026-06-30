@@ -26,6 +26,7 @@ def test_known_versions_cover_full_supported_range() -> None:
     assert is_supported_source_version("0.4.3")
     assert is_supported_source_version("0.5.0a1")
     assert is_supported_source_version("0.5.0a2")
+    assert is_supported_source_version("0.5.0a3")
     assert not is_supported_source_version("0.1.0")
     assert not is_supported_source_version("0.1.0b18")
     assert not is_supported_source_version("0.1.0b99")
@@ -36,6 +37,7 @@ def test_known_versions_cover_full_supported_range() -> None:
     assert VyperVersion("0.2.1") in known_versions_satisfying(">=0.2.1,<0.2.3")
     assert VyperVersion("0.4.3") in known_versions_satisfying(">=0.4.0")
     assert VyperVersion("0.5.0a2") in known_versions_satisfying(">=0.5.0a1,<0.5.0")
+    assert VyperVersion("0.5.0a3") in known_versions_satisfying(">=0.5.0a1,<0.5.0")
 
 
 def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
@@ -48,6 +50,7 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert compiler_version_for_spec("<=0.3.10") == "0.3.10"
     assert compiler_version_for_spec(">=0.5.0a1,<0.5.0") == "0.5.0a1"
     assert compiler_version_for_spec("<=0.5.0a2") == "0.5.0a2"
+    assert compiler_version_for_spec("<=0.5.0a3") == "0.5.0a3"
 
 
 def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
@@ -60,6 +63,12 @@ def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
     assert compiler_version_for_source("^0.3.0", "send(self.owner, fee, gas=msg.gas)") == "0.3.8"
     assert compiler_version_for_source(">=0.3.8,<0.4.0", "TOKEN: immutable(address)") == "0.3.8"
     assert compiler_version_for_source(">=0.3.0,<0.3.4", "enum Side:\n    BUY\n") == "0.3.0"
+    assert (
+        compiler_version_for_source(
+            ">=0.5.0a1,<0.5.0", "error Unauthorized:\n    caller: address\n"
+        )
+        == "0.5.0a3"
+    )
 
 
 def test_migration_context_tracks_patch_level_crossings() -> None:

@@ -20,6 +20,11 @@ modern Python interpreter.
 
 ## v0.5.x prereleases
 
+### v0.5.0a3
+
+- Custom errors added: no-op. This is newly accepted revert declaration and
+  raising syntax; existing string revert reasons remain valid.
+
 ### v0.5.0a2
 
 - Docstring-only function bodies rejected: `VY131` inserts an explicit `pass`

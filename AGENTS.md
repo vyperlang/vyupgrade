@@ -31,6 +31,8 @@ feature, not an optional smoke check.
   source material for migrations.
 - `docs/migration-coverage.md` — mapping from each syntax-history entry to an
   automated rule, diagnostic, explicit no-op, or validation-only behavior.
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — maintainer setup, architecture,
+  rule-writing, corpus, and release workflow reference.
 - `scripts/corpus.py` — corpus import, dedupe, and compiler-backed smoke tooling.
 - `scripts/smoke-wheel.sh` — package smoke test used by CI and publish workflows.
 

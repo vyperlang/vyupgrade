@@ -11,7 +11,7 @@ VERSION_RE = re.compile(r"0\.(?:1|2|3|4|5)\.\d+(?:(?:a|b|rc)\d+)?")
 # PyPI has no final 0.1.0 release; these are the installable Vyper releases before 0.2.1.
 LEGACY_PRERELEASE_VERSIONS = tuple(f"0.1.0b{number}" for number in range(1, 18))
 LEGACY_PRERELEASES = frozenset(Version(version) for version in LEGACY_PRERELEASE_VERSIONS)
-ALPHA_RELEASE_VERSIONS = ("0.5.0a1", "0.5.0a2")
+ALPHA_RELEASE_VERSIONS = ("0.5.0a1", "0.5.0a2", "0.5.0a3")
 ALPHA_RELEASES = frozenset(Version(version) for version in ALPHA_RELEASE_VERSIONS)
 
 
@@ -142,6 +142,8 @@ def _source_syntax_floor(source: str) -> VyperVersion | None:
         floors.append(Version("0.3.7"))
     if re.search(r"\bsend\s*\([^)]*\bgas\s*=", source):
         floors.append(Version("0.3.8"))
+    if re.search(r"(?m)^\s*error\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):
+        floors.append(Version("0.5.0a3"))
     return max(floors) if floors else None
 
 
