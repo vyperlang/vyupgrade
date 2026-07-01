@@ -46,6 +46,8 @@ class FileReport:
     changed: bool = False
     fixes: list[Fix] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    source_version: str | None = None
+    source_compiler: str | None = None
     source_compile: str = "skipped"
     target_compile: str = "skipped"
     source_error: str | None = None
@@ -121,6 +123,8 @@ class RunReport:
                     "fixes": [fix.__dict__ for fix in file.fixes],
                     "diagnostics": [diag.__dict__ for diag in file.diagnostics],
                     "validation": {
+                        "source_version": file.source_version,
+                        "source_compiler": file.source_compiler,
                         "source_compile": file.source_compile,
                         "target_compile": file.target_compile,
                         "abi_equal": file.abi_equal,

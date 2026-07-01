@@ -8,6 +8,7 @@ from vyupgrade.versions import (
     MigrationContext,
     VyperVersion,
     compiler_version_for_source,
+    compiler_version_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
     is_supported_source_version,
@@ -69,6 +70,13 @@ def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
         )
         == "0.5.0a3"
     )
+
+
+def test_source_validation_compiler_uses_newest_target_bounded_version() -> None:
+    assert minimum_satisfying_version(">0.3.10") == VyperVersion("0.4.0")
+    assert compiler_version_for_source_validation(">0.3.10", "0.4.3", "") == "0.4.3"
+    assert compiler_version_for_source_validation(">=0.4.0", "0.4.3", "") == "0.4.3"
+    assert compiler_version_for_source_validation(">=0.4.0", "0.5.0a2", "") == "0.5.0a2"
 
 
 def test_migration_context_tracks_patch_level_crossings() -> None:

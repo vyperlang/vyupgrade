@@ -207,10 +207,15 @@ def _render_file(console: Console, file: FileReport) -> None:
 
 
 def _compile_outputs(file: FileReport) -> tuple[tuple[str, str, str, str | None], ...]:
+    source_label = _compile_label("source compile", file.source_compiler)
     return (
-        ("source compile", file.source_compile, "source error", file.source_error),
+        (source_label, file.source_compile, "source error", file.source_error),
         ("target compile", file.target_compile, "target error", file.target_error),
     )
+
+
+def _compile_label(label: str, version: str | None) -> str:
+    return f"{label} ({version})" if version else label
 
 
 def _artifact_checks(file: FileReport) -> tuple[tuple[str, bool | None, list[str]], ...]:

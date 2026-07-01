@@ -53,6 +53,10 @@ Paths may be files or directories; directories are searched recursively for
 `#pragma version` (or legacy `# @version`) line. Pass `--source-version` to
 override the inference for files that have no pragma.
 
+For broad source pragmas, rule gating uses the oldest satisfying compiler so
+historical migrations still run, while source validation uses the newest
+satisfying compiler no newer than the requested target.
+
 ### How it validates
 
 For each file, `vyupgrade` compiles the original under its source compiler and

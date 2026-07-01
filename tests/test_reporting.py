@@ -63,6 +63,21 @@ def test_render_text_hides_stderr_for_successful_compiles() -> None:
     assert "warning output" not in text
 
 
+def test_render_text_labels_resolved_source_compiler() -> None:
+    file_report = FileReport(
+        path=Path("ok.vy"),
+        changed=True,
+        source_compiler="0.4.3",
+        source_compile="passed",
+        target_compile="passed",
+    )
+    report = RunReport(source_version=None, target_version="0.4.3", files=[file_report])
+
+    text = render_text(report)
+
+    assert "source compile (0.4.3): passed" in text
+
+
 def test_render_text_groups_repeated_fixes_and_diagnostics_by_rule_message() -> None:
     file_report = FileReport(
         path=Path("grouped.vy"),
