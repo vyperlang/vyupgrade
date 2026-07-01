@@ -8,6 +8,7 @@ from vyupgrade.versions import (
     MigrationContext,
     VyperVersion,
     compiler_version_for_source,
+    compiler_version_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
     is_supported_source_version,
@@ -60,6 +61,13 @@ def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
     assert compiler_version_for_source("^0.3.0", "send(self.owner, fee, gas=msg.gas)") == "0.3.8"
     assert compiler_version_for_source(">=0.3.8,<0.4.0", "TOKEN: immutable(address)") == "0.3.8"
     assert compiler_version_for_source(">=0.3.0,<0.3.4", "enum Side:\n    BUY\n") == "0.3.0"
+
+
+def test_source_validation_compiler_uses_newest_target_bounded_version() -> None:
+    assert minimum_satisfying_version(">0.3.10") == VyperVersion("0.4.0")
+    assert compiler_version_for_source_validation(">0.3.10", "0.4.3", "") == "0.4.3"
+    assert compiler_version_for_source_validation(">=0.4.0", "0.4.3", "") == "0.4.3"
+    assert compiler_version_for_source_validation(">=0.4.0", "0.5.0a2", "") == "0.5.0a2"
 
 
 def test_migration_context_tracks_patch_level_crossings() -> None:

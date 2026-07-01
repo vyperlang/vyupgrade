@@ -27,6 +27,7 @@ from .rule_registry import is_enabled
 from .rules import RULE_CHANGES, apply_rules
 from .versions import (
     MigrationContext,
+    compiler_version_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
     infer_pragma,
@@ -41,6 +42,7 @@ class RewriteWork:
     report: FileReport
     source_compile: CompileResult
     source_version: str | None
+    source_compiler: str | None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,6 +186,7 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
                 changed=False,
                 fixes=rewrite.fixes,
                 diagnostics=rewrite.diagnostics,
+                source_version=source_version,
             )
             rewrites.append(
                 RewriteWork(
@@ -193,10 +196,14 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
                     file_report,
                     CompileResult("skipped"),
                     source_version,
+                    None,
                 )
             )
             continue
-        source_compile = compile_source_file(path, config, source_version)
+        source_compiler = compiler_version_for_source_validation(
+            source_version, config.target_version, original
+        )
+        source_compile = compile_source_file(path, config, source_compiler)
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         file_config = replace(
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
@@ -213,7 +220,12 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
             rewrite.generated_files.extend(split.generated)
         changed = original != rewrite.source
         file_report = FileReport(
-            path=path, changed=changed, fixes=rewrite.fixes, diagnostics=rewrite.diagnostics
+            path=path,
+            changed=changed,
+            fixes=rewrite.fixes,
+            diagnostics=rewrite.diagnostics,
+            source_version=source_version,
+            source_compiler=source_compiler,
         )
         file_report.source_compile = source_compile.status
         file_report.source_error = (
@@ -227,6 +239,7 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
                 file_report,
                 source_compile,
                 source_version,
+                source_compiler,
             )
         )
     return rewrites
@@ -266,7 +279,9 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
             work.report.abi_diff = abi_diff
             work.report.method_id_diff = method_id_diff
             work.report.storage_layout_diff = storage_layout_diff
-            _add_validation_diagnostics(work.report, work.source_version, config)
+            _add_validation_diagnostics(
+                work.report, work.source_version, config, work.source_compiler
+            )
     return any_target_failed
 
 
@@ -381,7 +396,10 @@ def _string_or_none(value: object) -> str | None:
 
 
 def _add_validation_diagnostics(
-    file_report: FileReport, source_version: str | None, config: Config
+    file_report: FileReport,
+    source_version: str | None,
+    config: Config,
+    source_compiler: str | None = None,
 ) -> None:
     if file_report.source_compile == "failed":
         _add_diagnostic_if_enabled(
@@ -413,7 +431,9 @@ def _add_validation_diagnostics(
             source_version,
             config,
         )
-    evm_diagnostic = _evm_default_diagnostic(source_version, config.target_version)
+    evm_diagnostic = _evm_default_diagnostic(
+        source_compiler or source_version, config.target_version
+    )
     if evm_diagnostic is not None and _rule_enabled(evm_diagnostic.rule, source_version, config):
         file_report.diagnostics.append(evm_diagnostic)
 
