@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added opt-in support for targeting Vyper `0.5.0a3`; custom error syntax is
+  treated as newly accepted source and broad alpha pragmas compile with `a3`
+  when needed.
+
 ## 0.4.1 - 2026-06-06
 
 - Fixed standard-json corpus imports so only declared compilation targets are

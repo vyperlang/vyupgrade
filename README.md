@@ -6,9 +6,9 @@ rewrite is safe by compiling the source and the result and comparing their ABI,
 method identifiers, and storage layout.
 
 It covers installable Vyper `0.1.0b*` prereleases through `0.4.3`, plus opt-in
-`0.5.0a1` and `0.5.0a2` alpha targets. Rules are version-gated: a given rewrite
-only fires when the migration from the source version to the target version
-actually crosses the compiler release that introduced the change.
+`0.5.0a1` through `0.5.0a3` alpha targets. Rules are version-gated: a given
+rewrite only fires when the migration from the source version to the target
+version actually crosses the compiler release that introduced the change.
 
 ## Install
 
@@ -46,7 +46,7 @@ vyupgrade contracts/ --check
 ```
 
 The target defaults to `0.4.3`; pass `--target-version` to migrate to a
-different release, including an explicit alpha target such as `0.5.0a2`.
+different release, including an explicit alpha target such as `0.5.0a3`.
 
 Paths may be files or directories; directories are searched recursively for
 `.vy` and `.vyi` sources. The source version is inferred per file from its
@@ -135,7 +135,7 @@ diagnostic instead of being applied.
   change mapped to a rule, diagnostic, explicit no-op, or validation-only
   behavior.
 - [docs/vyper-syntax-history.md](docs/vyper-syntax-history.md) — the versioned
-  Vyper syntax history from `0.5.0a2` back through the `0.1.0b*` prereleases,
+  Vyper syntax history from `0.5.0a3` back through the `0.1.0b*` prereleases,
   with PR links and before/after examples.
 - [CHANGELOG.md](CHANGELOG.md) — release notes.
 - [DEVELOPMENT.md](DEVELOPMENT.md) — maintainer validation and release workflow.
