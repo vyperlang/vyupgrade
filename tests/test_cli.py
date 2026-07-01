@@ -147,6 +147,59 @@ def f() -> uint256:
     assert not [diag for diag in file_report["diagnostics"] if diag["rule"] == "VYD009"]
 
 
+def test_explicit_source_vyper_does_not_report_inferred_compiler(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(
+        """#pragma version >0.3.10
+
+@external
+def f() -> uint256:
+    return 1
+""",
+        encoding="utf-8",
+    )
+    seen: dict[str, str | None] = {}
+
+    def compile_source_file(
+        path: Path, config: Config, source_version: str | None
+    ) -> CompileResult:
+        seen["source_version"] = source_version
+        seen["source_vyper"] = config.source_vyper
+        return CompileResult("passed", artifacts={})
+
+    def compile_target_source(
+        path: Path,
+        source: str,
+        config: Config,
+        overlay=None,
+    ) -> CompileResult:
+        return CompileResult("passed", artifacts={})
+
+    monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
+    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+
+    report = tmp_path / "report.json"
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--source-vyper",
+            "/tmp/vyper",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 1
+    assert seen["source_vyper"] == "/tmp/vyper"
+    assert seen["source_version"] == ">0.3.10"
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_version"] == ">0.3.10"
+    assert validation["source_compiler"] is None
+
+
 def test_write_mode_reports_missing_mamushi_formatter(
     tmp_path: Path, monkeypatch, capsys, passing_compiler
 ) -> None:

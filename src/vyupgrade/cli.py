@@ -200,10 +200,12 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
                 )
             )
             continue
-        source_compiler = compiler_version_for_source_validation(
+        inferred_source_compiler = compiler_version_for_source_validation(
             source_version, config.target_version, original
         )
-        source_compile = compile_source_file(path, config, source_compiler)
+        source_compile_version = source_version if config.source_vyper else inferred_source_compiler
+        source_compiler = None if config.source_vyper else inferred_source_compiler
+        source_compile = compile_source_file(path, config, source_compile_version)
         source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
         file_config = replace(
             config, source_ast=source_ast if isinstance(source_ast, dict) else None
