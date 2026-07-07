@@ -205,7 +205,11 @@ modern Python interpreter.
 - Interface-typed storage assignments are checked more strictly: `VY019`
   rewrites mismatched constructor casts to the declared storage interface type.
 - Dynamic `range` bounds: `VY071` adds inferred `bound=` for two-argument
-  ranges. `VYD011` flags two-argument ranges where the bound is not inferable.
+  ranges. In aggressive mode, `VY071` also collapses leading `if`/`break`
+  sentinel loops into bounded single-argument ranges when the removed block is
+  behavior-preserving. `VYD011` flags two-argument ranges where the bound is not
+  inferable. `VYD017` flags sentinel loops that can be collapsed only under
+  `--aggressive`.
 - Builtin ERC interface import path changed: `VY020` rewrites known imports and
   interface type names. Legacy built-in interfaces used in `implements` are
   preserved as local interfaces when modern `ethereum.ercs` definitions are
