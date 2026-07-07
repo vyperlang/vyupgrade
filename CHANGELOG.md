@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 - 2026-07-07
 
 - Added opt-in support for targeting Vyper `0.5.0a3`; custom error syntax is
   treated as newly accepted source and broad alpha pragmas compile with `a3`
