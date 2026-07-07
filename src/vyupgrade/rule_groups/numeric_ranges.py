@@ -386,6 +386,189 @@ def _range_loop_var_type(iterable: str, vars_for_line: dict[str, str]) -> str:
     return bound_type if is_integer_type(bound_type) else "uint256"
 
 
+def _sentinel_range_bound(
+    rule_context: RuleContext,
+) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = rule_context.source
+    config = rule_context.config
+    mask = rule_context.code_mask
+    constant_values = integer_constant_values(source, config.source_ast)
+    fixes: list[Fix] = []
+    edits: list[TextEdit] = []
+    lines = source.splitlines(keepends=True)
+    line_offsets = _line_offsets(lines)
+    pattern = re.compile(
+        r"^(?P<indent>[ \t]*)for[ \t]+(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*:[^:\n]+?)?[ \t]+in[ \t]+range[ \t]*\(",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        close = find_matching(source, match.end() - 1)
+        if close is None:
+            continue
+        line_end = source.find("\n", match.start())
+        if line_end == -1:
+            line_end = len(source)
+        if re.fullmatch(r"\s*:\s*(?:#.*)?", source[close + 1 : line_end]) is None:
+            continue
+        raw_args = source[match.end() : close]
+        if "bound" in raw_args:
+            continue
+        arg_spans = split_top_level_arg_spans(raw_args)
+        if arg_spans is None or len(arg_spans) != 1:
+            continue
+        arg_start, arg_end, bound_arg = arg_spans[0]
+        if re.match(r"[A-Za-z_][A-Za-z0-9_]*\s*=", bound_arg):
+            continue
+        bound_value = eval_integer_constant_expr(bound_arg, constant_values)
+        if bound_value is None or bound_value < 0:
+            continue
+        loop_line = line_number(source, match.start()) - 1
+        sentinel = _sentinel_break_for_loop(lines, line_offsets, loop_line, match.group("var"))
+        if sentinel is None:
+            continue
+        vars_for_line = rule_context.facts.vars_at_line(loop_line + 1)
+        if _sentinel_stop_may_be_negative(
+            sentinel.stop, constant_values, vars_for_line, rule_context.facts
+        ):
+            continue
+        stop = _bounded_sentinel_stop(sentinel.stop, bound_arg, bound_value, constant_values)
+        edits.append(TextEdit(match.end() + arg_start, match.end() + arg_end, stop))
+        edits.append(TextEdit(close, close, f", bound={bound_arg}"))
+        edits.append(TextEdit(sentinel.start, sentinel.end, ""))
+        fixes.append(
+            Fix(
+                "VY071",
+                line_number(source, match.start()),
+                "collapsed sentinel break into bounded range",
+                source[match.start() : sentinel.end].rstrip("\n"),
+                source[match.start() : match.end()]
+                + stop
+                + f", bound={bound_arg}"
+                + source[close:line_end],
+            )
+        )
+    return apply_edits(source, edits), fixes, []
+
+
+@dataclass(frozen=True)
+class _SentinelBreak:
+    start: int
+    end: int
+    stop: str
+
+
+def _bounded_sentinel_stop(
+    stop: str, bound_arg: str, bound_value: int, constant_values: dict[str, int]
+) -> str:
+    stop_value = eval_integer_constant_expr(stop, constant_values)
+    if stop_value is not None and stop_value <= bound_value:
+        return stop
+    return f"min({stop}, {bound_arg})"
+
+
+def _sentinel_stop_may_be_negative(
+    stop: str,
+    constant_values: dict[str, int],
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
+) -> bool:
+    stop_value = eval_integer_constant_expr(stop, constant_values)
+    if stop_value is not None:
+        return stop_value < 0
+    stop_type = normalize_type(infer_expr_type(stop, vars_for_line, facts) or "")
+    return not stop_type or _is_signed_integer_type(stop_type)
+
+
+def _sentinel_break_for_loop(
+    lines: list[str], line_offsets: list[int], loop_line: int, loop_var: str
+) -> _SentinelBreak | None:
+    if loop_line < 0 or loop_line >= len(lines):
+        return None
+    loop_indent = _line_indent(lines[loop_line])
+    if_line = _next_significant_line(lines, loop_line + 1)
+    if if_line is None:
+        return None
+    if_indent = _line_indent(lines[if_line])
+    if if_indent <= loop_indent:
+        return None
+    if "#" in lines[if_line]:
+        return None
+    stop = _sentinel_stop_expr(lines[if_line].strip(), loop_var)
+    if stop is None:
+        return None
+    block_end = _block_end(lines, if_line + 1, if_indent)
+    if _block_contains_comment(lines, if_line, block_end):
+        return None
+    break_line = _next_significant_line(lines, if_line + 1, block_end)
+    if break_line is None:
+        return None
+    if _line_indent(lines[break_line]) <= if_indent:
+        return None
+    if lines[break_line].strip() != "break":
+        return None
+    if _next_significant_line(lines, break_line + 1, block_end) is not None:
+        return None
+    return _SentinelBreak(line_offsets[if_line], line_offsets[block_end], stop)
+
+
+def _sentinel_stop_expr(statement: str, loop_var: str) -> str | None:
+    match = re.fullmatch(r"if\s+(.+?)\s*(==|>=|<=)\s*(.+?)\s*:", statement)
+    if match is None:
+        return None
+    left, op, right = (part.strip() for part in match.groups())
+    if not left or not right or any(token in left + right for token in {" and ", " or "}):
+        return None
+    if op == "==":
+        if left == loop_var and right != loop_var:
+            return right
+        if right == loop_var and left != loop_var:
+            return left
+    if op == ">=" and left == loop_var and right != loop_var:
+        return right
+    if op == "<=" and right == loop_var and left != loop_var:
+        return left
+    return None
+
+
+def _line_offsets(lines: list[str]) -> list[int]:
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
+    offsets.append(cursor)
+    return offsets
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _next_significant_line(
+    lines: list[str], start: int, end: int | None = None
+) -> int | None:
+    limit = len(lines) if end is None else min(end, len(lines))
+    for index in range(start, limit):
+        stripped = lines[index].strip()
+        if stripped and not stripped.startswith("#"):
+            return index
+    return None
+
+
+def _block_end(lines: list[str], start: int, parent_indent: int) -> int:
+    for index in range(start, len(lines)):
+        stripped = lines[index].strip()
+        if stripped and not stripped.startswith("#") and _line_indent(lines[index]) <= parent_indent:
+            return index
+    return len(lines)
+
+
+def _block_contains_comment(lines: list[str], start: int, end: int) -> bool:
+    return any("#" in lines[index] for index in range(start, min(end, len(lines))))
+
+
 def _range_bound(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -588,6 +771,11 @@ RULES = (
         "signed_negative_range_bounds",
         runner=_signed_negative_range_bounds,
         changes=(crossing("VY052", (0, 4, 0)),),
+    ),
+    Rule(
+        "sentinel_range_bound",
+        runner=_sentinel_range_bound,
+        changes=(crossing("VY071", (0, 4, 0)),),
     ),
     Rule(
         "range_bound",

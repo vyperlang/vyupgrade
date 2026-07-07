@@ -347,6 +347,145 @@ def f(start: uint256):
     assert "for i: uint256 in range" in result.source
 
 
+def test_sentinel_break_range_uses_min_with_bound(config) -> None:
+    source = """# @version 0.3.10
+MAX_POOLS: constant(uint256) = 2000
+
+@external
+def f(pool_count: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(MAX_POOLS):
+        if i == pool_count:
+            break
+        total += i
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint256 in range(min(pool_count, MAX_POOLS), bound=MAX_POOLS):" in result.source
+    assert "if i == pool_count" not in result.source
+    assert any(fix.rule == "VY071" for fix in result.fixes)
+
+
+def test_sentinel_break_range_skips_min_when_constant_stop_is_within_bound(config) -> None:
+    source = """# @version 0.3.10
+MAX_POOLS: constant(uint256) = 2000
+POOL_COUNT: constant(uint256) = 17
+
+@external
+def f() -> uint256:
+    total: uint256 = 0
+    for i in range(MAX_POOLS):
+        if i == POOL_COUNT:
+            break
+        total += i
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for i: uint256 in range(POOL_COUNT, bound=MAX_POOLS):" in result.source
+    assert "min(POOL_COUNT, MAX_POOLS)" not in result.source
+
+
+def test_sentinel_break_range_handles_reversed_greater_equal(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(_n_gauge_types: uint256) -> uint256:
+    total: uint256 = 0
+    for gauge_type in range(100):
+        if _n_gauge_types <= gauge_type:
+            break
+        total += gauge_type
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert (
+        "for gauge_type: uint256 in range(min(_n_gauge_types, 100), bound=100):"
+        in result.source
+    )
+    assert "if _n_gauge_types <= gauge_type" not in result.source
+
+
+def test_sentinel_break_range_skips_runtime_signed_stop(config) -> None:
+    source = """# @version 0.3.10
+MAX_COINS: constant(int128) = 8
+
+@external
+def f(n_coins: int128) -> int128:
+    total: int128 = 0
+    for i in range(MAX_COINS):
+        if i >= n_coins:
+            break
+        total += i
+    return total
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if i >= n_coins:" in result.source
+    assert "min(n_coins, MAX_COINS)" not in result.source
+
+
+def test_sentinel_break_range_is_idempotent(config) -> None:
+    source = """# @version 0.3.10
+MAX_POOLS: constant(uint256) = 2000
+
+@external
+def f(pool_count: uint256):
+    for i in range(MAX_POOLS):
+        if i == pool_count:
+            break
+        pass
+"""
+
+    first = apply_rules(source, config())
+    second = apply_rules(first.source, config())
+
+    assert second.source == first.source
+
+
+def test_sentinel_break_range_preserves_commented_break_blocks(config) -> None:
+    source = """# @version 0.3.10
+MAX_POOLS: constant(uint256) = 2000
+
+@external
+def f(pool_count: uint256):
+    for i in range(MAX_POOLS):
+        if i == pool_count:
+            # keep this review note
+            break
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if i == pool_count:" in result.source
+    assert "# keep this review note" in result.source
+
+
+def test_sentinel_break_range_ignores_non_break_only_blocks(config) -> None:
+    source = """# @version 0.3.10
+MAX_POOLS: constant(uint256) = 2000
+
+@external
+def f(pool_count: uint256):
+    for i in range(MAX_POOLS):
+        if i == pool_count:
+            pool_count = 0
+            break
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "if i == pool_count:" in result.source
+    assert "pool_count = 0" in result.source
+
+
 def test_range_runtime_stop_with_constant_delta_gets_bound_keyword(config) -> None:
     source = """# @version 0.3.10
 MAX_COINS: constant(int128) = 8

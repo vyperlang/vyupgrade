@@ -265,7 +265,8 @@ def f() -> uint256:
 
     result = apply_rules(source, config())
 
-    assert "if i == N_COINS:" in result.source
+    assert "for i: int128 in range(N_COINS, bound=N_COINS):" in result.source
+    assert "if i == N_COINS:" not in result.source
     assert "if i == convert(N_COINS, uint256):" not in result.source
 
 

@@ -415,6 +415,9 @@ def infer_expr_type(
     expr = _strip_outer_parens(expr)
     if re.fullmatch(r"\d(?:_?\d)*", expr):
         return "uint256"
+    minmax_type = _infer_minmax_type(expr, vars_for_line, facts)
+    if minmax_type is not None:
+        return minmax_type
     if expr in {
         "block.timestamp",
         "block.number",
@@ -464,6 +467,32 @@ def infer_expr_type(
     if indexed_type is not None:
         return indexed_type
     return None
+
+
+def _infer_minmax_type(
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None
+) -> str | None:
+    match = re.fullmatch(r"(?:min|max)\s*\((.*)\)", expr, re.DOTALL)
+    if match is None:
+        return None
+    args = split_top_level_args(match.group(1))
+    if args is None or len(args) < 2:
+        return None
+    arg_types: list[tuple[str, str]] = []
+    for arg in args:
+        arg_type = infer_expr_type(arg, vars_for_line, facts)
+        if arg_type is None or not is_integer_type(arg_type):
+            return None
+        arg_types.append((arg.strip(), normalize_type(arg_type)))
+    concrete_types = {
+        type_name
+        for arg, type_name in arg_types
+        if not re.fullmatch(r"\d(?:_?\d)*", arg)
+    }
+    if len(concrete_types) == 1:
+        return next(iter(concrete_types))
+    all_types = {type_name for _arg, type_name in arg_types}
+    return next(iter(all_types)) if len(all_types) == 1 else None
 
 
 def _balanced_parens(value: str) -> bool:
