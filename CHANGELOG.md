@@ -5,8 +5,9 @@
 - Added opt-in support for targeting Vyper `0.5.0a3`; custom error syntax is
   treated as newly accepted source and broad alpha pragmas compile with `a3`
   when needed.
-- Added a range migration that collapses leading loop sentinel `if`/`break`
-  blocks into `range(..., bound=...)` when the bounded stop is inferable.
+- Added a range diagnostic for leading loop sentinel `if`/`break` blocks, with
+  an aggressive-mode migration to collapse them into `range(..., bound=...)`
+  when the bounded stop is inferable.
 
 ## 0.4.1 - 2026-06-06
 

@@ -394,6 +394,7 @@ def _sentinel_range_bound(
     mask = rule_context.code_mask
     constant_values = integer_constant_values(source, config.source_ast)
     fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
     lines = source.splitlines(keepends=True)
     line_offsets = _line_offsets(lines)
@@ -433,6 +434,15 @@ def _sentinel_range_bound(
             sentinel.stop, constant_values, vars_for_line, rule_context.facts
         ):
             continue
+        if not config.aggressive:
+            diagnostics.append(
+                Diagnostic(
+                    "VYD017",
+                    line_number(source, match.start()),
+                    "sentinel range break can be collapsed with bound=... under --aggressive",
+                )
+            )
+            continue
         stop = _bounded_sentinel_stop(sentinel.stop, bound_arg, bound_value, constant_values)
         edits.append(TextEdit(match.end() + arg_start, match.end() + arg_end, stop))
         edits.append(TextEdit(close, close, f", bound={bound_arg}"))
@@ -449,7 +459,7 @@ def _sentinel_range_bound(
                 + source[close:line_end],
             )
         )
-    return apply_edits(source, edits), fixes, []
+    return apply_edits(source, edits), fixes, diagnostics
 
 
 @dataclass(frozen=True)
@@ -775,7 +785,7 @@ RULES = (
     Rule(
         "sentinel_range_bound",
         runner=_sentinel_range_bound,
-        changes=(crossing("VY071", (0, 4, 0)),),
+        changes=(crossing("VY071", (0, 4, 0)), crossing("VYD017", (0, 4, 0))),
     ),
     Rule(
         "range_bound",
