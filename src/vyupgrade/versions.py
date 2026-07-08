@@ -256,7 +256,18 @@ def _parse_clauses(spec: str) -> list[tuple[str, VyperVersion]]:
 
 
 def _has_lower_bound(spec: str) -> bool:
+    specifiers = _specifier_set(spec)
+    if specifiers is not None:
+        return any(_specifier_is_lower_bound(specifier.operator, specifier.version) for specifier in specifiers)
     return any(op in {">=", ">", "=="} for op, _version in _parse_clauses(spec))
+
+
+def _specifier_is_lower_bound(operator: str, version: str) -> bool:
+    if operator in {"~=", ">=", ">"}:
+        return True
+    if operator in {"==", "==="}:
+        return "*" not in version
+    return False
 
 
 def _caret_upper_bound(version: VyperVersion) -> VyperVersion:

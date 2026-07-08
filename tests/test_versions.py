@@ -56,6 +56,9 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert compiler_version_for_spec(">=0.5.0a1,<0.6.0") == "0.5.0a1"
     assert compiler_version_for_spec("<=0.5.0a2") == "0.5.0a2"
     assert compiler_version_for_spec("<=0.5.0a3") == "0.5.0a3"
+    assert compiler_version_for_spec("~=0.4") == "0.4.0"
+    assert compiler_version_for_spec("~=0.4.2") == "0.4.2"
+    assert compiler_version_for_spec("==0.4.*") == "0.4.3"
 
 
 def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
