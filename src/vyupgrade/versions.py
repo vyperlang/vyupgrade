@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 
@@ -193,6 +194,11 @@ def default_evm_version(version: VyperVersion | None) -> str | None:
 def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
     if not spec:
         return ()
+    specifiers = _specifier_set(spec)
+    if specifiers is not None:
+        return tuple(
+            version for version in KNOWN_VERSIONS if specifiers.contains(version, prereleases=True)
+        )
     clauses = _parse_clauses(spec)
     if not clauses:
         version = parse_version(spec)
@@ -202,6 +208,23 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
         for version in KNOWN_VERSIONS
         if all(_satisfies(version, op, bound) for op, bound in clauses)
     )
+
+
+def _specifier_set(spec: str) -> SpecifierSet | None:
+    # Match the compiler's own pragma check (vyper.ast.pre_parser): a bare
+    # version pins exactly, an npm-style caret becomes a PEP 440
+    # compatible-release clause, and candidates are tested with
+    # SpecifierSet.contains(..., prereleases=True). PEP 440 ordered exclusive
+    # comparisons still reject prereleases of their bound, so "<0.5.0" never
+    # admits "0.5.0a3" even though it sorts lower.
+    normalized = spec.strip()
+    if re.match(r"[v0-9]", normalized):
+        normalized = f"=={normalized}"
+    normalized = re.sub(r"^\^", "~=", normalized)
+    try:
+        return SpecifierSet(normalized)
+    except InvalidSpecifier:
+        return None
 
 
 def is_supported_source_version(version: str | None) -> bool:
