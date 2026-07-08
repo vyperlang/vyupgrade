@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fixed source-version inference so version specs are matched with the
+  compiler's own PEP 440 pragma semantics; prerelease targets such as
+  `0.5.0a3` are no longer selected as the source validation compiler for
+  stable pragmas like `^0.4.2`.
+
 ## 0.4.2 - 2026-07-07
 
 - Added opt-in support for targeting Vyper `0.5.0a3`; custom error syntax is

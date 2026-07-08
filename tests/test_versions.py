@@ -37,8 +37,12 @@ def test_known_versions_cover_full_supported_range() -> None:
     assert VyperVersion("0.1.0b1") in known_versions_satisfying(">=0.1.0b1,<0.2.1")
     assert VyperVersion("0.2.1") in known_versions_satisfying(">=0.2.1,<0.2.3")
     assert VyperVersion("0.4.3") in known_versions_satisfying(">=0.4.0")
-    assert VyperVersion("0.5.0a2") in known_versions_satisfying(">=0.5.0a1,<0.5.0")
-    assert VyperVersion("0.5.0a3") in known_versions_satisfying(">=0.5.0a1,<0.5.0")
+    assert VyperVersion("0.5.0a2") in known_versions_satisfying(">=0.5.0a1,<0.6.0")
+    assert VyperVersion("0.5.0a3") in known_versions_satisfying(">=0.5.0a1,<0.6.0")
+    assert VyperVersion("0.5.0a3") in known_versions_satisfying("^0.5.0a1")
+    # PEP 440 exclusive ordered bounds reject prereleases of the bound itself,
+    # exactly like the compiler's own pragma check does.
+    assert known_versions_satisfying(">=0.5.0a1,<0.5.0") == ()
 
 
 def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
@@ -49,9 +53,12 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert minimum_satisfying_version(">=0.3.4,<0.4.0") == VyperVersion("0.3.4")
     assert minimum_satisfying_version(">0.3.10") == VyperVersion("0.4.0")
     assert compiler_version_for_spec("<=0.3.10") == "0.3.10"
-    assert compiler_version_for_spec(">=0.5.0a1,<0.5.0") == "0.5.0a1"
+    assert compiler_version_for_spec(">=0.5.0a1,<0.6.0") == "0.5.0a1"
     assert compiler_version_for_spec("<=0.5.0a2") == "0.5.0a2"
     assert compiler_version_for_spec("<=0.5.0a3") == "0.5.0a3"
+    assert compiler_version_for_spec("~=0.4") == "0.4.0"
+    assert compiler_version_for_spec("~=0.4.2") == "0.4.2"
+    assert compiler_version_for_spec("==0.4.*") == "0.4.3"
 
 
 def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
@@ -66,7 +73,7 @@ def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:
     assert compiler_version_for_source(">=0.3.0,<0.3.4", "enum Side:\n    BUY\n") == "0.3.0"
     assert (
         compiler_version_for_source(
-            ">=0.5.0a1,<0.5.0", "error Unauthorized:\n    caller: address\n"
+            ">=0.5.0a1,<0.6.0", "error Unauthorized:\n    caller: address\n"
         )
         == "0.5.0a3"
     )
@@ -77,6 +84,16 @@ def test_source_validation_compiler_uses_newest_target_bounded_version() -> None
     assert compiler_version_for_source_validation(">0.3.10", "0.4.3", "") == "0.4.3"
     assert compiler_version_for_source_validation(">=0.4.0", "0.4.3", "") == "0.4.3"
     assert compiler_version_for_source_validation(">=0.4.0", "0.5.0a2", "") == "0.5.0a2"
+
+
+def test_prerelease_targets_never_satisfy_bounded_stable_pragmas() -> None:
+    assert known_versions_satisfying("^0.4.2") == (VyperVersion("0.4.2"), VyperVersion("0.4.3"))
+    assert compiler_version_for_spec("<0.5.0") == "0.4.3"
+    source = "# pragma version ^0.4.2\n\n@external\ndef value() -> uint256:\n    return 1\n"
+    assert compiler_version_for_source_validation("^0.4.2", "0.5.0a3", source) == "0.4.3"
+    # Legacy caret pragmas that name a prerelease still resolve to prereleases.
+    assert minimum_satisfying_version("^0.1.0b14") == VyperVersion("0.1.0b14")
+    assert VyperVersion("0.1.0b17") in known_versions_satisfying("^0.1.0b14")
 
 
 def test_migration_context_tracks_patch_level_crossings() -> None:
