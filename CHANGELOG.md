@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 - 2026-07-08
 
 - Fixed source-version inference so version specs are matched with the
   compiler's own PEP 440 pragma semantics; prerelease targets such as
