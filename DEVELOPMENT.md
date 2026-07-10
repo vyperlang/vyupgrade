@@ -32,7 +32,7 @@ Useful focused checks while iterating:
 ```bash
 uv run --locked pytest tests/rule_groups/test_<area>.py
 uv run --locked pytest tests/test_versions.py tests/test_docs.py tests/test_rule_registry.py
-uv run --locked pytest tests/test_cli.py tests/test_compiler.py
+uv run --locked pytest tests/test_cli.py tests/test_compiler.py tests/test_storage_layout.py
 ```
 
 `tests/test_cli_integration.py` uses real compiler subprocesses. Run it when
@@ -88,7 +88,9 @@ Important files:
 - `src/vyupgrade/rule_groups/` contains the actual migration rules.
 - `src/vyupgrade/versions.py` owns supported Vyper versions and spec resolution.
 - `src/vyupgrade/compiler.py` owns compiler subprocesses, temporary overlays,
-  dependency inference, and artifact comparison canonicalization.
+  dependency inference, and ABI and method-identifier comparisons.
+- `src/vyupgrade/storage_layout.py` owns fail-closed storage artifact parsing,
+  canonicalization, target-AST evidence, and typed layout comparison.
 - `src/vyupgrade/write_plan.py` owns destination collision checks, candidate
   hashes, staged replacements, and rollback on partial write failure.
 - `src/vyupgrade/analysis.py` extracts lightweight source facts for type-aware

@@ -24,7 +24,9 @@ feature, not an optional smoke check.
 - `src/vyupgrade/versions.py` — supported Vyper versions, pragma/spec parsing,
   source/target crossing logic, and default EVM version mapping.
 - `src/vyupgrade/compiler.py` — compiler subprocess setup, temporary target
-  overlays, artifact canonicalization, and ABI/method/storage comparisons.
+  overlays, dependency inference, and ABI/method-identifier comparisons.
+- `src/vyupgrade/storage_layout.py` — typed, fail-closed storage artifact
+  parsing, canonicalization, target-AST evidence, and layout comparison.
 - `src/vyupgrade/analysis.py` and `src/vyupgrade/ast_facts.py` — lightweight
   source facts and compiler AST helpers for type-aware rewrites.
 - `src/vyupgrade/source.py` and `src/vyupgrade/rule_helpers.py` — edit, masking,
@@ -54,7 +56,7 @@ Useful focused commands:
 ```bash
 uv run --locked pytest tests/rule_groups/test_<area>.py
 uv run --locked pytest tests/test_versions.py tests/test_docs.py tests/test_rule_registry.py
-uv run --locked pytest tests/test_cli.py tests/test_compiler.py
+uv run --locked pytest tests/test_cli.py tests/test_compiler.py tests/test_storage_layout.py
 ```
 
 `tests/test_cli_integration.py` invokes real Vyper compilers and can be slower
@@ -80,7 +82,7 @@ validation outputs, target pragmas, or alpha/final target support.
 - Preserve imports, pragmas, formatting, and user comments where practical.
 - Keep compiler validation meaningful. Do not silence ABI, method identifier, or
   storage layout differences unless there is an existing canonicalization reason
-  in `compiler.py` and tests cover it.
+  in `storage_layout.py` and tests cover it.
 
 ## Version gating quick reference
 
