@@ -20,6 +20,12 @@ def _load_corpus_module():
     return module
 
 
+def test_smoke_schema_version_is_three() -> None:
+    corpus = _load_corpus_module()
+
+    assert corpus.SMOKE_RESULT_SCHEMA_VERSION == 3
+
+
 def test_import_old_vyper_bug_uses_csv_versions_for_missing_pragmas(tmp_path: Path) -> None:
     corpus = _load_corpus_module()
     source = tmp_path / "old-vyper-bug"
@@ -661,8 +667,61 @@ def test_smoke_resumes_an_ordered_prefix_and_only_submits_remaining_items(
     assert summary["total"] == 3
 
 
-def test_smoke_does_not_resume_unversioned_result_rows(
+def test_smoke_resumes_when_selected_compiler_differs_from_manifest_hint(
     monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    items = [
+        {"index": index, "repo": "test", "source_compiler": "0.3.3"}
+        for index in range(2)
+    ]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "smoke-results.json"
+    target_version = "0.4.3"
+    identity = corpus._smoke_run_identity(manifest_path, target_version, items)
+    corpus._write_smoke_checkpoint(
+        output_path,
+        [
+            {
+                **items[0],
+                "source_compiler_hint": "0.3.3",
+                "source_compiler": "0.3.4",
+                "source_compile": "passed",
+                "target_compile": "passed",
+                "target_version": target_version,
+            }
+        ],
+        identity,
+    )
+    submitted: list[int] = []
+
+    def fake_smoke_one(item, requested_target):
+        submitted.append(item["index"])
+        return {
+            **item,
+            "source_compiler_hint": item["source_compiler"],
+            "source_compiler": "0.3.4",
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": requested_target,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    summary = corpus.smoke_corpus(manifest_path, output_path, target_version, 1, 0)
+
+    assert submitted == [1]
+    results = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [result["index"] for result in results] == [0, 1]
+    assert results[0]["source_compiler_hint"] == "0.3.3"
+    assert results[0]["source_compiler"] == "0.3.4"
+    assert summary["total"] == 2
+
+
+@pytest.mark.parametrize("old_schema", [None, 2])
+def test_smoke_does_not_resume_older_schema_result_rows(
+    old_schema: int | None, monkeypatch, tmp_path: Path
 ) -> None:
     corpus = _load_corpus_module()
     items = [{"index": index, "repo": "test"} for index in range(2)]
@@ -674,6 +733,11 @@ def test_smoke_does_not_resume_unversioned_result_rows(
     legacy_results = [
         {
             **items[0],
+            **(
+                {"smoke_schema_version": old_schema}
+                if old_schema is not None
+                else {}
+            ),
             "source_compile": "passed",
             "target_compile": "passed",
             "target_version": target_version,
@@ -1033,7 +1097,9 @@ def test_smoke_records_artifact_diff_details_for_mismatches(monkeypatch, tmp_pat
     ]
 
 
-def test_smoke_raises_broad_pragma_source_version_from_syntax(monkeypatch, tmp_path: Path) -> None:
+def test_smoke_tries_lowest_broad_pragma_compiler_before_syntax_hint(
+    monkeypatch, tmp_path: Path
+) -> None:
     corpus = _load_corpus_module()
     contract = tmp_path / "contracts" / "chainsecurity_flat" / "0xabc.vy"
     contract.parent.mkdir(parents=True)
@@ -1047,14 +1113,16 @@ def test_smoke_raises_broad_pragma_source_version_from_syntax(monkeypatch, tmp_p
         "corpus_repo_root": str(contract.parent),
         "pragma": "^0.3.0",
     }
-    seen: dict[str, str | None] = {}
+    seen: dict[str, object] = {"compile_versions": []}
 
     def fake_apply_rules(source, config, path):
         seen["rewrite_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
     def fake_compile_source_file(path, config, source_version):
-        seen["compile_version"] = source_version
+        seen["compile_versions"].append(source_version)
+        if source_version == "0.3.0":
+            return SimpleNamespace(status="failed", artifacts=None, stderr="syntax unavailable")
         return SimpleNamespace(status="passed", artifacts={}, stderr=None)
 
     monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
@@ -1069,9 +1137,279 @@ def test_smoke_raises_broad_pragma_source_version_from_syntax(monkeypatch, tmp_p
 
     result = corpus._smoke_one(item, "0.4.3")
 
-    assert seen["compile_version"] == "0.3.4"
+    assert seen["compile_versions"] == ["0.3.0", "0.3.1"]
+    assert seen["rewrite_version"] == "0.3.1"
+    assert result["source_compile"] == "passed"
+    assert result["source_compiler"] == "0.3.1"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        """    assert msg.sender == self._minter
+    factor: uint256 = 10000000
+    product: uint256 = self._balances[msg.sender] * convert(factor, uint256)
+    self._balances[self._minter] = product
+""",
+        """    factor: uint256 = 10000000
+    product: uint256 = self._balances[msg.sender] * convert(factor, uint256)
+    if msg.sender == self.owner:
+        self._balances[msg.sender] = product
+    else:
+        self._balances[self.owner] = product
+""",
+    ],
+    ids=["minter", "owner-branch"],
+)
+def test_smoke_prefers_manifest_compiler_for_same_type_convert_regressions(
+    body: str, monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "token.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text(
+        """# @version ^0.3.3
+NAME: immutable(String[33])
+DECIMALS: immutable(uint8)
+_balances: HashMap[address, uint256]
+_minter: address
+owner: public(address)
+
+@external
+def multiplyHoldings() -> bool:
+"""
+        + body
+        + "    return True\n",
+        encoding="utf-8",
+    )
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+        "pragma": "^0.3.3",
+        "source_compiler": "0.3.3",
+    }
+    seen: dict[str, object] = {"compile_versions": []}
+
+    assert corpus._item_source_version(item) == "0.3.3"
+    monkeypatch.setattr(corpus, "_item_source_version", lambda _item: "0.3.7")
+
+    def fake_compile_source_file(path, config, source_version):
+        seen["compile_versions"].append(source_version)
+        status = "passed" if source_version == "0.3.3" else "failed"
+        return SimpleNamespace(status=status, artifacts={}, stderr=None)
+
+    def fake_apply_rules(source, config, path):
+        seen["rewrite_version"] = config.source_version
+        return SimpleNamespace(source=source, fixes=[], diagnostics=[])
+
+    monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
+    monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
+    monkeypatch.setattr(
+        corpus.engine,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert seen["compile_versions"] == ["0.3.3"]
+    assert seen["rewrite_version"] == "0.3.3"
+    assert result["source_compile"] == "passed"
+    assert result["source_compiler_hint"] == "0.3.3"
+    assert result["source_compiler"] == "0.3.3"
+
+
+def test_smoke_reports_winning_source_compiler_instead_of_manifest_hint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "token.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("# @version ^0.3.3\nx: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+        "pragma": "^0.3.3",
+        "source_compiler": "0.3.3",
+    }
+    seen: dict[str, object] = {"compile_versions": []}
+
+    monkeypatch.setattr(corpus, "_item_source_version", lambda _item: "0.3.7")
+
+    def fake_compile_source_file(path, config, source_version):
+        seen["compile_versions"].append(source_version)
+        status = "passed" if source_version == "0.3.4" else "failed"
+        return SimpleNamespace(status=status, artifacts={}, stderr=None)
+
+    def fake_apply_rules(source, config, path):
+        seen["rewrite_version"] = config.source_version
+        return SimpleNamespace(source=source, fixes=[], diagnostics=[])
+
+    monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
+    monkeypatch.setattr(corpus.engine, "apply_rules", fake_apply_rules)
+    monkeypatch.setattr(
+        corpus.engine,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert seen["compile_versions"] == ["0.3.3", "0.3.7", "0.3.4"]
     assert seen["rewrite_version"] == "0.3.4"
     assert result["source_compile"] == "passed"
+    assert result["source_compiler_hint"] == "0.3.3"
+    assert result["source_compiler"] == "0.3.4"
+
+
+def test_smoke_preserves_source_provenance_when_target_validation_raises(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "token.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.3.3\nx: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+        "pragma": "0.3.3",
+        "source_compiler": "0.3.3",
+    }
+
+    monkeypatch.setattr(
+        corpus.engine,
+        "compile_source_file",
+        lambda path, config, source_version: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+    monkeypatch.setattr(
+        corpus.engine,
+        "apply_rules",
+        lambda source, config, path: SimpleNamespace(
+            source=source, fixes=[], diagnostics=[]
+        ),
+    )
+
+    def fail_target_validation(batch, config):
+        raise RuntimeError("target validation crashed")
+
+    monkeypatch.setattr(corpus.engine, "validate_migrations", fail_target_validation)
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert result["source_compiler_hint"] == "0.3.3"
+    assert result["source_compiler"] == "0.3.3"
+    assert result["source_compile"] == "passed"
+    assert result["target_compile"] == "exception"
+    assert result["source_error"] is None
+    assert result["validation_status"] == "exception"
+    assert "target validation crashed" in result["target_error"]
+
+
+@pytest.mark.parametrize("pragma_case", ["missing", "null", "invalid"])
+def test_smoke_uses_valid_manifest_compiler_when_pragma_is_unusable(
+    pragma_case: str, monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "token.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("x: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+        "source_compiler": "0.3.3",
+    }
+    if pragma_case == "null":
+        item["pragma"] = None
+    elif pragma_case == "invalid":
+        item["pragma"] = "not-a-version"
+    compiled: list[str | None] = []
+
+    def fake_compile_source_file(path, config, source_version):
+        compiled.append(source_version)
+        return SimpleNamespace(status="passed", artifacts={}, stderr=None)
+
+    monkeypatch.setattr(corpus.engine, "compile_source_file", fake_compile_source_file)
+    monkeypatch.setattr(
+        corpus.engine,
+        "apply_rules",
+        lambda source, config, path: SimpleNamespace(
+            source=source, fixes=[], diagnostics=[]
+        ),
+    )
+    monkeypatch.setattr(
+        corpus.engine,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert compiled == ["0.3.3"]
+    assert result["source_compiler_hint"] == "0.3.3"
+    assert result["source_compiler"] == "0.3.3"
+    assert result["source_compiler"] in compiled
+
+
+@pytest.mark.parametrize("pragma_case", ["missing", "null", "invalid"])
+def test_smoke_fails_closed_without_usable_source_version(
+    pragma_case: str, monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    contract = tmp_path / "contracts" / "chainsecurity_flat" / "token.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("x: uint256\n", encoding="utf-8")
+    item = {
+        "repo": "chainsecurity_flat",
+        "corpus_path": str(contract),
+        "corpus_repo_root": str(contract.parent),
+    }
+    if pragma_case == "null":
+        item["pragma"] = None
+    elif pragma_case == "invalid":
+        item["pragma"] = "not-a-version"
+
+    def unexpected_source_compile(path, config, source_version):
+        pytest.fail(f"unexpected source compiler: {source_version}")
+
+    monkeypatch.setattr(
+        corpus.engine, "compile_source_file", unexpected_source_compile
+    )
+    monkeypatch.setattr(
+        corpus.engine,
+        "apply_rules",
+        lambda source, config, path: SimpleNamespace(
+            source=source, fixes=[], diagnostics=[]
+        ),
+    )
+    monkeypatch.setattr(
+        corpus.engine,
+        "compile_target_source",
+        lambda path, source, config, overlay: SimpleNamespace(
+            status="passed", artifacts={}, stderr=None
+        ),
+    )
+
+    result = corpus._smoke_one(item, "0.4.3")
+
+    assert result["source_compiler_hint"] is None
+    assert result["source_compiler"] is None
+    assert result["source_compile"] == "skipped"
+    assert result["validation_status"] == "blocked"
+    assert {issue["code"] for issue in result["validation_blockers"]} >= {
+        "source_compile_failed"
+    }
 
 
 def test_smoke_retries_broad_pragma_with_newer_source_compiler(

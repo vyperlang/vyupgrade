@@ -157,8 +157,10 @@ def compiler_version_for_source_validation(
 
 def _source_syntax_floor(source: str) -> VyperVersion | None:
     floors: list[VyperVersion] = []
-    if re.search(r"\buint(?:8|16|32|64)\b", source):
-        floors.append(Version("0.3.4"))
+    if re.search(r"\buint8\b", source):
+        floors.append(Version("0.3.1"))
+    if re.search(r"\buint(?:16|32|64)\b", source):
+        floors.append(Version("0.3.2"))
     if re.search(r"\bDynArray\s*\[[^\]]+,\s*[A-Z_][A-Z0-9_]*\s*\]", source):
         floors.append(Version("0.3.7"))
     elif re.search(r"\bDynArray\s*\[", source):
@@ -166,7 +168,7 @@ def _source_syntax_floor(source: str) -> VyperVersion | None:
     if re.search(r"(?m)^enum\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):
         floors.append(Version("0.3.4"))
     if re.search(r"\bimmutable\s*\(", source):
-        floors.append(Version("0.3.7"))
+        floors.append(Version("0.3.1"))
     if re.search(r"\bsend\s*\([^)]*\bgas\s*=", source):
         floors.append(Version("0.3.8"))
     if re.search(r"(?m)^\s*error\s+[A-Za-z_][A-Za-z0-9_]*\s*:", source):

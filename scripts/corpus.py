@@ -28,7 +28,6 @@ from vyupgrade.versions import (
     infer_pragma,
     is_supported_source_version,
     known_versions_satisfying,
-    parse_version,
 )
 
 
@@ -43,7 +42,7 @@ CORPUS_MANIFESTS = {
     "vyper-2026": "vyper-2026-manifest.json",
     "chainsecurity": "chainsecurity-manifest.json",
 }
-SMOKE_RESULT_SCHEMA_VERSION = 2
+SMOKE_RESULT_SCHEMA_VERSION = 3
 CODESLAW_CHAINS = (
     "ethereum",
     "arbitrum",
@@ -1362,6 +1361,10 @@ def _smoke_items(
 def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
     path = Path(item["corpus_path"])
     started = time.time()
+    source_compiler_hint = item.get("source_compiler")
+    selected_source_compiler: str | None = None
+    source_compile_status = "exception"
+    source_error: str | None = None
     try:
         original = path.read_text(encoding="utf-8")
         compiler_search_paths = _item_compiler_search_paths(item)
@@ -1382,20 +1385,25 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             skip_target_on_vyd016=False,
         )
         batch = engine.prepare_migrations((request,), config)
-        validation = engine.validate_migrations(batch, config)
         migration = batch.files[0]
         report = migration.report
+        selected_source_compiler = report.source_compiler
+        source_compile_status = report.source_compile
+        source_error = _error_excerpt(migration.source_compile.stderr)
+        validation = engine.validate_migrations(batch, config)
         rewrite = migration.rewrite
         artifact_details = _artifact_detail_fields(report)
         return {
             **item,
             "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
+            "source_compiler_hint": source_compiler_hint,
+            "source_compiler": selected_source_compiler,
             "changed": original != rewrite.source,
             "fixes": [fix.rule for fix in rewrite.fixes],
             "diagnostics": [diag.rule for diag in rewrite.diagnostics],
             "source_compile": report.source_compile,
             "target_compile": report.target_compile,
-            "source_error": _error_excerpt(migration.source_compile.stderr),
+            "source_error": source_error,
             "target_error": _error_excerpt(
                 migration.target_compile.stderr if migration.target_compile else None
             ),
@@ -1413,12 +1421,16 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             "seconds": round(time.time() - started, 3),
         }
     except Exception as exc:
+        if source_compile_status == "exception":
+            source_error = f"{type(exc).__name__}: {exc}"
         return {
             **item,
             "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
-            "source_compile": "exception",
+            "source_compiler_hint": source_compiler_hint,
+            "source_compiler": selected_source_compiler,
+            "source_compile": source_compile_status,
             "target_compile": "exception",
-            "source_error": f"{type(exc).__name__}: {exc}",
+            "source_error": source_error,
             "target_error": traceback.format_exc()[-2000:],
             "validation_status": "exception",
             "validation_blockers": [],
@@ -1641,7 +1653,12 @@ def _load_smoke_checkpoint(
 
 
 def _result_matches_item(result: dict[str, Any], item: dict[str, Any]) -> bool:
-    return all(key in result and result[key] == value for key, value in item.items())
+    return all(
+        (result_key := "source_compiler_hint" if key == "source_compiler" else key)
+        in result
+        and result[result_key] == value
+        for key, value in item.items()
+    )
 
 
 def _write_smoke_checkpoint(
@@ -1887,36 +1904,82 @@ def _item_compiler_search_paths(item: dict[str, Any]) -> tuple[Path, ...]:
     return _unique_paths(paths)
 
 
-def _item_source_version(item: dict[str, Any]) -> str:
-    compiler = compiler_version_for_spec(item.get("compiler_version"))
+def _item_source_version(item: dict[str, Any]) -> str | None:
+    compiler = _normalized_source_compiler(item.get("compiler_version"))
     if compiler is not None and item.get("standard_json"):
         return compiler
-    pragma = str(item["pragma"])
     try:
         source = Path(item["corpus_path"]).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return pragma
-    return compiler_version_for_source(pragma, source) or pragma
+        source = ""
+    pragma = _item_source_spec(item, source)
+    if pragma is not None:
+        return compiler_version_for_source(pragma, source)
+    return _normalized_source_compiler(item.get("source_compiler"))
 
 
 def _source_compile_attempts(
-    item: dict[str, Any], source_version: str
+    item: dict[str, Any], source_version: str | None
 ) -> tuple[SourceCompileAttempt, ...]:
-    attempts = [SourceCompileAttempt(source_version, source_version)]
+    def attempt(version: str) -> SourceCompileAttempt:
+        return SourceCompileAttempt(version, version, version)
+
     if _has_exact_source_compiler(item):
-        return tuple(attempts)
-    current = parse_version(source_version)
-    candidates = known_versions_satisfying(item.get("pragma"))
-    for candidate in candidates:
-        if current is not None and candidate <= current:
+        return (attempt(source_version),) if source_version is not None else ()
+
+    pragma = _item_source_spec(item)
+    satisfying = (
+        tuple(str(version) for version in known_versions_satisfying(pragma))
+        if pragma is not None
+        else ()
+    )
+    preferred = _normalized_source_compiler(item.get("source_compiler"))
+    if preferred is None and satisfying:
+        preferred = satisfying[0]
+
+    versions: list[str] = []
+    for raw_version in (preferred, source_version, *satisfying):
+        if raw_version is None:
             continue
-        retry_version = str(candidate)
-        attempts.append(SourceCompileAttempt(retry_version, retry_version))
-    return tuple(attempts)
+        version = _normalized_source_compiler(raw_version)
+        if version is None:
+            continue
+        if version not in versions:
+            versions.append(version)
+    return tuple(attempt(version) for version in versions)
+
+
+def _normalized_source_spec(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    spec = value.strip()
+    return spec if compiler_version_for_spec(spec) is not None else None
+
+
+def _item_source_spec(item: dict[str, Any], source: str | None = None) -> str | None:
+    spec = _normalized_source_spec(item.get("pragma"))
+    if spec is not None:
+        return spec
+    if source is None:
+        try:
+            source = Path(item["corpus_path"]).read_text(encoding="utf-8")
+        except (KeyError, OSError, UnicodeDecodeError):
+            return None
+    return _normalized_source_spec(infer_pragma(source))
+
+
+def _normalized_source_compiler(value: object) -> str | None:
+    spec = _normalized_source_spec(value)
+    if spec is None:
+        return None
+    compiler = compiler_version_for_spec(spec)
+    return compiler if compiler is not None and is_supported_source_version(compiler) else None
 
 
 def _has_exact_source_compiler(item: dict[str, Any]) -> bool:
-    return bool(item.get("standard_json")) and compiler_version_for_spec(item.get("compiler_version")) is not None
+    return bool(item.get("standard_json")) and _normalized_source_compiler(
+        item.get("compiler_version")
+    ) is not None
 
 
 def _standard_json_compiler_search_paths(payload: dict[str, Any], package_root: Path) -> tuple[Path, ...]:
