@@ -127,6 +127,12 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
+JSON reports include a top-level `schema_version`. Version `1` preserves the
+existing report envelope and field paths; new fields may be added compatibly.
+Consumers should treat a missing version as the legacy unversioned format and
+require a new schema version before relying on renamed, removed, or
+type-changed fields.
+
 ### Configuration
 
 Defaults can live in `pyproject.toml` under `[tool.vyupgrade]`. Command-line

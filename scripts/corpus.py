@@ -15,19 +15,12 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from vyupgrade.compiler import (
-    compare_artifact_details,
-    compare_artifacts,
-    compile_source_file,
-    compile_target_source,
-    target_overlay,
-)
-from vyupgrade.models import Config
-from vyupgrade.rules import apply_rules
+from vyupgrade import engine
+from vyupgrade.engine import MigrationRequest, SourceCompileAttempt
+from vyupgrade.models import Config, FileReport
 from vyupgrade.versions import (
     KNOWN_VERSIONS,
     compiler_version_for_source,
@@ -50,6 +43,7 @@ CORPUS_MANIFESTS = {
     "vyper-2026": "vyper-2026-manifest.json",
     "chainsecurity": "chainsecurity-manifest.json",
 }
+SMOKE_RESULT_SCHEMA_VERSION = 2
 CODESLAW_CHAINS = (
     "ethereum",
     "arbitrum",
@@ -1378,47 +1372,50 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             source_version=source_version,
             compiler_search_paths=compiler_search_paths,
         )
-        source_compile = compile_source_file(path, config, source_version)
-        source_version, config, source_compile = _retry_source_compile_with_newer_version(
-            item, path, config, source_version, source_compile
+        request = MigrationRequest(
+            path,
+            original,
+            source_version,
+            _source_compile_attempts(item, source_version),
+            # Preserve the corpus smoke's historical attempt to compile a
+            # target even when the source is newer than that target.
+            skip_target_on_vyd016=False,
         )
-        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
-        file_config = replace(
-            config, source_ast=source_ast if isinstance(source_ast, dict) else None
-        )
-        rewrite = apply_rules(original, file_config, path)
-        with target_overlay(
-            {path: rewrite.source}, config.target_version, config.compiler_search_paths
-        ) as overlay:
-            target_compile = compile_target_source(path, rewrite.source, config, overlay)
-        abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
-            source_compile, target_compile
-        )
-        artifact_details = _artifact_detail_fields(
-            source_compile,
-            target_compile,
-            abi_equal,
-            method_ids_equal,
-            storage_layout_equal,
-        )
+        batch = engine.prepare_migrations((request,), config)
+        validation = engine.validate_migrations(batch, config)
+        migration = batch.files[0]
+        report = migration.report
+        rewrite = migration.rewrite
+        artifact_details = _artifact_detail_fields(report)
         return {
             **item,
+            "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
             "changed": original != rewrite.source,
             "fixes": [fix.rule for fix in rewrite.fixes],
             "diagnostics": [diag.rule for diag in rewrite.diagnostics],
-            "source_compile": source_compile.status,
-            "target_compile": target_compile.status,
-            "source_error": _error_excerpt(source_compile.stderr),
-            "target_error": _error_excerpt(target_compile.stderr),
-            "abi_equal": abi_equal,
-            "method_ids_equal": method_ids_equal,
-            "storage_layout_equal": storage_layout_equal,
+            "source_compile": report.source_compile,
+            "target_compile": report.target_compile,
+            "source_error": _error_excerpt(migration.source_compile.stderr),
+            "target_error": _error_excerpt(
+                migration.target_compile.stderr if migration.target_compile else None
+            ),
+            "abi_equal": report.abi_equal,
+            "method_ids_equal": report.method_ids_equal,
+            "storage_layout_equal": report.storage_layout_equal,
+            "validation_status": validation.status,
+            "validation_blockers": [
+                issue.to_json_obj() for issue in validation.blockers
+            ],
+            "validation_waivers": [
+                issue.to_json_obj() for issue in validation.waivers
+            ],
             **artifact_details,
             "seconds": round(time.time() - started, 3),
         }
     except Exception as exc:
         return {
             **item,
+            "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
             "source_compile": "exception",
             "target_compile": "exception",
             "source_error": f"{type(exc).__name__}: {exc}",
@@ -1427,27 +1424,18 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
         }
 
 
-def _artifact_detail_fields(
-    source_compile,
-    target_compile,
-    abi_equal: bool | None,
-    method_ids_equal: bool | None,
-    storage_layout_equal: bool | None,
-) -> dict[str, list[str]]:
+def _artifact_detail_fields(report: FileReport) -> dict[str, list[str]]:
     requested = {
-        "abi_diff": abi_equal is False,
-        "method_id_diff": method_ids_equal is False,
-        "storage_layout_diff": storage_layout_equal is False,
+        "abi_diff": report.abi_equal is False,
+        "method_id_diff": report.method_ids_equal is False,
+        "storage_layout_diff": report.storage_layout_equal is False,
     }
     if not any(requested.values()):
         return {}
-    abi_diff, method_id_diff, storage_layout_diff = compare_artifact_details(
-        source_compile, target_compile
-    )
     details = {
-        "abi_diff": abi_diff,
-        "method_id_diff": method_id_diff,
-        "storage_layout_diff": storage_layout_diff,
+        "abi_diff": report.abi_diff,
+        "method_id_diff": report.method_id_diff,
+        "storage_layout_diff": report.storage_layout_diff,
     }
     return {field: details[field] for field, include in requested.items() if include}
 
@@ -1479,6 +1467,7 @@ def _smoke_summary(
     fixes = Counter(fix for item in results for fix in item.get("fixes", []))
     diagnostics = Counter(diag for item in results for diag in item.get("diagnostics", []))
     return {
+        "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
         "manifest": str(manifest_path),
         "results": str(output_path),
         "total": len(results),
@@ -1532,7 +1521,8 @@ def _smoke_run_identity(
     manifest_path: Path, target_version: str, items: list[dict[str, Any]]
 ) -> dict[str, Any]:
     return {
-        "checkpoint_version": 1,
+        "checkpoint_version": 2,
+        "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
         "manifest_path": str(manifest_path.resolve()),
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "target_version": target_version,
@@ -1550,7 +1540,7 @@ def _load_smoke_checkpoint(
         checkpoint = json.loads(_checkpoint_path(output_path).read_text(encoding="utf-8"))
         if (
             not isinstance(checkpoint, dict)
-            or checkpoint.get("checkpoint_version") != 1
+            or checkpoint.get("checkpoint_version") != 2
             or checkpoint.get("identity") != identity
         ):
             return []
@@ -1563,7 +1553,9 @@ def _load_smoke_checkpoint(
         if checkpoint.get("results_sha256") != _json_digest(results):
             return []
         if not all(
-            isinstance(result, dict) and _result_matches_item(result, item)
+            isinstance(result, dict)
+            and result.get("smoke_schema_version") == SMOKE_RESULT_SCHEMA_VERSION
+            and _result_matches_item(result, item)
             for result, item in zip(results, items[:completed], strict=True)
         ):
             return []
@@ -1581,14 +1573,18 @@ def _write_smoke_checkpoint(
     results: list[dict[str, Any]],
     identity: dict[str, Any],
 ) -> None:
-    _atomic_write_json(output_path, results)
+    versioned_results = [
+        {**result, "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION}
+        for result in results
+    ]
+    _atomic_write_json(output_path, versioned_results)
     _atomic_write_json(
         _checkpoint_path(output_path),
         {
-            "checkpoint_version": 1,
+            "checkpoint_version": 2,
             "identity": identity,
-            "completed": len(results),
-            "results_sha256": _json_digest(results),
+            "completed": len(versioned_results),
+            "results_sha256": _json_digest(versioned_results),
         },
     )
 
@@ -1827,26 +1823,20 @@ def _item_source_version(item: dict[str, Any]) -> str:
     return compiler_version_for_source(pragma, source) or pragma
 
 
-def _retry_source_compile_with_newer_version(
-    item: dict[str, Any],
-    path: Path,
-    config: Config,
-    source_version: str,
-    source_compile: Any,
-) -> tuple[str, Config, Any]:
-    if source_compile.status == "passed" or _has_exact_source_compiler(item):
-        return source_version, config, source_compile
+def _source_compile_attempts(
+    item: dict[str, Any], source_version: str
+) -> tuple[SourceCompileAttempt, ...]:
+    attempts = [SourceCompileAttempt(source_version, source_version)]
+    if _has_exact_source_compiler(item):
+        return tuple(attempts)
     current = parse_version(source_version)
     candidates = known_versions_satisfying(item.get("pragma"))
     for candidate in candidates:
         if current is not None and candidate <= current:
             continue
         retry_version = str(candidate)
-        retry_config = replace(config, source_version=retry_version)
-        retry_compile = compile_source_file(path, retry_config, retry_version)
-        if retry_compile.status == "passed":
-            return retry_version, retry_config, retry_compile
-    return source_version, config, source_compile
+        attempts.append(SourceCompileAttempt(retry_version, retry_version))
+    return tuple(attempts)
 
 
 def _has_exact_source_compiler(item: dict[str, Any]) -> bool:
