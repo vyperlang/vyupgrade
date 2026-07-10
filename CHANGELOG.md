@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 - 2026-07-10
+
+- Made compiler-backed validation fail closed with typed blockers for missing,
+  malformed, or changed ABI, method identifier, and storage-layout artifacts.
+- Made multi-file writes transactional, including destination-collision checks,
+  generated-file validation, rollback on failure, and dry-run/report parity.
+- Moved migration preparation, validation, reporting, and write planning into
+  shared engines so CLI modes use one pipeline with per-file configuration.
+- Hardened source rewrites against comments, strings, docstrings, overlapping
+  edits, unsafe nonreentrant changes, and ambiguous numeric or interface cases.
+- Hardened storage-layout comparison across legacy flat layouts, modern nested
+  modules, transient and code layouts, path-qualified interface types, and
+  compiler-reported slot spans while keeping unprovable widths fail closed.
+- Added resumable, fingerprinted corpus runs with truthful source-compiler
+  provenance, schema-versioned results, normalized status summaries, and
+  compiler fallback ordering that respects historical manifest metadata.
+- Added release preflight checks for tags, changelog notes, lock metadata, and
+  built distributions, and expanded corpus-backed regression coverage for
+  NatSpec cleanup, interface getters, numeric casts, and composed storage types.
+
 ## 0.4.3 - 2026-07-08
 
 - Fixed source-version inference so version specs are matched with the
