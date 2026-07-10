@@ -97,6 +97,25 @@ Important files:
 - `docs/vyper-syntax-history.md` records source-visible upstream syntax changes.
 - `docs/migration-coverage.md` records this project's behavior for each change.
 
+Storage-layout canonicalization is fail closed: wrapper and leaf keys are
+whitelisted, persistent and transient spans may not overlap, and explicit
+`n_slots` values must agree with widths derivable from canonical Vyper types.
+The inferred set is scalars and hash maps (one slot); fixed arrays (element
+width times length); dynamic arrays (one length slot plus the maximum element
+span); and bounded `Bytes`/`String` values (one length slot plus the rounded-up
+byte capacity). Interfaces count as one slot only when the raw compiler type
+spells `interface Name` or contains a grammar-delimited `.vyi` basename. Naming
+convention and familiar built-in names are not evidence: `IFoo` and `ERC20` may
+both be multi-slot structs. Canonicalization retains that interface marker, so
+an explicit `interface Foo` does not compare equal to a struct named `Foo`; no
+`IERC*`/`ERC*` spelling aliases are applied. Extensionless and `.vy` paths are
+preserved in full and remain width-unknown because neither suffix proves an
+interface. A bare user-defined type does not carry enough information to infer
+a width. Such an unknown width never matches a width supplied on only one side;
+two otherwise identical legacy layouts that both omit it remain comparable,
+while their occupied span beyond the compiler-reported start slot is not
+independently provable.
+
 JSON reports use the existing top-level envelope with `schema_version: 1`.
 Within schema 1, fields may be added but existing fields are not renamed,
 removed, or type-changed. A missing version identifies the legacy unversioned

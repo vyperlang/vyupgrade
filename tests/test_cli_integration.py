@@ -4,7 +4,247 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from vyupgrade.cli import main
+from vyupgrade.compiler import (
+    CompileResult,
+    compare_artifact_details,
+    compare_artifacts,
+    compile_source_file,
+    compile_target_source,
+    unavailable_validation_artifacts,
+)
+from vyupgrade.models import Config
+
+
+def test_real_compiler_nested_module_layout_is_comparable(tmp_path: Path) -> None:
+    module = tmp_path / "ledger.vy"
+    module.write_text(
+        """#pragma version 0.4.3
+owner: public(address)
+
+@deploy
+def __init__():
+    self.owner = msg.sender
+""",
+        encoding="utf-8",
+    )
+    contract = tmp_path / "main.vy"
+    source = """#pragma version 0.4.3
+import ledger
+
+initializes: ledger
+exports: ledger.__interface__
+
+@deploy
+def __init__():
+    ledger.__init__()
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(
+        paths=(contract,),
+        target_version="0.4.3",
+        compiler_search_paths=(tmp_path,),
+    )
+
+    source_compile = compile_source_file(contract, config, "0.4.3")
+    target_compile = compile_target_source(contract, source, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert target_compile.artifacts is not None
+    layout = target_compile.artifacts["layout"]
+    assert isinstance(layout, dict)
+    assert layout["storage_layout"] == {
+        "ledger": {"owner": {"type": "address", "n_slots": 1, "slot": 0}}
+    }
+
+
+def test_real_compiler_code_only_immutable_layout_is_empty_storage(tmp_path: Path) -> None:
+    contract = tmp_path / "immutable_only.vy"
+    source = """#pragma version 0.4.3
+OWNER: immutable(address)
+
+@deploy
+def __init__():
+    OWNER = msg.sender
+
+@view
+@external
+def owner() -> address:
+    return OWNER
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.3")
+    target_compile = compile_target_source(contract, source, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert target_compile.artifacts is not None
+    layout = target_compile.artifacts["layout"]
+    assert isinstance(layout, dict)
+    assert layout == {
+        "code_layout": {
+            "OWNER": {"type": "address", "length": 32, "offset": 0}
+        }
+    }
+
+
+def test_real_legacy_immutable_layout_compares_with_modern_code_only_target(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "legacy_immutable_only.vy"
+    legacy_source = """# @version 0.3.10
+OWNER: immutable(address)
+
+@external
+def __init__():
+    OWNER = msg.sender
+
+@view
+@external
+def owner() -> address:
+    return OWNER
+"""
+    target_source = legacy_source.replace(
+        "# @version 0.3.10", "#pragma version 0.4.3"
+    ).replace("@external\ndef __init__", "@deploy\ndef __init__", 1)
+    contract.write_text(legacy_source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.3.10")
+    target_compile = compile_target_source(contract, target_source, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert source_compile.artifacts is not None
+    assert source_compile.artifacts["layout"] == {
+        "code_layout": {
+            "OWNER": {"type": "address", "length": 32, "offset": 0}
+        },
+        "storage_layout": {},
+    }
+
+
+def test_real_legacy_width_inference_matches_modern_layout(tmp_path: Path) -> None:
+    contract = tmp_path / "storage_widths.vy"
+    legacy_source = """# @version 0.3.10
+fixed_values: uint256[3]
+dynamic_values: DynArray[uint256, 3]
+blob: Bytes[64]
+label: String[32]
+pools: HashMap[address, uint256]
+"""
+    target_source = legacy_source.replace(
+        "# @version 0.3.10", "#pragma version 0.4.3"
+    )
+    contract.write_text(legacy_source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.3.10")
+    target_compile = compile_target_source(contract, target_source, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert target_compile.artifacts is not None
+    layout = target_compile.artifacts["layout"]
+    assert isinstance(layout, dict)
+    storage = layout["storage_layout"]
+    assert isinstance(storage, dict)
+    assert {
+        name: entry["n_slots"]
+        for name, entry in storage.items()
+        if isinstance(entry, dict)
+    } == {
+        "fixed_values": 3,
+        "dynamic_values": 4,
+        "blob": 3,
+        "label": 2,
+        "pools": 1,
+    }
+
+
+@pytest.mark.parametrize("struct_name", ["IFoo", "ERC20"])
+def test_real_interface_named_struct_keeps_two_slot_width(
+    tmp_path: Path,
+    struct_name: str,
+) -> None:
+    contract = tmp_path / f"{struct_name.lower()}_struct.vy"
+    source = f"""#pragma version 0.4.3
+struct {struct_name}:
+    left: uint256
+    right: uint256
+
+value: {struct_name}
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.3")
+    target_compile = compile_target_source(contract, source, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert target_compile.artifacts is not None
+    layout = target_compile.artifacts["layout"]
+    assert isinstance(layout, dict)
+    storage = layout["storage_layout"]
+    assert isinstance(storage, dict)
+    assert storage["value"] == {"slot": 0, "type": struct_name, "n_slots": 2}
+
+    legacy_without_width = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": struct_name}}},
+    )
+    assert compare_artifacts(legacy_without_width, target_compile) == (
+        None,
+        None,
+        False,
+    )
+
+
+def test_real_ierc20_and_erc20_struct_names_remain_distinct(tmp_path: Path) -> None:
+    contract = tmp_path / "token_struct.vy"
+    source = """#pragma version 0.4.3
+struct IERC20:
+    left: uint256
+    right: uint256
+
+value: IERC20
+"""
+    target = source.replace("IERC20", "ERC20")
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.3")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, False)
+    assert compare_artifact_details(source_compile, target_compile)[2] == [
+        "changed storage: value slot 0 IERC20 -> 0 ERC20"
+    ]
 
 
 def test_write_mode_validates_against_target_compiler(tmp_path: Path) -> None:
@@ -89,17 +329,24 @@ def collect_fees() -> uint256:
     assert file["validation"]["decision"]["status"] == "passed"
 
 
-def test_legacy_erc4626_interface_getter_stub_compiles(tmp_path: Path) -> None:
+def test_legacy_erc4626_interface_getter_stub_compiles_but_width_is_unproven(
+    tmp_path: Path,
+) -> None:
     contract = tmp_path / "ERC4626Mock.vy"
     shutil.copyfile(Path("tests/fixtures/erc4626_interface_getter.vy"), contract)
     report = tmp_path / "report.json"
 
     code = main([str(contract), "--check", "--report-json", str(report)])
 
-    assert code == 1
+    assert code == 7
     file = json.loads(report.read_text(encoding="utf-8"))["files"][0]
     assert file["validation"]["target_compile"] == "passed"
-    assert file["validation"]["decision"]["status"] == "passed"
+    assert file["validation"]["decision"]["status"] == "blocked"
+    assert file["validation"]["storage_layout_equal"] is False
+    assert file["validation"]["storage_layout_diff"] == [
+        "changed storage: asset slot 0 ERC20 -> 0 interface IERC20 "
+        "(n_slots unknown -> 1)"
+    ]
 
 
 def test_alpha_target_validation_uses_alpha_compiler(tmp_path: Path) -> None:
