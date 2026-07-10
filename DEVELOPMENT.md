@@ -240,12 +240,14 @@ uv run --locked python scripts/corpus.py smoke \
 Use `--limit` for a quick sample and `--path` to focus on known regressions. The
 smoke command compiles source and target outputs, applies the same artifact
 comparisons as the CLI, and records rule, diagnostic, compile, and diff details.
+Each row records the compiler that actually won source validation as
+`source_compiler`; `source_compiler_hint` preserves the compiler recorded by the
+input manifest when a fallback compiler wins.
 It writes an atomic checkpoint sidecar and resumes an ordered result prefix when
 the manifest, selected items, target version, smoke-result schema, and runner-source
 fingerprint still match the interrupted run. Each result and summary declares
-`smoke_schema_version: 2`;
-the legacy unversioned rows are treated as schema 1 and are never mixed into a
-resumed schema 2 run. Schema 2 summaries retain the raw compiler
+`smoke_schema_version: 3`; rows from earlier schemas are never mixed into a
+resumed schema 3 run. Schema 3 summaries retain the raw compiler
 `status_pairs`, and also expose `normalized_status_pairs`, where a safe
 `degraded` source compile is grouped with `passed`. `validation_statuses`,
 `validation_blockers`, and `validation_waivers` count the typed safety outcomes
