@@ -145,7 +145,7 @@ allow-storage-layout-change = false
 - `3` — source compilation or source artifact availability failed validation.
 - `4` — usage error (no paths, or conflicting flags).
 - `5` — an error-severity diagnostic was raised.
-- `6` — the requested formatter failed.
+- `6` — the requested formatter failed or could not be run.
 - `7` — an unwaived ABI, method-identifier, or storage-layout mismatch blocked the write.
 
 ## Coverage

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 def _load_corpus_module():
@@ -115,6 +119,28 @@ def test_dedupe_manifests_keeps_one_item_per_source_hash(tmp_path: Path) -> None
     assert len(manifest["items"]) == 1
     assert manifest["items"][0]["duplicate_count"] == 1
     assert manifest["items"][0]["duplicate_sources"][0]["repo"] == "second"
+
+
+def test_default_dedupe_uses_every_registered_manifest(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    expected = {
+        "build": "manifest.json",
+        "codeslaw": "codeslaw-manifest.json",
+        "codeslaw-buckets": "codeslaw-buckets-manifest.json",
+        "old-vyper-bug": "old-vyper-bug-manifest.json",
+        "smart-contract-fiesta": "smart-contract-fiesta-manifest.json",
+        "vyper-2026": "vyper-2026-manifest.json",
+        "chainsecurity": "chainsecurity-manifest.json",
+    }
+    assert expected == corpus.CORPUS_MANIFESTS
+
+    for filename in corpus.CORPUS_MANIFESTS.values():
+        (tmp_path / filename).write_text('{"items": []}', encoding="utf-8")
+
+    manifest = corpus.dedupe_manifests(None, tmp_path / "deduped-manifest.json")
+
+    assert manifest["roots"] == [str(tmp_path / filename) for filename in expected.values()]
+    assert str(tmp_path / "chainsecurity-manifest.json") in manifest["roots"]
 
 
 def test_build_corpus_uses_hash_suffixed_path_for_path_collisions(tmp_path: Path) -> None:
@@ -474,6 +500,250 @@ def test_smoke_items_keeps_limit_for_unfiltered_runs() -> None:
     ]
 
     assert corpus._smoke_items(items, None, 1) == [items[0]]
+
+
+def test_smoke_checkpoints_in_manifest_order_after_creating_parent(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    items = [{"index": index, "repo": "test"} for index in range(51)]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "nested" / "smoke-results.json"
+
+    def fake_smoke_one(item, target_version):
+        time.sleep((len(items) - item["index"]) * 0.0005)
+        return {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": target_version,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    summary = corpus.smoke_corpus(manifest_path, output_path, "0.4.3", 8, 0)
+
+    results = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [result["index"] for result in results] == list(range(51))
+    assert summary["total"] == 51
+
+
+def test_smoke_resumes_an_ordered_prefix_and_only_submits_remaining_items(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    items = [{"index": index, "repo": "test"} for index in range(3)]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "smoke-results.json"
+    target_version = "0.4.3"
+    identity = corpus._smoke_run_identity(manifest_path, target_version, items)
+    completed = [
+        {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": target_version,
+        }
+        for item in items[:2]
+    ]
+    corpus._write_smoke_checkpoint(output_path, completed, identity)
+    submitted: list[int] = []
+
+    def fake_smoke_one(item, requested_target):
+        submitted.append(item["index"])
+        return {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": requested_target,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    summary = corpus.smoke_corpus(manifest_path, output_path, target_version, 2, 0)
+
+    assert submitted == [2]
+    results = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [result["index"] for result in results] == [0, 1, 2]
+    assert summary["total"] == 3
+
+
+def test_smoke_does_not_resume_when_run_identity_changes(monkeypatch, tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    items = [{"index": index, "repo": "test"} for index in range(2)]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "smoke-results.json"
+    old_target = "0.4.2"
+    identity = corpus._smoke_run_identity(manifest_path, old_target, items)
+    corpus._write_smoke_checkpoint(
+        output_path,
+        [
+            {
+                **items[0],
+                "source_compile": "passed",
+                "target_compile": "passed",
+                "target_version": old_target,
+            }
+        ],
+        identity,
+    )
+    submitted: list[int] = []
+
+    def fake_smoke_one(item, requested_target):
+        submitted.append(item["index"])
+        return {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": requested_target,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    corpus.smoke_corpus(manifest_path, output_path, "0.4.3", 2, 0)
+
+    assert sorted(submitted) == [0, 1]
+    results = json.loads(output_path.read_text(encoding="utf-8"))
+    assert {result["target_version"] for result in results} == {"0.4.3"}
+
+
+def test_smoke_does_not_resume_results_that_are_not_an_ordered_prefix(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    items = [{"index": index, "repo": "test"} for index in range(2)]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "smoke-results.json"
+    target_version = "0.4.3"
+    identity = corpus._smoke_run_identity(manifest_path, target_version, items)
+    corpus._write_smoke_checkpoint(
+        output_path,
+        [
+            {
+                **items[1],
+                "source_compile": "passed",
+                "target_compile": "passed",
+            }
+        ],
+        identity,
+    )
+    submitted: list[int] = []
+
+    def fake_smoke_one(item, requested_target):
+        submitted.append(item["index"])
+        return {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": requested_target,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    corpus.smoke_corpus(manifest_path, output_path, target_version, 2, 0)
+
+    assert sorted(submitted) == [0, 1]
+    results = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [result["index"] for result in results] == [0, 1]
+
+
+@pytest.mark.parametrize("malformed", ["checkpoint", "output"])
+def test_smoke_malformed_resume_state_falls_back_safely(
+    malformed: str, monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    items = [{"index": 0, "repo": "test"}]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "smoke-results.json"
+    target_version = "0.4.3"
+    identity = corpus._smoke_run_identity(manifest_path, target_version, items)
+    corpus._write_smoke_checkpoint(
+        output_path,
+        [
+            {
+                **items[0],
+                "source_compile": "passed",
+                "target_compile": "passed",
+                "target_version": target_version,
+            }
+        ],
+        identity,
+    )
+    malformed_path = (
+        corpus._checkpoint_path(output_path) if malformed == "checkpoint" else output_path
+    )
+    malformed_path.write_text("{", encoding="utf-8")
+    submitted: list[int] = []
+
+    def fake_smoke_one(item, requested_target):
+        submitted.append(item["index"])
+        return {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": requested_target,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    corpus.smoke_corpus(manifest_path, output_path, target_version, 1, 0)
+
+    assert submitted == [0]
+    assert json.loads(output_path.read_text(encoding="utf-8"))[0]["index"] == 0
+    assert json.loads(corpus._checkpoint_path(output_path).read_text(encoding="utf-8"))[
+        "completed"
+    ] == 1
+
+
+def test_atomic_json_write_keeps_existing_destination_valid_on_replace_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    destination = tmp_path / "results.json"
+    destination.write_text('{"generation": "old"}', encoding="utf-8")
+
+    def fail_replace(source, target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(corpus.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        corpus._atomic_write_json(destination, {"generation": "new"})
+
+    assert json.loads(destination.read_text(encoding="utf-8")) == {"generation": "old"}
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_atomic_json_write_preserves_existing_destination_mode(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    destination = tmp_path / "results.json"
+    destination.write_text('{"generation": "old"}', encoding="utf-8")
+    destination.chmod(0o640)
+
+    corpus._atomic_write_json(destination, {"generation": "new"})
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o640
+    assert json.loads(destination.read_text(encoding="utf-8")) == {"generation": "new"}
+
+
+def test_atomic_json_write_new_file_uses_normal_umask_mode(tmp_path: Path) -> None:
+    corpus = _load_corpus_module()
+    destination = tmp_path / "results.json"
+    reference = tmp_path / "reference.json"
+    previous_umask = corpus.os.umask(0o027)
+    try:
+        reference.write_text("{}", encoding="utf-8")
+        corpus._atomic_write_json(destination, {"generation": "new"})
+    finally:
+        corpus.os.umask(previous_umask)
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o640
+    assert stat.S_IMODE(destination.stat().st_mode) == stat.S_IMODE(reference.stat().st_mode)
 
 
 def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Path) -> None:
