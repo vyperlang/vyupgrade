@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-07-10
+
+- Extracted fail-closed storage-layout parsing, canonicalization, AST evidence,
+  and comparison into a dedicated typed module without changing validation
+  behavior or compiler-facing APIs.
+
 ## 0.5.0 - 2026-07-10
 
 - Made compiler-backed validation fail closed with typed blockers for missing,
