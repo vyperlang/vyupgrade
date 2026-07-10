@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import subprocess
 from io import StringIO
 from pathlib import Path
 
@@ -9,7 +11,7 @@ import pytest
 from vyupgrade import cli
 from vyupgrade.cli import _add_validation_diagnostics, _evm_default_diagnostic, _write_diff, main
 from vyupgrade.compiler import CompileResult
-from vyupgrade.models import Config, FileReport
+from vyupgrade.models import Config, Diagnostic, FileReport
 
 
 VALIDATION_ARTIFACTS = {"abi": [], "method_identifiers": {}, "layout": {}}
@@ -222,12 +224,14 @@ def __init__():
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
+    original = contract.read_text(encoding="utf-8")
     code = main([str(contract), "--write", "--format", "mamushi", "--report-json", str(report)])
 
     assert code == 6
-    assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
+    assert contract.read_text(encoding="utf-8") == original
     data = json.loads(report.read_text())
-    assert data["wrote_changes"] is True
+    assert data["wrote_changes"] is False
+    assert data["write_status"] == "failed"
     assert data["formatter_status"] == "failed"
     assert data["formatter_output"] == "mamushi executable not found"
     assert data["test_status"] == "skipped"
@@ -247,6 +251,7 @@ def __init__():
         encoding="utf-8",
     )
     report = tmp_path / "report.json"
+    original = contract.read_text(encoding="utf-8")
 
     def fake_run(command, **kwargs):
         assert command[0] == "mamushi"
@@ -268,13 +273,317 @@ def __init__():
     )
 
     assert code == 6
+    assert contract.read_text(encoding="utf-8") == original
     data = json.loads(report.read_text())
+    assert data["wrote_changes"] is False
     assert data["formatter_command"].startswith("mamushi ")
     assert data["formatter_status"] == "failed"
     assert data["formatter_output"] == (
         "mamushi exited with status 2\nformatted stdout\nformatted stderr"
     )
     assert data["test_status"] == "skipped"
+
+
+def test_write_mode_reports_timed_out_mamushi_without_mutation(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, 120, output="partial output")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    code = main(
+        [str(contract), "--write", "--format", "mamushi", "--report-json", str(report)]
+    )
+
+    assert code == 6
+    assert contract.read_text(encoding="utf-8") == original
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is False
+    assert data["formatter_status"] == "failed"
+    assert "mamushi timed out after 120 seconds" in data["formatter_output"]
+
+
+def test_formatter_runs_on_staged_candidates_and_final_bytes_are_revalidated(
+    tmp_path: Path, monkeypatch, capsys, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+    compiled: list[str] = []
+    original_apply_rules = cli.apply_rules
+
+    def apply_rules_with_diagnostic(source, config, path):
+        result = original_apply_rules(source, config, path)
+        result.diagnostics.append(Diagnostic("TEST001", 1, "preserve this diagnostic"))
+        return result
+
+    def compile_target_source(path, source, config, overlay=None):
+        compiled.append(source)
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    def fake_run(command, **kwargs):
+        assert command[0] == "mamushi"
+        assert all(Path(path).resolve() != contract.resolve() for path in command[1:])
+        staged = Path(command[1])
+        assert staged.name == contract.name
+        staged.write_text(staged.read_text(encoding="utf-8") + "# formatted\n", encoding="utf-8")
+        return cli.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli, "apply_rules", apply_rules_with_diagnostic)
+    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--diff",
+            "--format",
+            "mamushi",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert len(compiled) == 2
+    assert "# formatted" not in compiled[0]
+    assert compiled[1].endswith("# formatted\n")
+    final = contract.read_bytes()
+    assert final.endswith(b"# formatted\n")
+    assert "+# formatted" in capsys.readouterr().out
+    data = json.loads(report.read_text())
+    assert data["files"][0]["candidate_sha256"] == hashlib.sha256(final).hexdigest()
+    assert data["files"][0]["final_sha256"] == hashlib.sha256(final).hexdigest()
+    assert data["files"][0]["final_matches_candidate"] is True
+    diagnostics = data["files"][0]["diagnostics"]
+    assert [item["rule"] for item in diagnostics].count("TEST001") == 1
+    assert [item["rule"] for item in diagnostics].count("VYD009") == 1
+
+
+def test_formatter_output_that_fails_final_validation_is_not_committed(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    def compile_target_source(path, source, config, overlay=None):
+        if "# formatter-broke-source" in source:
+            return CompileResult("failed", stderr="formatted candidate failed")
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    def fake_run(command, **kwargs):
+        staged = Path(command[1])
+        staged.write_text(
+            staged.read_text(encoding="utf-8") + "# formatter-broke-source\n",
+            encoding="utf-8",
+        )
+        return cli.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    code = main(
+        [str(contract), "--write", "--format", "mamushi", "--report-json", str(report)]
+    )
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is False
+    assert data["write_status"] == "blocked"
+    assert data["formatter_status"] == "passed"
+    assert data["validation_decision"]["blockers"][0]["code"] == "target_compile_failed"
+
+
+def test_formatted_generated_interface_bytes_are_revalidated(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "Main.vy"
+    original = """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+"""
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    compiled_interfaces: list[str] = []
+
+    def compile_target(path, source, config, overlay=None):
+        if path.suffix == ".vyi":
+            compiled_interfaces.append(source)
+            if "# broken generated interface" in source:
+                return CompileResult("failed", stderr="formatted interface failed")
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    def break_staged_interface(command, **kwargs):
+        interface = next(Path(path) for path in command[1:] if str(path).endswith(".vyi"))
+        interface.write_text(
+            interface.read_text(encoding="utf-8") + "# broken generated interface\n",
+            encoding="utf-8",
+        )
+        return cli.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli, "compile_target_source", compile_target)
+    monkeypatch.setattr(cli.subprocess, "run", break_staged_interface)
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--split-interfaces",
+            "--format",
+            "mamushi",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original
+    assert not (tmp_path / "Token.vyi").exists()
+    assert len(compiled_interfaces) == 2
+    assert "# broken generated interface" not in compiled_interfaces[0]
+    assert "# broken generated interface" in compiled_interfaces[1]
+    data = json.loads(report.read_text())
+    assert data["write_status"] == "blocked"
+
+
+def test_post_write_test_failure_returns_nonzero_and_persists_report(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda command, **kwargs: cli.subprocess.CompletedProcess(
+            command, 2, "test stdout", "test stderr"
+        ),
+    )
+
+    code = main(
+        [str(contract), "--write", "--test-command", "false", "--report-json", str(report)]
+    )
+
+    assert code == 8
+    assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is True
+    assert data["test_status"] == "failed"
+    assert data["test_output"] == "test command exited with status 2\ntest stdout\ntest stderr"
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (
+            subprocess.TimeoutExpired("tests", 600, output="partial"),
+            "test command timed out after 600 seconds",
+        ),
+        (OSError("shell unavailable"), "test command failed to start: shell unavailable"),
+    ],
+)
+def test_post_write_test_runtime_errors_return_nonzero_and_persist_report(
+    tmp_path: Path, monkeypatch, passing_compiler, failure: BaseException, message: str
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    def fake_run(command, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    code = main(
+        [str(contract), "--write", "--test-command", "tests", "--report-json", str(report)]
+    )
+
+    assert code == 8
+    assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is True
+    assert data["test_status"] == "failed"
+    assert message in data["test_output"]
+
+
+def test_post_write_test_mutation_is_detected_in_final_hashes(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    def mutate_planned_file(command, **kwargs):
+        contract.write_text("# changed by tests\n", encoding="utf-8")
+        return cli.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", mutate_planned_file)
+
+    code = main(
+        [str(contract), "--write", "--test-command", "tests", "--report-json", str(report)]
+    )
+
+    assert code == 8
+    data = json.loads(report.read_text())
+    file_report = data["files"][0]
+    assert data["test_status"] == "failed"
+    assert "test command changed planned destinations" in data["test_output"]
+    assert file_report["final_matches_candidate"] is False
+    assert file_report["final_sha256"] == hashlib.sha256(contract.read_bytes()).hexdigest()
+
+
+def test_incomplete_rollback_is_reported_as_partial_on_disk_change(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    def leave_candidate_behind(plan):
+        entry = plan.writes[0]
+        entry.path.write_bytes(entry.candidate)
+        raise cli.WriteTransactionError(
+            "injected incomplete rollback",
+            rollback_incomplete=True,
+            affected_paths=(entry.path,),
+        )
+
+    monkeypatch.setattr(cli.MigrationPlan, "commit", leave_candidate_behind)
+
+    code = main([str(contract), "--write", "--report-json", str(report)])
+
+    assert code == 9
+    data = json.loads(report.read_text())
+    assert data["write_status"] == "rollback-incomplete"
+    assert data["wrote_changes"] is True
+    assert "injected incomplete rollback" in data["write_output"]
+    assert data["files"][0]["final_matches_candidate"] is True
 
 
 def test_write_mode_does_not_write_when_target_compile_fails(
@@ -643,7 +952,16 @@ def f(token: Token, owner: address) -> uint256:
         encoding="utf-8",
     )
 
-    code = main([str(contract), "--write", "--split-interfaces"])
+    report = tmp_path / "report.json"
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--split-interfaces",
+            "--report-json",
+            str(report),
+        ]
+    )
 
     assert code == 0
     assert (
@@ -665,6 +983,155 @@ def balanceOf(owner: address) -> uint256: ...
 def transfer(to: address, amount: uint256) -> bool: ...
 """
     )
+    generated_report = next(
+        item
+        for item in json.loads(report.read_text())["files"]
+        if item["path"] == str(tmp_path / "Token.vyi")
+    )
+    assert generated_report["validation"]["source_compile"] == "skipped"
+    assert generated_report["validation"]["target_compile"] == "passed"
+    assert generated_report["validation"]["abi_equal"] is None
+    assert generated_report["validation"]["decision"]["status"] == "passed"
+
+
+def test_generated_interface_target_failure_blocks_every_write(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "Main.vy"
+    original = """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+"""
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    def fail_generated(path, source, config, overlay=None):
+        if path.suffix == ".vyi":
+            return CompileResult("failed", stderr="generated interface failed")
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    monkeypatch.setattr(cli, "compile_target_source", fail_generated)
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--split-interfaces",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original
+    assert not (tmp_path / "Token.vyi").exists()
+    data = json.loads(report.read_text())
+    generated_report = next(
+        item for item in data["files"] if item["path"] == str(tmp_path / "Token.vyi")
+    )
+    assert generated_report["validation"]["target_compile"] == "failed"
+    assert generated_report["validation"]["decision"]["status"] == "blocked"
+    assert any(
+        blocker["path"] == str(tmp_path / "Token.vyi")
+        for blocker in data["validation_decision"]["blockers"]
+    )
+def test_split_interfaces_rejects_existing_generated_file_collision(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Main.vy"
+    original = """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+"""
+    contract.write_text(original, encoding="utf-8")
+    token = tmp_path / "Token.vyi"
+    token.write_text("# user-owned interface\n", encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--split-interfaces",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 9
+    assert contract.read_text(encoding="utf-8") == original
+    assert token.read_text(encoding="utf-8") == "# user-owned interface\n"
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is False
+    assert data["write_status"] == "failed"
+    assert "already exists with different content" in data["write_output"]
+
+
+def test_split_interfaces_rejects_duplicate_generated_destinations(
+    tmp_path: Path, passing_compiler
+) -> None:
+    originals: dict[Path, str] = {}
+    for name in ("First.vy", "Second.vy"):
+        source = """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+"""
+        path = tmp_path / name
+        path.write_text(source, encoding="utf-8")
+        originals[path] = source
+    report = tmp_path / "report.json"
+
+    code = main(
+        [str(tmp_path), "--write", "--split-interfaces", "--report-json", str(report)]
+    )
+
+    assert code == 9
+    assert not (tmp_path / "Token.vyi").exists()
+    assert all(path.read_text(encoding="utf-8") == source for path, source in originals.items())
+    assert "duplicate generated destination" in json.loads(report.read_text())["write_output"]
+
+
+def test_split_interfaces_accepts_identical_generated_file_as_noop(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Main.vy"
+    contract.write_text(
+        """#pragma version 0.4.3
+
+interface Token:
+    def balanceOf(owner: address) -> uint256: view
+""",
+        encoding="utf-8",
+    )
+    token = tmp_path / "Token.vyi"
+    token_source = """@view
+@external
+def balanceOf(owner: address) -> uint256: ...
+"""
+    token.write_text(token_source, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--split-interfaces",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert "import Token" in contract.read_text(encoding="utf-8")
+    assert token.read_text(encoding="utf-8") == token_source
+    token_report = next(
+        item for item in json.loads(report.read_text())["files"] if item["path"] == str(token)
+    )
+    assert token_report["changed"] is False
+    assert token_report["original_sha256"] == token_report["candidate_sha256"]
 
 
 def test_split_interfaces_respects_rule_ignore(tmp_path: Path, passing_compiler) -> None:

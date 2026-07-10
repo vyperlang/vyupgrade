@@ -106,6 +106,10 @@ class FileReport:
     source_unavailable_formats: list[str] = field(default_factory=list)
     target_unavailable_formats: list[str] = field(default_factory=list)
     validation_decision: ValidationDecision = field(default_factory=ValidationDecision)
+    original_sha256: str | None = None
+    candidate_sha256: str | None = None
+    final_sha256: str | None = None
+    final_matches_candidate: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +147,8 @@ class RunReport:
     files: list[FileReport]
     write_requested: bool = False
     wrote_changes: bool = False
+    write_status: str = "skipped"
+    write_output: str | None = None
     validation_decision: ValidationDecision = field(default_factory=ValidationDecision)
     formatter_command: str | None = None
     formatter_status: str = "skipped"
@@ -169,11 +175,17 @@ class RunReport:
             "target_version": self.target_version,
             "write_requested": self.write_requested,
             "wrote_changes": self.wrote_changes,
+            "write_status": self.write_status,
+            "write_output": self.write_output,
             "validation_decision": self.validation_decision.to_json_obj(),
             "files": [
                 {
                     "path": str(file.path),
                     "changed": file.changed,
+                    "original_sha256": file.original_sha256,
+                    "candidate_sha256": file.candidate_sha256,
+                    "final_sha256": file.final_sha256,
+                    "final_matches_candidate": file.final_matches_candidate,
                     "fixes": [fix.__dict__ for fix in file.fixes],
                     "diagnostics": [diag.__dict__ for diag in file.diagnostics],
                     "validation": {

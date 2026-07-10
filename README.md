@@ -85,8 +85,18 @@ Target compilers must produce every requested validation output.
 The target compiler receives the exact migrated source bytes. Historical
 normalization is limited to copied dependencies in the temporary validation
 overlay and is not applied to files that would be written.
-Optional `--format mamushi` output is still produced after this validation and
-is not recompiled; post-format validation remains separate follow-up work.
+Optional `--format mamushi` runs only against temporary staged candidates. The
+formatted bytes are read back into the migration plan, compiled again under the
+target compiler, and compared before any destination is changed. Formatter
+failure leaves every original untouched.
+
+Writes recheck all planned inputs, reject generated symlinks and unsafe hard-linked
+or read-only replacements, and roll back already replaced files when a later write
+fails. Multi-file replacement is rollback-aware rather than globally atomic; a
+non-cooperating external writer can still race the final portable filesystem check.
+Reports distinguish original, validated candidate, and final on-disk hashes. If a
+post-write test command changes a planned file, the run exits nonzero and records the
+drift.
 
 Dependency inference is intentionally conservative. Exact requirements,
 ordinary version ranges, and Git dependencies are supported. Project-specific
@@ -105,8 +115,8 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
 - `--select` / `--ignore` — comma-separated rule codes to include or exclude.
 - `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.
-- `--format mamushi` — run `mamushi` over written files to reformat them.
-- `--test-command CMD` — run a test command after a successful write and record its result.
+- `--format mamushi` — format staged candidates, then revalidate the exact output before writing.
+- `--test-command CMD` — run a test command after a successful write, record its result, and fail when it does not pass.
 - `--enable-decimals` — treat decimals as enabled when reasoning about `0.4.x` rules.
 - `--source-vyper` / `--target-vyper` — pin the exact compiler version for each side.
 - `--source-python` / `--target-python` — pin the Python interpreter for each compiler subprocess.
@@ -147,6 +157,8 @@ allow-storage-layout-change = false
 - `5` — an error-severity diagnostic was raised.
 - `6` — the requested formatter failed or could not be run.
 - `7` — an unwaived ABI, method-identifier, or storage-layout mismatch blocked the write.
+- `8` — the post-write test command failed, timed out, or could not start.
+- `9` — migration planning or the rollback-aware write transaction failed.
 
 ## Coverage
 
