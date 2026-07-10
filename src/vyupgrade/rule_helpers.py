@@ -5,18 +5,19 @@ from pathlib import Path
 
 from .analysis import SourceFacts, indexed_value_type
 from .models import Config, Fix
-from .source import TextEdit, apply_edits, code_mask, line_number, span_is_code
+from .source import (
+    TextEdit,
+    apply_edits,
+    code_mask,
+    line_number,
+    line_starts_in_code,
+    span_is_code,
+)
 from .versions import MigrationContext, VyperVersion
 
 
 def line_match_starts_outside_string(source: str, mask: list[bool], start: int) -> bool:
-    line_start = source.rfind("\n", 0, start) + 1
-    if line_start > 0 and not mask[line_start - 1]:
-        return False
-    first = line_start
-    while first < len(source) and source[first] in " \t":
-        first += 1
-    return span_is_code(mask, line_start, first)
+    return line_starts_in_code(source, mask, start)
 
 
 def pre_021_context(context: MigrationContext) -> bool:
@@ -137,16 +138,25 @@ def remove_constructor_decorators(
     add_deploy: bool = False,
 ) -> tuple[str, list[Fix], list[Fix]]:
     lines = source.splitlines(keepends=True)
+    mask = code_mask(source)
+    offsets = line_offsets(source)
     fixes: list[Fix] = []
     insertions: list[Fix] = []
     out = list(lines)
     offset = 0
     for index, line in enumerate(lines):
-        if not re.match(r"\s*def\s+__init__\s*\(", line):
+        if not re.match(r"\s*def\s+__init__\s*\(", line) or not line_starts_in_code(
+            source, mask, offsets[index]
+        ):
             continue
         start = index
-        while start > 0 and re.match(
-            r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$", lines[start - 1]
+        while (
+            start > 0
+            and re.match(
+                r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$",
+                lines[start - 1],
+            )
+            and line_starts_in_code(source, mask, offsets[start - 1])
         ):
             start -= 1
         decorators = [decor.strip() for decor in lines[start:index]]

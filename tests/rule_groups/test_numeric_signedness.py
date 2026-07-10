@@ -3,6 +3,28 @@ from __future__ import annotations
 from vyupgrade.rules import apply_rules
 
 
+def test_mixed_signedness_rewrite_ignores_docstrings(config) -> None:
+    source = '''# @version 0.3.10
+SIGNED: constant(int128) = 1
+
+@external
+def f():
+    """
+    documented: uint256 = SIGNED
+    """
+    actual: uint256 = SIGNED
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY052"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert "documented: uint256 = SIGNED" in first.source
+    assert "documented: uint256 = convert" not in first.source
+    assert "actual: uint256 = convert(SIGNED, uint256)" in first.source
+    assert second.source == first.source
+
+
 def test_signed_constant_converted_in_uint_arithmetic(config) -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 3

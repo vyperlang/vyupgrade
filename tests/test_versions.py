@@ -11,6 +11,7 @@ from vyupgrade.versions import (
     compiler_version_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
+    infer_pragma,
     is_supported_source_version,
     known_versions_satisfying,
     minimum_satisfying_version,
@@ -59,6 +60,18 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert compiler_version_for_spec("~=0.4") == "0.4.0"
     assert compiler_version_for_spec("~=0.4.2") == "0.4.2"
     assert compiler_version_for_spec("==0.4.*") == "0.4.3"
+
+
+def test_infer_pragma_ignores_string_and_docstring_contents() -> None:
+    source = '''"""
+# @version 0.4.3
+"""
+VERSION: constant(String[32]) = "# pragma version 0.4.2"
+# @version 0.3.10
+'''
+
+    assert infer_pragma(source) == "0.3.10"
+    assert infer_pragma('''"""\n# @version 0.4.3\n"""\n''') is None
 
 
 def test_source_syntax_hints_raise_broad_pragma_compiler_floor() -> None:

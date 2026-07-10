@@ -66,6 +66,31 @@ def f(receiver: address, value: uint256):
     assert "log Transfer(sender=msg.sender, receiver=receiver, value=value)" in result.source
 
 
+def test_event_field_collection_ignores_docstrings(config) -> None:
+    source = '''# @version 0.3.10
+event Transfer:
+    sender: indexed(address)
+    receiver: indexed(address)
+
+@external
+def f(sender: address, receiver: address):
+    """
+    event Transfer:
+        receiver: indexed(address)
+        sender: indexed(address)
+    """
+    log Transfer(sender, receiver)
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY112"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert "log Transfer(sender=sender, receiver=receiver)" in first.source
+    assert "        receiver: indexed(address)\n        sender: indexed(address)" in first.source
+    assert second.source == first.source
+
+
 def test_timestamp_parameter_name_is_not_rewritten_as_type(config) -> None:
     source = """# @version 0.2.8
 @view

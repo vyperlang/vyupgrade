@@ -1004,14 +1004,22 @@ def _rewrite_legacy_event_declarations(source: str) -> tuple[str, list[Fix]]:
 
 def _collect_event_fields(source: str) -> dict[str, list[str]]:
     events: dict[str, list[str]] = {}
-    lines = source.splitlines()
+    lines = source.splitlines(keepends=True)
+    mask = code_mask(source)
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
     index = 0
     while index < len(lines):
         line = lines[index]
         match = re.match(
             r"^(?P<indent>\s*)event\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:#.*)?$", line
         )
-        if match is None:
+        if match is None or not _line_match_starts_outside_string(
+            source, mask, offsets[index]
+        ):
             index += 1
             continue
         indent = len(match.group("indent"))
@@ -1026,7 +1034,9 @@ def _collect_event_fields(source: str) -> dict[str, list[str]]:
             if child_indent <= indent:
                 break
             field = re.match(r"^\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:", child)
-            if field is not None:
+            if field is not None and _line_match_starts_outside_string(
+                source, mask, offsets[index]
+            ):
                 fields.append(field.group("name"))
             index += 1
         if fields:

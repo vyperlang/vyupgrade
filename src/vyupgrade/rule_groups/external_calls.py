@@ -23,6 +23,7 @@ def ignored_external_call_results(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     facts = rule_context.facts
+    mask = rule_context.code_mask
     taken_names = code_identifiers(source)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -41,6 +42,9 @@ def ignored_external_call_results(
             continue
         indent = code_part[: len(code_part) - len(code_part.lstrip(" \t"))]
         expr_start = offset + len(indent)
+        if not span_is_code(mask, expr_start, expr_start + len("staticcall")):
+            offset += len(raw_line)
+            continue
         keyword_match = re.match(r"(?:staticcall|extcall)\s+", source[expr_start:])
         if keyword_match is None:
             offset += len(raw_line)

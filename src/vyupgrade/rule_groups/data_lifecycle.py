@@ -78,11 +78,15 @@ def _constructor_deploy(rule_context: RuleContext) -> tuple[str, list[Fix], list
 
 def _constructor_value_returns(source: str) -> list[tuple[int, int, str, str]]:
     edits: list[tuple[int, int, str, str]] = []
+    mask = code_mask(source)
     offset = 0
     in_constructor = False
     constructor_indent = 0
     for raw_line in source.splitlines(keepends=True):
         line = raw_line.rstrip("\n")
+        if not _line_match_starts_outside_string(source, mask, offset):
+            offset += len(raw_line)
+            continue
         stripped = line.strip()
         indent = len(line) - len(line.lstrip(" \t"))
         if in_constructor and stripped and not stripped.startswith("#") and indent <= constructor_indent:
@@ -165,15 +169,28 @@ def _enum_to_flag(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagn
 
 def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
     lines = source.splitlines(keepends=True)
+    mask = code_mask(source)
+    offsets: list[int] = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(line)
     fixes: list[Fix] = []
     out = list(lines)
     offset = 0
     for index, line in enumerate(lines):
-        if not re.match(r"\s*def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line):
+        if not re.match(
+            r"\s*def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line
+        ) or not _line_match_starts_outside_string(source, mask, offsets[index]):
             continue
         start = index
-        while start > 0 and re.match(
-            r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$", lines[start - 1]
+        while (
+            start > 0
+            and re.match(
+                r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$",
+                lines[start - 1],
+            )
+            and _line_match_starts_outside_string(source, mask, offsets[start - 1])
         ):
             start -= 1
         decorators = [
@@ -259,7 +276,10 @@ def _reserved_flag_storage(rule_context: RuleContext) -> tuple[str, list[Fix], l
     )
     if declaration is None or not span_is_code(mask, declaration.start(), declaration.end()):
         return source, [], []
-    if re.search(r"^[ \t]*def\s+flag\s*\(", source, re.MULTILINE):
+    if any(
+        span_is_code(mask, match.start(), match.end())
+        for match in re.finditer(r"^[ \t]*def\s+flag\s*\(", source, re.MULTILINE)
+    ):
         return source, [], []
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -358,9 +378,13 @@ def _unbounded_dynarray_limits(rule_context: RuleContext) -> tuple[str, list[Fix
 
 
 def _first_top_level_function_offset(source: str) -> int:
+    mask = code_mask(source)
     offset = 0
     pending_decorator = 0
     for line in source.splitlines(keepends=True):
+        if not _line_match_starts_outside_string(source, mask, offset):
+            offset += len(line)
+            continue
         stripped = line.strip()
         if line[:1] not in {" ", "\t"} and stripped.startswith("@"):
             if pending_decorator == 0:
@@ -874,18 +898,24 @@ def _nonreentrant(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     pattern = re.compile(r"@nonreentrant\(\s*([\"'])(.+?)\1\s*\)")
-    locks = [match.group(2) for match in pattern.finditer(source)]
+    mask = rule_context.code_mask
+    matches = [
+        match
+        for match in pattern.finditer(source)
+        if span_is_code(mask, match.start(), match.start() + len("@nonreentrant"))
+    ]
+    locks = [match.group(2) for match in matches]
     diagnostics: list[Diagnostic] = []
     fixes: list[Fix] = []
     if not locks:
         return source, fixes, diagnostics
     counts = Counter(locks)
-    if len(counts) > 1:
-        first = pattern.search(source)
+    if len(counts) > 1 and rule_context.is_enabled("VYD002"):
+        first = matches[0]
         diagnostics.append(
             Diagnostic(
                 "VYD002",
-                line_number(source, first.start() if first else 0),
+                line_number(source, first.start()),
                 "multiple named reentrancy locks found; 0.4.x uses a global lock",
             )
         )
@@ -897,10 +927,10 @@ def _nonreentrant(
             line_number(source, match.start()),
             "single named nonreentrant lock rewritten; review callback assumptions",
         )
-        for match in pattern.finditer(source)
+        for match in matches
     )
-
-    def repl(match: re.Match[str]) -> str:
+    edits: list[TextEdit] = []
+    for match in matches:
         fixes.append(
             Fix(
                 "VY090",
@@ -910,12 +940,16 @@ def _nonreentrant(
                 "@nonreentrant",
             )
         )
-        return "@nonreentrant"
+        edits.append(TextEdit(match.start(), match.end(), "@nonreentrant"))
 
-    current = pattern.sub(repl, source)
+    current = apply_edits(source, edits)
     current, internal_fixes = _remove_internal_nonreentrant(current)
     fixes.extend(internal_fixes)
-    if "@nonreentrant" not in current:
+    current_mask = code_mask(current)
+    if not any(
+        span_is_code(current_mask, match.start(), match.end())
+        for match in re.finditer(r"@nonreentrant\b", current)
+    ):
         current, gap_fixes = _insert_nonreentrant_storage_gaps(current, len(counts))
         fixes.extend(gap_fixes)
     return current, fixes, diagnostics
@@ -968,6 +1002,7 @@ def _storage_gap_insert_offset(source: str) -> int | None:
         if not type_name.startswith(("constant(", "immutable("))
     }
     lines = source.splitlines(keepends=True)
+    mask = code_mask(source)
     offsets: list[int] = []
     cursor = 0
     for line in lines:
@@ -975,14 +1010,22 @@ def _storage_gap_insert_offset(source: str) -> int | None:
         cursor += len(line)
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped or line[:1].isspace():
+        if (
+            not stripped
+            or line[:1].isspace()
+            or not _line_match_starts_outside_string(source, mask, offsets[index])
+        ):
             continue
         match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", stripped)
         if match and match.group(1) in storage_names:
             return offsets[index]
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if not stripped or line[:1].isspace():
+        if (
+            not stripped
+            or line[:1].isspace()
+            or not _line_match_starts_outside_string(source, mask, offsets[index])
+        ):
             continue
         if stripped.startswith("@") or re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
             return offsets[index]
