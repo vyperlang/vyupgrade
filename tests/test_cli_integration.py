@@ -221,6 +221,151 @@ mixed_values: DynArray[DynArray[uint256, 3][3], 3][5]
     }
 
 
+def test_real_legacy_flag_layout_matches_modern_layout(tmp_path: Path) -> None:
+    contract = tmp_path / "flag_storage.vy"
+    source = """#pragma version 0.4.0
+flag Permission:
+    READ
+    WRITE
+
+permission: Permission
+permissions: HashMap[address, Permission]
+"""
+    target = source.replace("#pragma version 0.4.0", "#pragma version 0.4.3")
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.0")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert source_compile.artifacts is not None
+    assert target_compile.artifacts is not None
+    source_layout = source_compile.artifacts["layout"]
+    target_layout = target_compile.artifacts["layout"]
+    assert isinstance(source_layout, dict)
+    assert isinstance(target_layout, dict)
+    source_storage = source_layout["storage_layout"]
+    target_storage = target_layout["storage_layout"]
+    assert isinstance(source_storage, dict)
+    assert isinstance(target_storage, dict)
+    assert source_storage["permission"] == {
+        "slot": 0,
+        "type": "flag Permission('READ','WRITE')",
+        "n_slots": 1,
+    }
+    assert target_storage["permission"] == {
+        "slot": 0,
+        "type": "Permission",
+        "n_slots": 1,
+    }
+
+
+def test_real_inline_interface_marker_omission_uses_target_ast(tmp_path: Path) -> None:
+    contract = tmp_path / "interface_storage.vy"
+    source = """#pragma version 0.4.0
+interface Pool:
+    def ping() -> uint256: view
+
+pool: Pool
+pools: HashMap[address, Pool]
+"""
+    target = source.replace("#pragma version 0.4.0", "#pragma version 0.4.3")
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.0")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert target_compile.artifacts is not None
+    assert target_compile.artifacts["ast"]["ast"]["ast_type"] == "Module"
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+
+
+def test_real_interface_marker_does_not_alias_one_slot_struct(tmp_path: Path) -> None:
+    contract = tmp_path / "interface_to_struct.vy"
+    source = """#pragma version 0.4.0
+interface Pool:
+    def ping() -> uint256: view
+
+pool: Pool
+pools: HashMap[address, Pool]
+"""
+    target = """#pragma version 0.4.3
+struct Pool:
+    value: uint256
+
+pool: Pool
+pools: HashMap[address, Pool]
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.0")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert compare_artifacts(source_compile, target_compile) == (True, True, False)
+    storage_diff = compare_artifact_details(source_compile, target_compile)[2]
+    assert len(storage_diff) == 2
+    assert any("changed storage: pool " in line for line in storage_diff)
+    assert any("changed storage: pools " in line for line in storage_diff)
+
+
+def test_real_root_interface_does_not_prove_imported_struct_annotation(
+    tmp_path: Path,
+) -> None:
+    child = tmp_path / "child.vy"
+    child.write_text(
+        """#pragma version 0.4.3
+struct Pool:
+    value: uint256
+""",
+        encoding="utf-8",
+    )
+    contract = tmp_path / "root.vy"
+    source = """#pragma version 0.4.0
+interface Pool:
+    def ping() -> uint256: view
+
+item: Pool
+items: HashMap[address, Pool]
+"""
+    target = """#pragma version 0.4.3
+interface Pool:
+    def ping() -> uint256: view
+
+import child
+
+item: child.Pool
+items: HashMap[address, child.Pool]
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(
+        paths=(contract,),
+        target_version="0.4.3",
+        compiler_search_paths=(tmp_path,),
+    )
+
+    source_compile = compile_source_file(contract, config, "0.4.0")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert compare_artifacts(source_compile, target_compile) == (True, True, False)
+    storage_diff = compare_artifact_details(source_compile, target_compile)[2]
+    assert len(storage_diff) == 2
+    assert any("changed storage: item " in line for line in storage_diff)
+    assert any("changed storage: items " in line for line in storage_diff)
+
+
 @pytest.mark.parametrize("struct_name", ["IFoo", "ERC20"])
 def test_real_interface_named_struct_keeps_two_slot_width(
     tmp_path: Path,

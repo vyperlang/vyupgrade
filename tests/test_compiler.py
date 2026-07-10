@@ -23,6 +23,9 @@ from vyupgrade.compiler import (
 from vyupgrade.models import Config
 
 
+TARGET_COMPILER_OUTPUT = '[]\n{}\n{}\n{"ast_type":"Module","body":[]}\n'
+
+
 @pytest.fixture(autouse=True)
 def clear_uv_bin_cache():
     _uv_bin.cache_clear()
@@ -131,8 +134,72 @@ def test_target_compile_fails_on_unsupported_required_layout(monkeypatch) -> Non
     assert result.status == "failed"
     assert result.unavailable_formats == ("layout",)
     assert "required output format 'layout'" in (result.stderr or "")
-    assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout"
+    assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout,ast"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "ast_error",
+    [
+        "KeyError: 'ast'",
+        "ValueError: start (57,7) precedes previous end (58,0)",
+    ],
+)
+def test_target_compile_falls_back_when_optional_ast_is_unavailable(
+    monkeypatch,
+    ast_error: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        requested = command[command.index("-f") + 1]
+        if requested.endswith(",ast"):
+            return subprocess.CompletedProcess(command, 1, "", ast_error)
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
+
+    assert result.status == "passed"
+    assert result.artifacts == {"abi": [], "method_identifiers": {}, "layout": {}}
+    assert result.unavailable_formats == ("ast",)
+    assert [call[call.index("-f") + 1] for call in calls] == [
+        "abi,method_identifiers,layout,ast",
+        "abi,method_identifiers,layout",
+    ]
+
+
+@pytest.mark.parametrize(
+    "required_error",
+    [
+        "ValueError: Unsupported format type 'layout'",
+        "ValueError: start (57,7) precedes previous end (58,0)",
+    ],
+)
+def test_target_compile_does_not_drop_required_formats_after_ast_fallback(
+    monkeypatch,
+    required_error: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        requested = command[command.index("-f") + 1]
+        error = "KeyError: 'ast'" if requested.endswith(",ast") else required_error
+        return subprocess.CompletedProcess(command, 1, "", error)
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
+
+    assert result.status == "failed"
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -278,7 +345,7 @@ def test_target_compile_fails_when_compiler_omits_requested_output(monkeypatch) 
     )
 
     assert result.status == "failed"
-    assert result.stderr == "could not parse compiler output: expected 3 compiler outputs, received 2"
+    assert result.stderr == "could not parse compiler output: expected 4 compiler outputs, received 2"
 
 
 def test_compile_installs_declared_vyper_import_dependencies(monkeypatch, tmp_path) -> None:
@@ -303,7 +370,7 @@ snekmate = "0.1.2"
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -336,7 +403,7 @@ def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_p
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -366,7 +433,7 @@ snekmate = "0.1.2"
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -398,7 +465,7 @@ def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -450,7 +517,7 @@ curve-std = {git = "https://github.com/curvefi/curve-std.git", rev = "09ad21756c
                 stdout="",
                 stderr="vyper.exceptions.ModuleNotFound: curve_std.stableswap.lp_oracle_2",
             )
-        return subprocess.CompletedProcess(command, 0, stdout="[]\n{}\n{}\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout=TARGET_COMPILER_OUTPUT, stderr="")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -474,7 +541,7 @@ def test_compile_installs_common_import_dependency_without_pyproject(monkeypatch
 
     def fake_run(command, **_kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="[]\n{}\n{}\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout=TARGET_COMPILER_OUTPUT, stderr="")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -2348,6 +2415,321 @@ def test_compare_artifacts_infers_explicit_legacy_interface_width() -> None:
 
 
 @pytest.mark.parametrize(
+    (
+        "source_type",
+        "target_type",
+        "target_n_slots",
+        "interface_names",
+        "target_annotation",
+    ),
+    [
+        (
+            "interface Pool",
+            "Pool",
+            1,
+            ("Pool",),
+            {"ast_type": "Name", "id": "Pool"},
+        ),
+        (
+            "HashMap[address, interface Pool]",
+            "HashMap[address, Pool]",
+            None,
+            ("Pool",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "HashMap"},
+                "slice": {
+                    "ast_type": "Tuple",
+                    "elements": [
+                        {"ast_type": "Name", "id": "address"},
+                        {"ast_type": "Name", "id": "Pool"},
+                    ],
+                },
+            },
+        ),
+        (
+            "DynArray[interface Pool, 8]",
+            "DynArray[Pool, 8]",
+            9,
+            ("Pool",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "DynArray"},
+                "slice": {
+                    "ast_type": "Tuple",
+                    "elements": [
+                        {"ast_type": "Name", "id": "Pool"},
+                        {"ast_type": "Int", "value": 8},
+                    ],
+                },
+            },
+        ),
+        (
+            "interface Pool[3]",
+            "Pool[3]",
+            3,
+            ("Pool",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "Pool"},
+                "slice": {"ast_type": "Int", "value": 3},
+            },
+        ),
+        (
+            "HashMap[interface IERC20, interface AuctionZap]",
+            "HashMap[interface IERC20, AuctionZap]",
+            None,
+            ("AuctionZap",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "HashMap"},
+                "slice": {
+                    "ast_type": "Tuple",
+                    "elements": [
+                        {"ast_type": "Name", "id": "IERC20"},
+                        {"ast_type": "Name", "id": "AuctionZap"},
+                    ],
+                },
+            },
+        ),
+    ],
+)
+def test_compare_artifacts_accepts_pairwise_interface_marker_omission(
+    source_type: str,
+    target_type: str,
+    target_n_slots: int | None,
+    interface_names: tuple[str, ...],
+    target_annotation: dict[str, object],
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": source_type}}},
+    )
+    target_entry: dict[str, object] = {"slot": 0, "type": target_type}
+    if target_n_slots is not None:
+        target_entry["n_slots"] = target_n_slots
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"storage_layout": {"value": target_entry}},
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    *(
+                        {"ast_type": "InterfaceDef", "name": name}
+                        for name in interface_names
+                    ),
+                    {
+                        "ast_type": "VariableDecl",
+                        "target": {"ast_type": "Name", "id": "value"},
+                        "annotation": target_annotation,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifact_details(source, target)[2] == []
+
+
+@pytest.mark.parametrize(
+    "target_body",
+    [
+        [],
+        [{"ast_type": "StructDef", "name": "Pool"}],
+        [
+            {
+                "ast_type": "FunctionDef",
+                "name": "unrelated",
+                "body": [{"ast_type": "InterfaceDef", "name": "Pool"}],
+            }
+        ],
+    ],
+)
+def test_compare_artifacts_requires_top_level_target_interface_evidence(
+    target_body: list[dict[str, object]],
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "value": {
+                    "slot": 0,
+                    "type": "HashMap[address, interface Pool]",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "value": {"slot": 0, "type": "HashMap[address, Pool]"}
+                }
+            },
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    *target_body,
+                    {
+                        "ast_type": "VariableDecl",
+                        "target": {"ast_type": "Name", "id": "value"},
+                        "annotation": {
+                            "ast_type": "Subscript",
+                            "value": {"ast_type": "Name", "id": "HashMap"},
+                            "slice": {
+                                "ast_type": "Tuple",
+                                "elements": [
+                                    {"ast_type": "Name", "id": "address"},
+                                    {"ast_type": "Name", "id": "Pool"},
+                                ],
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+@pytest.mark.parametrize(
+    "target_ast",
+    [
+        None,
+        [],
+        {},
+        {"ast_type": "Module", "body": "invalid"},
+        {"ast": {"ast_type": "StructDef", "body": []}},
+    ],
+)
+def test_compare_artifacts_rejects_missing_or_malformed_target_ast(
+    target_ast: object,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "value": {
+                    "slot": 0,
+                    "type": "HashMap[address, interface Pool]",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "value": {"slot": 0, "type": "HashMap[address, Pool]"}
+                }
+            },
+            "ast": target_ast,
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+def test_compare_artifacts_does_not_apply_root_evidence_to_nested_layout_key() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "child": {
+                        "values": {
+                            "slot": 0,
+                            "type": "HashMap[address, interface Pool]",
+                        }
+                    }
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "child": {
+                        "values": {
+                            "slot": 0,
+                            "type": "HashMap[address, Pool]",
+                        }
+                    }
+                }
+            },
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    {"ast_type": "InterfaceDef", "name": "Pool"},
+                    {
+                        "ast_type": "VariableDecl",
+                        "target": {"ast_type": "Name", "id": "values"},
+                        "annotation": {
+                            "ast_type": "Subscript",
+                            "value": {"ast_type": "Name", "id": "HashMap"},
+                            "slice": {
+                                "ast_type": "Tuple",
+                                "elements": [
+                                    {"ast_type": "Name", "id": "address"},
+                                    {"ast_type": "Name", "id": "Pool"},
+                                ],
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+@pytest.mark.parametrize(
+    ("source_type", "target_type", "target_n_slots"),
+    [
+        ("interface IERC20", "ERC20", 1),
+        ("interface Pool", "Pool", 2),
+        (
+            "HashMap[interface Foo, Bar]",
+            "HashMap[Foo, interface Bar]",
+            None,
+        ),
+        (
+            "HashMap[address, Pool]",
+            "HashMap[address, interface Pool]",
+            None,
+        ),
+    ],
+)
+def test_compare_artifacts_rejects_interface_marker_aliases_and_width_changes(
+    source_type: str,
+    target_type: str,
+    target_n_slots: int | None,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": source_type}}},
+    )
+    target_entry: dict[str, object] = {"slot": 0, "type": target_type}
+    if target_n_slots is not None:
+        target_entry["n_slots"] = target_n_slots
+    target = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {"value": target_entry}}},
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2]
+
+
+@pytest.mark.parametrize(
     "source_type",
     [
         "/tmp/site-packages/vyper/builtins/interfaces/IERC20.vyi[3]",
@@ -2946,9 +3328,19 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
                         "slot": 16,
                         "type": "HashMap[ERC20, enum Epoch('SLEEP','COLLECT','EXCHANGE','FORWARD')]",
                     },
-                    "get_gauge": {
+                    "permission": {
                         "location": "storage",
                         "slot": 17,
+                        "type": "flag Permission('READ','WRITE')",
+                    },
+                    "permissions": {
+                        "location": "storage",
+                        "slot": 18,
+                        "type": "HashMap[address, flag Permission('READ','WRITE')]",
+                    },
+                    "get_gauge": {
+                        "location": "storage",
+                        "slot": 19,
                         "type": "address[115792089237316195423570985008687907853269984665640564039457584007913129639935]",
                     },
                 }
@@ -2964,8 +3356,16 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
                         "slot": 16,
                         "type": "HashMap[ERC20, Epoch]",
                     },
-                    "get_gauge": {
+                    "permission": {
                         "slot": 17,
+                        "type": "Permission",
+                    },
+                    "permissions": {
+                        "slot": 18,
+                        "type": "HashMap[address, Permission]",
+                    },
+                    "get_gauge": {
+                        "slot": 19,
                         "type": "HashMap[uint256, address]",
                     },
                 }

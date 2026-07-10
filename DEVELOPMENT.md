@@ -106,9 +106,14 @@ span); and bounded `Bytes`/`String` values (one length slot plus the rounded-up
 byte capacity). Interfaces count as one slot only when the raw compiler type
 spells `interface Name` or contains a grammar-delimited `.vyi` basename. Naming
 convention and familiar built-in names are not evidence: `IFoo` and `ERC20` may
-both be multi-slot structs. Canonicalization retains that interface marker, so
-an explicit `interface Foo` does not compare equal to a struct named `Foo`; no
-`IERC*`/`ERC*` spelling aliases are applied. Extensionless and `.vy` paths are
+both be multi-slot structs. Canonicalization retains that interface marker.
+Pairwise comparison may ignore a source marker omitted by the target compiler
+only when the target compiler AST proves that the same top-level storage
+variable annotation resolves that exact grammar path and name to a direct-root
+`InterfaceDef`. Missing or malformed AST, imported attributes, and flattened
+nested-module keys fail closed. The recursive type grammar, identifiers, slots,
+and widths must also match, so structs remain distinct. No `IERC*`/`ERC*`
+spelling aliases are applied. Extensionless and `.vy` paths are
 preserved in full and remain width-unknown because neither suffix proves an
 interface. A bare user-defined type does not carry enough information to infer
 a width. Such an unknown width never matches a width supplied on only one side;
