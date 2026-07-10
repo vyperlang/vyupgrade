@@ -17,6 +17,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
+REPORT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -171,6 +172,7 @@ class RunReport:
 
     def to_json_obj(self) -> dict[str, Any]:
         return {
+            "schema_version": REPORT_SCHEMA_VERSION,
             "source_version": self.source_version,
             "target_version": self.target_version,
             "write_requested": self.write_requested,

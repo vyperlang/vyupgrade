@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from vyupgrade import cli
-from vyupgrade.cli import _add_validation_diagnostics, _evm_default_diagnostic, _write_diff, main
+from vyupgrade import cli, engine
+from vyupgrade.cli import _write_diff, main
 from vyupgrade.compiler import CompileResult
+from vyupgrade.engine import _add_validation_diagnostics, _evm_default_diagnostic
 from vyupgrade.models import Config, Diagnostic, FileReport
 
 
@@ -37,8 +38,8 @@ def passing_compiler(monkeypatch):
     ) -> CompileResult:
         return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
-    monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
-    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(engine, "compile_source_file", compile_source_file)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
     return None
 
 
@@ -52,7 +53,7 @@ def failing_target_compiler(monkeypatch, passing_compiler):
     ) -> CompileResult:
         return CompileResult("failed", stderr="target failed")
 
-    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
     return None
 
 
@@ -136,8 +137,8 @@ def f() -> uint256:
     ) -> CompileResult:
         return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
-    monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
-    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(engine, "compile_source_file", compile_source_file)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
 
     report = tmp_path / "report.json"
     code = main([str(contract), "--check", "--report-json", str(report)])
@@ -182,8 +183,8 @@ def f() -> uint256:
     ) -> CompileResult:
         return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
-    monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
-    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(engine, "compile_source_file", compile_source_file)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
 
     report = tmp_path / "report.json"
     code = main(
@@ -319,7 +320,7 @@ def test_formatter_runs_on_staged_candidates_and_final_bytes_are_revalidated(
     )
     report = tmp_path / "report.json"
     compiled: list[str] = []
-    original_apply_rules = cli.apply_rules
+    original_apply_rules = engine.apply_rules
 
     def apply_rules_with_diagnostic(source, config, path):
         result = original_apply_rules(source, config, path)
@@ -338,8 +339,8 @@ def test_formatter_runs_on_staged_candidates_and_final_bytes_are_revalidated(
         staged.write_text(staged.read_text(encoding="utf-8") + "# formatted\n", encoding="utf-8")
         return cli.subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(cli, "apply_rules", apply_rules_with_diagnostic)
-    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(engine, "apply_rules", apply_rules_with_diagnostic)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     code = main(
@@ -391,7 +392,7 @@ def test_formatter_output_that_fails_final_validation_is_not_committed(
         )
         return cli.subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target_source)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     code = main(
@@ -435,7 +436,7 @@ interface Token:
         )
         return cli.subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(cli, "compile_target_source", compile_target)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target)
     monkeypatch.setattr(cli.subprocess, "run", break_staged_interface)
 
     code = main(
@@ -611,7 +612,7 @@ def test_write_mode_does_not_write_when_source_compile_fails(
     contract.write_text(original, encoding="utf-8")
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult("failed", stderr="source failed"),
     )
@@ -635,7 +636,7 @@ def test_allow_unvalidated_source_waives_source_failure(
     )
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult("failed", stderr="source failed"),
     )
@@ -669,14 +670,14 @@ def test_patch_level_abi_mismatch_blocks_even_when_diagnostic_is_ignored(
     contract.write_text(original, encoding="utf-8")
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult(
             "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
         ),
     )
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_target_source",
         lambda *_args: CompileResult(
             "passed",
@@ -744,14 +745,14 @@ def test_artifact_change_waivers_are_narrow_and_reported(
     )
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult(
             "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
         ),
     )
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_target_source",
         lambda *_args: CompileResult("passed", artifacts=target_artifacts),
     )
@@ -782,14 +783,14 @@ def test_artifact_waiver_does_not_cover_other_diff_classes(
     contract.write_text(original, encoding="utf-8")
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult(
             "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
         ),
     )
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_target_source",
         lambda *_args: CompileResult(
             "passed",
@@ -831,7 +832,7 @@ def test_missing_source_artifact_blocks_without_source_waiver(
     contract.write_text(original, encoding="utf-8")
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult(
             "degraded",
@@ -857,7 +858,7 @@ def test_optional_source_ast_unavailability_is_degraded_but_safe(
     )
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult(
             "degraded",
@@ -883,7 +884,7 @@ def test_missing_target_artifact_is_not_waived_by_source_or_diff_flags(
     contract.write_text(original, encoding="utf-8")
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_target_source",
         lambda *_args: CompileResult(
             "passed", artifacts={"abi": [], "method_identifiers": {}}
@@ -915,7 +916,7 @@ def test_malformed_target_artifacts_block_write(
     contract.write_text(original, encoding="utf-8")
     report = tmp_path / "report.json"
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_target_source",
         lambda *_args: CompileResult(
             "passed",
@@ -1011,7 +1012,7 @@ interface Token:
             return CompileResult("failed", stderr="generated interface failed")
         return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
-    monkeypatch.setattr(cli, "compile_target_source", fail_generated)
+    monkeypatch.setattr(engine, "compile_target_source", fail_generated)
 
     code = main(
         [
@@ -1116,9 +1117,11 @@ def balanceOf(owner: address) -> uint256: ...
 
     code = main(
         [
-            str(contract),
+            str(tmp_path),
             "--write",
             "--split-interfaces",
+            "--ignore",
+            "VY001,VYD005",
             "--report-json",
             str(report),
         ]
@@ -1127,11 +1130,15 @@ def balanceOf(owner: address) -> uint256: ...
     assert code == 0
     assert "import Token" in contract.read_text(encoding="utf-8")
     assert token.read_text(encoding="utf-8") == token_source
-    token_report = next(
+    token_reports = [
         item for item in json.loads(report.read_text())["files"] if item["path"] == str(token)
+    ]
+    assert len(token_reports) == 2
+    assert all(item["changed"] is False for item in token_reports)
+    assert all(
+        item["original_sha256"] == item["candidate_sha256"]
+        for item in token_reports
     )
-    assert token_report["changed"] is False
-    assert token_report["original_sha256"] == token_report["candidate_sha256"]
 
 
 def test_split_interfaces_respects_rule_ignore(tmp_path: Path, passing_compiler) -> None:
@@ -1211,7 +1218,7 @@ allow-unvalidated-source = true
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli,
+        engine,
         "compile_source_file",
         lambda *_args: CompileResult("failed", stderr="source failed"),
     )

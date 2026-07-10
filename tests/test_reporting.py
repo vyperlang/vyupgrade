@@ -49,6 +49,16 @@ def test_render_text_includes_compile_errors() -> None:
     assert 'Version specification "0.2.11" is not compatible' in text
 
 
+def test_json_report_declares_additive_schema_version() -> None:
+    report = RunReport(source_version=None, target_version="0.4.3", files=[])
+
+    data = report.to_json_obj()
+
+    assert data["schema_version"] == 1
+    assert data["files"] == []
+    assert data["target_version"] == "0.4.3"
+
+
 def test_render_text_hides_stderr_for_successful_compiles() -> None:
     file_report = FileReport(
         path=Path("ok.vy"),

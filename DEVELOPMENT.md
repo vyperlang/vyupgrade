@@ -45,9 +45,9 @@ The CLI flow is:
 
 1. `cli.main()` loads command-line and `[tool.vyupgrade]` config.
 2. `project.discover_files()` finds `.vy` and `.vyi` inputs.
-3. `cli._prepare_rewrites()` compiles each source under the inferred or provided
-   source compiler, stores the source AST when available, and calls
-   `rules.apply_rules()`.
+3. `engine.prepare_migrations()` compiles each source under the inferred or
+   provided source compiler, gives each file its own source AST-backed config,
+   and calls `rules.apply_rules()`.
 4. `rules.apply_rules()` constructs a `MigrationContext`, then runs the ordered
    rule pipeline from `RULES`.
 5. Optional interface splitting generates sibling `.vyi` files when
@@ -55,16 +55,16 @@ The CLI flow is:
 6. `write_plan.MigrationPlan` resolves every destination, rejects duplicate
    generated outputs and pre-existing generated-file collisions, and records
    original and candidate SHA-256 hashes.
-7. `cli._verify_rewrites()` builds a temporary target overlay, compiles migrated
-   sources under the target compiler, and compares ABI, method identifiers, and
-   storage layout.
-8. `validation.decide_run_validation()` turns compiler and artifact outcomes
-   into a typed, fail-closed write decision. Rule selection and diagnostic
-   version gating do not participate in this safety decision.
-9. Optional formatting runs only on temporary candidate files. The exact
+7. `engine.validate_migrations()` builds a temporary target overlay, directly
+   validates generated interfaces, compiles migrated sources under the target
+   compiler, compares ABI, method identifiers, and storage layout, and returns
+   the typed fail-closed decision from `validation.decide_run_validation()`.
+   Rule selection and diagnostic version gating do not participate in this
+   safety decision.
+8. Optional formatting runs only on temporary candidate files. The exact
    formatted bytes replace the candidates and pass through target validation
    again before writes are allowed.
-10. The write plan stages every destination and commits it as one rollback-aware
+9. The write plan stages every destination and commits it as one rollback-aware
     transaction only when validation passes or every blocker has an explicit
     waiver. A post-write test failure is reported and exits nonzero, but does not
     roll back the write or any external side effects from the test command.
@@ -80,6 +80,9 @@ is reported explicitly with final on-disk hashes instead of being described as c
 
 Important files:
 
+- `src/vyupgrade/engine.py` owns compiler-attempt selection, per-file AST-backed
+  rewrites, coherent target-overlay validation, artifact comparisons, and typed
+  validation decisions shared by the CLI and corpus smoke tool.
 - `src/vyupgrade/rules.py` defines rule order and `RULE_CHANGES`.
 - `src/vyupgrade/rule_registry.py` defines `Rule`, `RuleContext`, and gating.
 - `src/vyupgrade/rule_groups/` contains the actual migration rules.
@@ -93,6 +96,11 @@ Important files:
 - `src/vyupgrade/ast_facts.py` extracts facts from compiler AST output.
 - `docs/vyper-syntax-history.md` records source-visible upstream syntax changes.
 - `docs/migration-coverage.md` records this project's behavior for each change.
+
+JSON reports use the existing top-level envelope with `schema_version: 1`.
+Within schema 1, fields may be added but existing fields are not renamed,
+removed, or type-changed. A missing version identifies the legacy unversioned
+format; incompatible changes require a new schema version.
 
 ## Rule model
 
@@ -214,7 +222,10 @@ Use `--limit` for a quick sample and `--path` to focus on known regressions. The
 smoke command compiles source and target outputs, applies the same artifact
 comparisons as the CLI, and records rule, diagnostic, compile, and diff details.
 It writes an atomic checkpoint sidecar and resumes an ordered result prefix when
-the manifest, selected items, and target version still match the interrupted run.
+the manifest, selected items, target version, and smoke-result schema still match
+the interrupted run. Each result and summary declares `smoke_schema_version: 2`;
+the legacy unversioned rows are treated as schema 1 and are never mixed into a
+resumed schema 2 run.
 
 Corpus source directories and generated outputs live under `corpus/`, which is
 ignored by Git.

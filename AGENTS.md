@@ -13,7 +13,9 @@ feature, not an optional smoke check.
 ## Repository map
 
 - `src/vyupgrade/cli.py` — command-line orchestration, config loading, report
-  generation, write/diff/check behavior, and validation diagnostics.
+  generation, and write/diff/check behavior.
+- `src/vyupgrade/engine.py` — shared source compilation, AST-isolated rewrite,
+  target-overlay validation, artifact comparison, and typed validation policy.
 - `src/vyupgrade/rules.py` — ordered rule pipeline. New rule groups must be
   imported here and inserted at the correct stage.
 - `src/vyupgrade/rule_registry.py` — rule descriptors and version gating.
@@ -140,8 +142,8 @@ again before returning.
   structs, storage variables, function decorators, loop variables, and return
   types.
 - Use `config.source_ast` plus helpers in `ast_facts.py` when compiler spans or
-  parsed constants are needed. `cli._prepare_rewrites()` already populates the
-  AST from source compilation when available.
+  parsed constants are needed. `engine.prepare_migrations()` populates a
+  per-file AST-backed config from source compilation when available.
 - Prefer local helpers over hand-rolled parsing when splitting arguments,
   inserting imports, finding matching delimiters, or computing line numbers.
 - If a rewrite depends on mutability or return types of external calls, update
