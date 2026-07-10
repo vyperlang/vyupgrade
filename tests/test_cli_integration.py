@@ -179,6 +179,48 @@ pools: HashMap[address, uint256]
     }
 
 
+def test_real_compiler_nested_array_layouts_are_comparable(tmp_path: Path) -> None:
+    contract = tmp_path / "nested_storage_widths.vy"
+    source = """#pragma version 0.4.3
+from ethereum.ercs import IERC20
+
+tokens: IERC20[3]
+dynamic_values: DynArray[uint256, 3][3]
+mixed_values: DynArray[DynArray[uint256, 3][3], 3][5]
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.3")
+    target_compile = compile_target_source(contract, source, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, True)
+    assert target_compile.artifacts is not None
+    layout = target_compile.artifacts["layout"]
+    assert isinstance(layout, dict)
+    storage = layout["storage_layout"]
+    assert isinstance(storage, dict)
+    tokens = storage["tokens"]
+    dynamic_values = storage["dynamic_values"]
+    assert isinstance(tokens, dict)
+    assert isinstance(dynamic_values, dict)
+    assert str(tokens["type"]).endswith("IERC20.vyi[3]")
+    assert dynamic_values["type"] == "DynArray[uint256, 3][3]"
+    assert {
+        name: entry["n_slots"]
+        for name, entry in storage.items()
+        if isinstance(entry, dict)
+    } == {
+        "tokens": 3,
+        "dynamic_values": 12,
+        "mixed_values": 185,
+    }
+
+
 @pytest.mark.parametrize("struct_name", ["IFoo", "ERC20"])
 def test_real_interface_named_struct_keeps_two_slot_width(
     tmp_path: Path,

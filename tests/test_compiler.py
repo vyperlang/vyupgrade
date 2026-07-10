@@ -2296,6 +2296,8 @@ def test_layout_artifact_rejects_explicit_width_for_known_scalar() -> None:
         ("address[2][3]", 6),
         ("DynArray[uint256, 3]", 4),
         ("DynArray[uint256[2], 3]", 7),
+        ("DynArray[uint256, 3][3]", 12),
+        ("DynArray[DynArray[uint256, 3][3], 3][5]", 185),
         ("Bytes[64]", 3),
         ("String[32]", 2),
     ],
@@ -2342,6 +2344,40 @@ def test_compare_artifacts_infers_explicit_legacy_interface_width() -> None:
         },
     )
 
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    "source_type",
+    [
+        "/tmp/site-packages/vyper/builtins/interfaces/IERC20.vyi[3]",
+        "IERC20.vyi[3]",
+    ],
+)
+def test_compare_artifacts_infers_fixed_array_of_vyi_interface_width(
+    source_type: str,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"tokens": {"slot": 0, "type": source_type}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "tokens": {
+                        "slot": 0,
+                        "type": "interface IERC20[3]",
+                        "n_slots": 3,
+                    }
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
     assert compare_artifacts(source, target) == (None, None, True)
 
 

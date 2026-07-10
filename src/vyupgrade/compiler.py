@@ -40,11 +40,11 @@ GENERATED_REENTRANCY_GAP_RE = re.compile(
 )
 STORAGE_PATH_ATOM_RE = re.compile(
     r"(?P<path>(?:[^,\[\]\n]+[/\\])+)(?P<base>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?P<extension>\.vyi?)?(?=[ \t]*(?:$|[,\]\)]))"
+    r"(?P<extension>\.vyi?)?(?=[ \t]*(?:$|[,\[\]\)]))"
 )
 PLAIN_STORAGE_TYPE_FILE_RE = re.compile(
     r"(?P<base>[A-Za-z_][A-Za-z0-9_]*)(?P<extension>\.vyi?)"
-    r"(?=[ \t]*(?:$|[,\]\)]))"
+    r"(?=[ \t]*(?:$|[,\[\]\)]))"
 )
 COMMON_IMPORT_DEPENDENCIES = {
     "snekmate": "snekmate",
@@ -1378,6 +1378,20 @@ def _known_storage_width(
     if hashmap_args is not None:
         return 1 if len(hashmap_args) == 2 and all(hashmap_args) else 0
 
+    # Parse an outer fixed-array suffix before treating a leading DynArray as
+    # malformed.  Vyper emits types such as ``DynArray[uint256, 3][3]``.
+    fixed_array = re.fullmatch(r"(?P<element>.+)\[(?P<length>[0-9]+)\]", type_name)
+    if fixed_array is not None:
+        length = int(fixed_array.group("length"))
+        element_width = _known_storage_width(
+            fixed_array.group("element"),
+        )
+        if length <= 0 or element_width == 0:
+            return 0
+        if element_width is None:
+            return None
+        return _checked_storage_width(element_width * length)
+
     dynarray_args = _storage_generic_args(type_name, "DynArray")
     if dynarray_args is not None:
         if len(dynarray_args) != 2 or not dynarray_args[0]:
@@ -1395,17 +1409,6 @@ def _known_storage_width(
             return None
         return _checked_storage_width(1 + element_width * length)
 
-    fixed_array = re.fullmatch(r"(?P<element>.+)\[(?P<length>[0-9]+)\]", type_name)
-    if fixed_array is not None:
-        length = int(fixed_array.group("length"))
-        element_width = _known_storage_width(
-            fixed_array.group("element"),
-        )
-        if length <= 0 or element_width == 0:
-            return 0
-        if element_width is None:
-            return None
-        return _checked_storage_width(element_width * length)
     return None
 
 
@@ -1471,7 +1474,11 @@ def _normalize_storage_type_paths(type_name: str) -> tuple[str, bool]:
                 index += 1
             path_match = STORAGE_PATH_ATOM_RE.match(type_name, index)
             if path_match is not None:
-                if _path_match_has_ambiguous_comma_suffix(type_name, path_match.end()):
+                if _path_match_has_ambiguous_comma_suffix(
+                    type_name, path_match.end()
+                ) or _path_match_has_ambiguous_array_suffix(
+                    type_name, path_match.end()
+                ):
                     return type_name, False
                 output.append(_canonical_file_type_atom(path_match))
                 index = path_match.end()
@@ -1527,6 +1534,24 @@ def _path_match_has_ambiguous_comma_suffix(type_name: str, end: int) -> bool:
         else cursor + 1 + next_delimiter.start()
     )
     return any(separator in type_name[cursor + 1 : segment_end] for separator in "/\\")
+
+
+def _path_match_has_ambiguous_array_suffix(type_name: str, end: int) -> bool:
+    cursor = end
+    while cursor < len(type_name) and type_name[cursor] in " \t":
+        cursor += 1
+    if cursor >= len(type_name) or type_name[cursor] != "[":
+        return False
+    close_index = _matching_square_bracket(type_name, cursor)
+    if close_index is None:
+        return True
+    length = type_name[cursor + 1 : close_index].strip()
+    if not length.isdigit():
+        return True
+    next_index = close_index + 1
+    while next_index < len(type_name) and type_name[next_index] in " \t":
+        next_index += 1
+    return next_index < len(type_name) and type_name[next_index] in "/\\"
 
 
 def _valid_storage_type_delimiters(type_name: str) -> bool:
