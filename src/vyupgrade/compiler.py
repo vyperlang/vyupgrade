@@ -28,6 +28,7 @@ from .versions import (
 
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
+TARGET_FORMATS = (*FORMATS, "ast")
 COMPILE_TIMEOUT_SECONDS = 120
 UINT256_MAX_DECIMAL = str(2**256 - 1)
 UINT256_LIMIT = 2**256
@@ -98,6 +99,7 @@ class _StorageLayoutEntry:
 
 
 _CanonicalStorageValue = tuple[int, str, int | None]
+_StorageInterfaceMarker = tuple[tuple[int, ...], str]
 
 
 def unavailable_validation_artifacts(result: CompileResult) -> list[str]:
@@ -967,6 +969,9 @@ def compare_artifacts(
     target_abi = target.artifacts.get("abi")
     source_methods = source.artifacts.get("method_identifiers")
     target_methods = target.artifacts.get("method_identifiers")
+    target_interface_markers = _target_storage_interface_markers(
+        target.artifacts.get("ast")
+    )
     return (
         None
         if source_abi is None or target_abi is None
@@ -977,7 +982,11 @@ def compare_artifacts(
         == _canonical_method_identifiers(target_methods),
         None
         if source_layouts is None or target_layouts is None
-        else _storage_layouts_equal(*source_layouts, *target_layouts),
+        else _storage_layouts_equal(
+            *source_layouts,
+            *target_layouts,
+            target_interface_markers=target_interface_markers,
+        ),
     )
 
 
@@ -993,13 +1002,123 @@ def compare_artifact_details(
     target_methods = target.artifacts.get("method_identifiers")
     source_layouts = _canonical_storage_layouts(source.artifacts.get("layout"))
     target_layouts = _canonical_storage_layouts(target.artifacts.get("layout"))
+    target_interface_markers = _target_storage_interface_markers(
+        target.artifacts.get("ast")
+    )
     return (
         _abi_diff(source_abi, target_abi),
         _method_identifier_diff(source_methods, target_methods),
         []
         if source_layouts is None or target_layouts is None
-        else _storage_layout_diff(*source_layouts, *target_layouts),
+        else _storage_layout_diff(
+            *source_layouts,
+            *target_layouts,
+            target_interface_markers=target_interface_markers,
+        ),
     )
+
+
+def _target_storage_interface_markers(
+    ast: object,
+) -> dict[str, frozenset[_StorageInterfaceMarker]]:
+    if not isinstance(ast, dict):
+        return {}
+    root = ast.get("ast", ast)
+    if not isinstance(root, dict) or root.get("ast_type") != "Module":
+        return {}
+    body = root.get("body")
+    if not isinstance(body, list):
+        return {}
+    interface_names = frozenset(
+        name
+        for node in body
+        if isinstance(node, dict) and node.get("ast_type") == "InterfaceDef"
+        if isinstance(name := node.get("name"), str) and name
+    )
+    evidence: dict[str, frozenset[_StorageInterfaceMarker]] = {}
+    for node in body:
+        if not isinstance(node, dict) or node.get("ast_type") not in {
+            "VariableDecl",
+            "AnnAssign",
+        }:
+            continue
+        name = _ast_name(node.get("target"))
+        if name is None:
+            continue
+        markers = _target_annotation_interface_markers(
+            node.get("annotation"), interface_names
+        )
+        if markers:
+            evidence[name] = markers
+    return evidence
+
+
+def _target_annotation_interface_markers(
+    annotation: object,
+    interface_names: frozenset[str],
+) -> frozenset[_StorageInterfaceMarker]:
+    if not isinstance(annotation, dict):
+        return frozenset()
+    ast_type = annotation.get("ast_type")
+    if ast_type == "Name":
+        name = _ast_name(annotation)
+        if name in interface_names:
+            return frozenset({((), name)})
+        return frozenset()
+    if ast_type == "Call":
+        wrapper = _ast_name(annotation.get("func"))
+        args = annotation.get("args")
+        if wrapper not in {"constant", "immutable", "public", "transient"} or not isinstance(
+            args, list
+        ) or len(args) != 1:
+            return frozenset()
+        return _target_annotation_interface_markers(args[0], interface_names)
+    if ast_type != "Subscript":
+        return frozenset()
+
+    value = annotation.get("value")
+    generic = _ast_name(value)
+    args = _ast_subscript_args(annotation.get("slice"))
+    if generic in {"HashMap", "DynArray"}:
+        if len(args) != 2:
+            return frozenset()
+        markers: set[_StorageInterfaceMarker] = set()
+        for index, arg in enumerate(args):
+            markers.update(
+                ((index, *path), name)
+                for path, name in _target_annotation_interface_markers(
+                    arg, interface_names
+                )
+            )
+        return frozenset(markers)
+
+    return frozenset(
+        ((-1, *path), name)
+        for path, name in _target_annotation_interface_markers(
+            value, interface_names
+        )
+    )
+
+
+def _ast_name(node: object) -> str | None:
+    if not isinstance(node, dict) or node.get("ast_type") != "Name":
+        return None
+    name = node.get("id")
+    return name if isinstance(name, str) and name else None
+
+
+def _ast_subscript_args(slice_node: object) -> list[object]:
+    if not isinstance(slice_node, dict):
+        return []
+    if slice_node.get("ast_type") == "Index":
+        return _ast_subscript_args(slice_node.get("value"))
+    if slice_node.get("ast_type") == "Tuple":
+        for field in ("elements", "elts"):
+            values = slice_node.get(field)
+            if isinstance(values, list):
+                return values
+        return []
+    return [slice_node]
 
 
 def _target_validation_source(
@@ -1457,7 +1576,11 @@ def _canonical_storage_type(type_name: str) -> tuple[str, bool]:
         # stripping a suffix from the path.
         return original_type, False
     type_name = type_name.replace(" declaration object", "")
-    type_name = re.sub(r"\benum ([A-Za-z_][A-Za-z0-9_]*)\([^][]*\)", r"\1", type_name)
+    type_name = re.sub(
+        r"\b(?:enum|flag) ([A-Za-z_][A-Za-z0-9_]*)\([^][]*\)",
+        r"\1",
+        type_name,
+    )
     type_name = _canonical_max_value_arrays(type_name)
     type_name = _strip_legacy_hashmap_storage_suffixes(type_name)
     return type_name, True
@@ -1709,7 +1832,12 @@ def _storage_layout_diff(
     source_transient: dict[str, _CanonicalStorageValue],
     target: dict[str, _CanonicalStorageValue],
     target_transient: dict[str, _CanonicalStorageValue],
+    *,
+    target_interface_markers: Mapping[
+        str, frozenset[_StorageInterfaceMarker]
+    ] | None = None,
 ) -> list[str]:
+    interface_markers = target_interface_markers or {}
     moved_locks = _moved_nonreentrant_locks(
         source,
         target,
@@ -1739,7 +1867,11 @@ def _storage_layout_diff(
             ],
             skip_removed=moved_lock_names,
             skip_added=preserved_gap_names,
-            equivalent=_storage_values_equal,
+            equivalent=lambda key, source_value, target_value: _storage_values_equal(
+                source_value,
+                target_value,
+                target_interface_markers=interface_markers.get(key, frozenset()),
+            ),
         ),
         *_mapping_diff_lines(
             source_transient,
@@ -1752,7 +1884,11 @@ def _storage_layout_diff(
                 _changed_storage_line("transient storage", key, before, after)
             ],
             skip_added=moved_transient_names,
-            equivalent=_storage_values_equal,
+            equivalent=lambda key, source_value, target_value: _storage_values_equal(
+                source_value,
+                target_value,
+                target_interface_markers=interface_markers.get(key, frozenset()),
+            ),
         ),
     ]
 
@@ -1762,10 +1898,20 @@ def _storage_layouts_equal(
     source_transient: dict[str, _CanonicalStorageValue],
     target: dict[str, _CanonicalStorageValue],
     target_transient: dict[str, _CanonicalStorageValue],
+    *,
+    target_interface_markers: Mapping[
+        str, frozenset[_StorageInterfaceMarker]
+    ] | None = None,
 ) -> bool:
     return all(
         line.startswith("moved storage to transient: ")
-        for line in _storage_layout_diff(source, source_transient, target, target_transient)
+        for line in _storage_layout_diff(
+            source,
+            source_transient,
+            target,
+            target_transient,
+            target_interface_markers=target_interface_markers,
+        )
     )
 
 
@@ -1778,7 +1924,7 @@ def _mapping_diff_lines(
     changed: Callable[[str, object, object], list[str]],
     skip_removed: set[str] | None = None,
     skip_added: set[str] | None = None,
-    equivalent: Callable[[object, object], bool] | None = None,
+    equivalent: Callable[[str, object, object], bool] | None = None,
 ) -> list[str]:
     skip_removed = skip_removed or set()
     skip_added = skip_added or set()
@@ -1789,7 +1935,11 @@ def _mapping_diff_lines(
         added(key, target[key]) for key in sorted((target.keys() - source.keys()) - skip_added)
     )
     for key in sorted(source.keys() & target.keys()):
-        if not (equivalent(source[key], target[key]) if equivalent else source[key] == target[key]):
+        if not (
+            equivalent(key, source[key], target[key])
+            if equivalent
+            else source[key] == target[key]
+        ):
             lines.extend(changed(key, source[key], target[key]))
     return lines
 
@@ -1885,16 +2035,100 @@ def _known_single_slot(value: _CanonicalStorageValue) -> bool:
     return value[2] == 1
 
 
-def _storage_values_equal(source: object, target: object) -> bool:
+def _storage_values_equal(
+    source: object,
+    target: object,
+    *,
+    target_interface_markers: frozenset[_StorageInterfaceMarker] = frozenset(),
+) -> bool:
     if not isinstance(source, tuple) or not isinstance(target, tuple):
         return source == target
     source_slot, source_type, source_size = source
     target_slot, target_type, target_size = target
     return (
         source_slot == target_slot
-        and source_type == target_type
         and source_size == target_size
+        and _storage_types_equal(
+            source_type,
+            target_type,
+            target_interface_markers=target_interface_markers,
+        )
     )
+
+
+def _storage_types_equal(
+    source: str,
+    target: str,
+    *,
+    target_interface_markers: frozenset[_StorageInterfaceMarker],
+) -> bool:
+    if source == target:
+        return True
+    source_profile = _storage_interface_marker_profile(source)
+    target_profile = _storage_interface_marker_profile(target)
+    if source_profile is None or target_profile is None:
+        return False
+    source_shape, source_markers = source_profile
+    target_shape, target_markers = target_profile
+    omitted_markers = source_markers - target_markers
+    return (
+        source_shape == target_shape
+        and target_markers < source_markers
+        and omitted_markers <= target_interface_markers
+    )
+
+
+def _storage_interface_marker_profile(
+    type_name: str,
+) -> tuple[object, frozenset[_StorageInterfaceMarker]] | None:
+    type_name = type_name.strip()
+
+    hashmap_args = _storage_generic_args(type_name, "HashMap")
+    if hashmap_args is not None:
+        return _storage_generic_marker_profile("HashMap", hashmap_args, expected_args=2)
+
+    fixed_array = re.fullmatch(r"(?P<element>.+)\[(?P<length>[0-9]+)\]", type_name)
+    if fixed_array is not None:
+        element = _storage_interface_marker_profile(fixed_array.group("element"))
+        if element is None:
+            return None
+        shape, markers = element
+        return (
+            ("array", shape, int(fixed_array.group("length"))),
+            frozenset({((-1, *path), name) for path, name in markers}),
+        )
+
+    dynarray_args = _storage_generic_args(type_name, "DynArray")
+    if dynarray_args is not None:
+        return _storage_generic_marker_profile("DynArray", dynarray_args, expected_args=2)
+
+    interface = re.fullmatch(
+        r"interface\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)", type_name
+    )
+    if interface is not None:
+        name = interface.group("name")
+        return ("atom", name), frozenset({((), name)})
+    return ("atom", type_name), frozenset()
+
+
+def _storage_generic_marker_profile(
+    generic: str,
+    args: list[str],
+    *,
+    expected_args: int,
+) -> tuple[object, frozenset[_StorageInterfaceMarker]] | None:
+    if len(args) != expected_args or not all(args):
+        return None
+    shapes: list[object] = []
+    markers: set[_StorageInterfaceMarker] = set()
+    for index, arg in enumerate(args):
+        profile = _storage_interface_marker_profile(arg)
+        if profile is None:
+            return None
+        shape, arg_markers = profile
+        shapes.append(shape)
+        markers.update(((index, *path), name) for path, name in arg_markers)
+    return ("generic", generic, tuple(shapes)), frozenset(markers)
 
 
 def _changed_storage_line(
@@ -2029,7 +2263,15 @@ def _run_compile(
     extra_paths: tuple[Path, ...] = (),
     suppress_warnings: bool = False,
 ) -> CompileResult:
-    return _run_compile_with_formats(command, path, config, FORMATS, extra_paths, suppress_warnings)
+    return _run_compile_with_formats(
+        command,
+        path,
+        config,
+        TARGET_FORMATS,
+        extra_paths,
+        suppress_warnings,
+        optional_formats=frozenset({"ast"}),
+    )
 
 
 def _run_compile_with_formats(
@@ -2042,6 +2284,7 @@ def _run_compile_with_formats(
     *,
     allow_unsupported_formats: bool = False,
     unavailable_formats: tuple[str, ...] = (),
+    optional_formats: frozenset[str] = frozenset(),
 ) -> CompileResult:
     full = [*_with_project_import_dependencies(command, path), "-f", ",".join(formats)]
     if _supports_search_paths(command):
@@ -2071,7 +2314,7 @@ def _run_compile_with_formats(
         unsupported = _unsupported_output_format(stderr, formats)
         if unsupported is not None:
             unavailable = tuple(dict.fromkeys((*unavailable_formats, unsupported)))
-            if not allow_unsupported_formats:
+            if not allow_unsupported_formats and unsupported not in optional_formats:
                 return CompileResult(
                     "failed",
                     stderr=f"target compiler did not support required output format '{unsupported}': {stderr}",
@@ -2093,12 +2336,17 @@ def _run_compile_with_formats(
                 fallback_formats,
                 extra_paths,
                 suppress_warnings,
-                allow_unsupported_formats=True,
+                allow_unsupported_formats=allow_unsupported_formats,
                 unavailable_formats=unavailable,
+                optional_formats=optional_formats,
             )
-        span_error_format = (
-            _legacy_span_error_format(stderr, formats) if allow_unsupported_formats else None
-        )
+        span_error_format = _legacy_span_error_format(stderr, formats)
+        if (
+            span_error_format is not None
+            and not allow_unsupported_formats
+            and span_error_format not in optional_formats
+        ):
+            span_error_format = None
         if span_error_format is not None:
             unavailable = tuple(
                 dict.fromkeys((*unavailable_formats, span_error_format))
@@ -2118,8 +2366,9 @@ def _run_compile_with_formats(
                 fallback_formats,
                 extra_paths,
                 suppress_warnings,
-                allow_unsupported_formats=True,
+                allow_unsupported_formats=allow_unsupported_formats,
                 unavailable_formats=unavailable,
+                optional_formats=optional_formats,
             )
         retry_command = _command_with_missing_module_dependency(command, path, stderr)
         if retry_command is not None:
@@ -2132,6 +2381,7 @@ def _run_compile_with_formats(
                 suppress_warnings,
                 allow_unsupported_formats=allow_unsupported_formats,
                 unavailable_formats=unavailable_formats,
+                optional_formats=optional_formats,
             )
         return CompileResult(
             "failed",
@@ -2149,7 +2399,9 @@ def _run_compile_with_formats(
             unavailable_formats=unavailable_formats,
         )
     return CompileResult(
-        "degraded" if unavailable_formats else "passed",
+        "degraded"
+        if any(name not in optional_formats for name in unavailable_formats)
+        else "passed",
         artifacts=artifacts,
         stderr=proc.stderr.strip() or None,
         command=full,
