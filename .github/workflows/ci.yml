@@ -19,6 +19,6 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
-      - run: uv run --locked ruff check src tests scripts/corpus.py
+      - run: uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py scripts/release_preflight.py
       - run: uv run --locked pytest
       - run: scripts/smoke-wheel.sh

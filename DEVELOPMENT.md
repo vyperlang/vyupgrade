@@ -22,7 +22,7 @@ requirements in `pyproject.toml`.
 Run the main validation suite before publishing changes:
 
 ```bash
-uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py
+uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py scripts/release_preflight.py
 uv run --locked pytest
 scripts/smoke-wheel.sh
 ```
@@ -195,6 +195,8 @@ uv run --locked python scripts/corpus.py smoke \
 Use `--limit` for a quick sample and `--path` to focus on known regressions. The
 smoke command compiles source and target outputs, applies the same artifact
 comparisons as the CLI, and records rule, diagnostic, compile, and diff details.
+It writes an atomic checkpoint sidecar and resumes an ordered result prefix when
+the manifest, selected items, and target version still match the interrupted run.
 
 Corpus source directories and generated outputs live under `corpus/`, which is
 ignored by Git.
@@ -202,8 +204,9 @@ ignored by Git.
 ## Release process
 
 Publishing uses GitHub Actions and PyPI Trusted Publishing. The publish workflow
-runs on `v*` tags, builds the package, publishes to PyPI, and creates or updates
-the GitHub release using notes extracted from `CHANGELOG.md`.
+runs on `v*` tags, builds the package, verifies the tag, project and lockfile
+versions, changelog notes, and distribution metadata before publishing to PyPI,
+then creates or updates the GitHub release with the preflighted notes.
 
 Before tagging:
 
@@ -213,9 +216,10 @@ Before tagging:
 3. Run:
 
    ```bash
-   uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py
+   uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py scripts/release_preflight.py
    uv run --locked pytest
    scripts/smoke-wheel.sh
+   uv run --locked python scripts/release_preflight.py v0.4.2 --dist dist
    ```
 
 4. Tag and push:

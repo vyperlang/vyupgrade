@@ -41,7 +41,7 @@ feature, not an optional smoke check.
 Use the locked environment unless intentionally updating dependencies.
 
 ```bash
-uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py
+uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py scripts/release_preflight.py
 uv run --locked pytest
 scripts/smoke-wheel.sh
 ```

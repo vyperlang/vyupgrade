@@ -6,11 +6,14 @@ import concurrent.futures as cf
 import csv
 import hashlib
 import json
+import os
 import re
+import stat
 import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
@@ -38,6 +41,15 @@ from vyupgrade.versions import (
 
 DEFAULT_ROOTS = (Path("~/dev").expanduser(), Path("~/yearn").expanduser())
 DEFAULT_OUTPUT = Path("corpus/vyper")
+CORPUS_MANIFESTS = {
+    "build": "manifest.json",
+    "codeslaw": "codeslaw-manifest.json",
+    "codeslaw-buckets": "codeslaw-buckets-manifest.json",
+    "old-vyper-bug": "old-vyper-bug-manifest.json",
+    "smart-contract-fiesta": "smart-contract-fiesta-manifest.json",
+    "vyper-2026": "vyper-2026-manifest.json",
+    "chainsecurity": "chainsecurity-manifest.json",
+}
 CODESLAW_CHAINS = (
     "ethereum",
     "arbitrum",
@@ -261,7 +273,7 @@ def build_corpus(roots: tuple[Path, ...], output: Path, max_per_repo: int = 0) -
             if compiler is not None:
                 by_compiler[compiler] += 1
 
-    manifest_path = output / "manifest.json"
+    manifest_path = _corpus_manifest_path(output, "build")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [str(root.expanduser()) for root in roots],
@@ -347,7 +359,7 @@ def import_old_vyper_bug(source: Path, output: Path) -> dict[str, Any]:
             if source_path not in seen_sources:
                 counts["unreferenced_source"] += 1
 
-    manifest_path = output / "old-vyper-bug-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "old-vyper-bug")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [str(root)],
@@ -422,7 +434,7 @@ def import_smart_contract_fiesta(source: Path, output: Path) -> dict[str, Any]:
             by_repo[corpus_repo] += 1
             by_compiler[compiler] += 1
 
-    manifest_path = output / "smart-contract-fiesta-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "smart-contract-fiesta")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [str(root)],
@@ -547,7 +559,7 @@ def import_vyper_2026(source: Path, output: Path) -> dict[str, Any]:
             by_repo[corpus_repo] += 1
             by_compiler[compiler] += 1
 
-    manifest_path = output / "vyper-2026-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "vyper-2026")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [str(root)],
@@ -648,7 +660,7 @@ def _import_vyper_2026_inventory(source: Path, inventory_dir: Path, output: Path
 
         counts[f"source_catalog.parquet:unsupported_source_format:{source_format}"] += 1
 
-    manifest_path = output / "vyper-2026-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "vyper-2026")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [str(source)],
@@ -1070,7 +1082,7 @@ def import_chainsecurity(source: Path, output: Path) -> dict[str, Any]:
         if compiler is not None:
             by_compiler[compiler] += 1
 
-    manifest_path = output / "chainsecurity-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "chainsecurity")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [str(root)],
@@ -1087,16 +1099,9 @@ def dedupe_manifests(manifest_paths: list[Path] | None, output_path: Path) -> di
     if manifest_paths is None:
         corpus_root = output_path.parent
         manifest_paths = [
-            corpus_root / name
-            for name in (
-                "manifest.json",
-                "codeslaw-manifest.json",
-                "codeslaw-buckets-manifest.json",
-                "old-vyper-bug-manifest.json",
-                "smart-contract-fiesta-manifest.json",
-                "vyper-2026-manifest.json",
-            )
-            if (corpus_root / name).exists()
+            path
+            for name in CORPUS_MANIFESTS
+            if (path := _corpus_manifest_path(corpus_root, name)).exists()
         ]
 
     counts: Counter[str] = Counter()
@@ -1171,7 +1176,7 @@ def fetch_codeslaw(chain: str, query: str, sort: str, limit: int, output: Path) 
         matches, contracts_dir, counts, by_repo, by_compiler, items, seen_addresses
     )
 
-    manifest_path = output / "codeslaw-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "codeslaw")
     manifest = {
         "manifest": str(manifest_path),
         "roots": [search_url],
@@ -1227,7 +1232,7 @@ def fetch_codeslaw_buckets(chains: tuple[str, ...], output: Path) -> dict[str, A
                 matches, contracts_dir, counts, by_repo, by_compiler, items, seen_addresses
             )
 
-    manifest_path = output / "codeslaw-buckets-manifest.json"
+    manifest_path = _corpus_manifest_path(output, "codeslaw-buckets")
     manifest = {
         "manifest": str(manifest_path),
         "roots": roots,
@@ -1318,18 +1323,35 @@ def smoke_corpus(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     items = _smoke_items(manifest["items"], paths, limit)
     started = time.time()
-    results: list[dict[str, Any]] = []
-    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_smoke_one, item, target_version) for item in items]
-        for index, future in enumerate(cf.as_completed(futures), 1):
-            results.append(future.result())
-            if index % 50 == 0:
-                output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-                print(f"progress {index}/{len(items)}", flush=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    summary = _smoke_summary(results, manifest_path, output_path, time.time() - started)
-    _summary_path(output_path).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    identity = _smoke_run_identity(manifest_path, target_version, items)
+    resumed_results = _load_smoke_checkpoint(output_path, identity, items)
+    results: list[dict[str, Any] | None] = [None] * len(items)
+    results[: len(resumed_results)] = resumed_results
+    completed_prefix = len(resumed_results)
+    next_checkpoint = (completed_prefix // 50 + 1) * 50
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_smoke_one, item, target_version): index
+            for index, item in enumerate(items[completed_prefix:], completed_prefix)
+        }
+        for future in cf.as_completed(futures):
+            results[futures[future]] = future.result()
+            while completed_prefix < len(results) and results[completed_prefix] is not None:
+                completed_prefix += 1
+            if completed_prefix >= next_checkpoint:
+                checkpoint = completed_prefix // 50 * 50
+                _write_smoke_checkpoint(
+                    output_path,
+                    [result for result in results[:checkpoint] if result is not None],
+                    identity,
+                )
+                print(f"progress {checkpoint}/{len(items)}", flush=True)
+                next_checkpoint = checkpoint + 50
+    ordered_results = [result for result in results if result is not None]
+    _write_smoke_checkpoint(output_path, ordered_results, identity)
+    summary = _smoke_summary(ordered_results, manifest_path, output_path, time.time() - started)
+    _atomic_write_json(_summary_path(output_path), summary)
     return summary
 
 
@@ -1496,6 +1518,116 @@ def _summary_path(results_path: Path) -> Path:
     if results_path.name.endswith("-results.json"):
         return results_path.with_name(f"{results_path.name[: -len('-results.json')]}-summary.json")
     return results_path.with_name(f"{results_path.stem}-summary.json")
+
+
+def _checkpoint_path(results_path: Path) -> Path:
+    if results_path.name.endswith("-results.json"):
+        return results_path.with_name(
+            f"{results_path.name[: -len('-results.json')]}-checkpoint.json"
+        )
+    return results_path.with_name(f"{results_path.stem}-checkpoint.json")
+
+
+def _smoke_run_identity(
+    manifest_path: Path, target_version: str, items: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "checkpoint_version": 1,
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "target_version": target_version,
+        "selected_items": len(items),
+        "selected_items_sha256": _json_digest(items),
+    }
+
+
+def _load_smoke_checkpoint(
+    output_path: Path,
+    identity: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    try:
+        checkpoint = json.loads(_checkpoint_path(output_path).read_text(encoding="utf-8"))
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("checkpoint_version") != 1
+            or checkpoint.get("identity") != identity
+        ):
+            return []
+        completed = checkpoint.get("completed")
+        if type(completed) is not int or completed < 0 or completed > len(items):
+            return []
+        results = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(results, list) or len(results) != completed:
+            return []
+        if checkpoint.get("results_sha256") != _json_digest(results):
+            return []
+        if not all(
+            isinstance(result, dict) and _result_matches_item(result, item)
+            for result, item in zip(results, items[:completed], strict=True)
+        ):
+            return []
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return []
+    return results
+
+
+def _result_matches_item(result: dict[str, Any], item: dict[str, Any]) -> bool:
+    return all(key in result and result[key] == value for key, value in item.items())
+
+
+def _write_smoke_checkpoint(
+    output_path: Path,
+    results: list[dict[str, Any]],
+    identity: dict[str, Any],
+) -> None:
+    _atomic_write_json(output_path, results)
+    _atomic_write_json(
+        _checkpoint_path(output_path),
+        {
+            "checkpoint_version": 1,
+            "identity": identity,
+            "completed": len(results),
+            "results_sha256": _json_digest(results),
+        },
+    )
+
+
+def _corpus_manifest_path(output: Path, importer: str) -> Path:
+    return output / CORPUS_MANIFESTS[importer]
+
+
+def _json_digest(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    payload = json.dumps(value, indent=2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        destination_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        destination_mode = None
+    temporary_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    descriptor = os.open(
+        temporary_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o666,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            if destination_mode is not None:
+                os.fchmod(file.fileno(), destination_mode)
+            file.write(payload)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _source_hash(source: str) -> str:

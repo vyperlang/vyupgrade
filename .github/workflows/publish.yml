@@ -19,13 +19,18 @@ jobs:
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
-      - run: uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py
+      - run: uv run --locked ruff check src tests scripts/corpus.py scripts/release_notes.py scripts/release_preflight.py
       - run: uv run --locked pytest
       - run: scripts/smoke-wheel.sh
+      - run: uv run --locked python scripts/release_preflight.py "$GITHUB_REF_NAME" --dist dist --notes-output release-notes.md
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: dist
           path: dist/*
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-notes
+          path: release-notes.md
 
   publish:
     needs: build
@@ -48,10 +53,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6.0.2
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/download-artifact@v8.0.1
         with:
-          python-version: "3.11"
-      - run: python scripts/release_notes.py "$GITHUB_REF_NAME" > release-notes.md
+          name: release-notes
+          path: .
       - run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
