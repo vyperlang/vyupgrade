@@ -12,9 +12,17 @@ def test_write_mode_validates_against_target_compiler(tmp_path: Path) -> None:
     shutil.copyfile(Path("tests/fixtures/migration_03.vy"), contract)
 
     report = tmp_path / "report.json"
-    code = main([str(contract), "--write", "--report-json", str(report)])
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--allow-unvalidated-source",
+            "--report-json",
+            str(report),
+        ]
+    )
 
-    assert code in {0, 3}
+    assert code == 0
     rewritten = contract.read_text()
     assert "#pragma version 0.4.3" in rewritten
     assert "staticcall self.token.balanceOf(msg.sender)" in rewritten
@@ -22,6 +30,7 @@ def test_write_mode_validates_against_target_compiler(tmp_path: Path) -> None:
     data = json.loads(report.read_text())
     assert data["write_requested"] is True
     assert data["wrote_changes"] is True
+    assert data["validation_decision"]["status"] == "waived"
     assert data["files"][0]["validation"]["target_compile"] == "passed"
 
 
@@ -82,3 +91,51 @@ def f(x: uint256) -> uint256:
     file = data["files"][0]
     assert file["validation"]["target_compile"] == "passed"
     assert any(fix["rule"] == "VY101" for fix in file["fixes"])
+
+
+def test_standalone_interface_receives_target_validation(tmp_path: Path) -> None:
+    interface = tmp_path / "IToken.vyi"
+    interface.write_text(
+        """# @version 0.3.10
+@view
+@external
+def balanceOf(owner: address) -> uint256: ...
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main([str(interface), "--check", "--report-json", str(report)])
+
+    assert code == 1
+    file = json.loads(report.read_text())["files"][0]
+    assert file["validation"]["source_compile"] == "skipped"
+    assert file["validation"]["source_unavailable_artifacts"] == []
+    assert file["validation"]["target_compile"] == "passed"
+    assert file["validation"]["decision"]["status"] == "passed"
+
+
+def test_invalid_standalone_interface_is_not_written(tmp_path: Path) -> None:
+    interface = tmp_path / "IBroken.vyi"
+    original = "# @version 0.3.10\n@external\ndef broken(: ...\n"
+    interface.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    code = main([str(interface), "--write", "--report-json", str(report)])
+
+    assert code == 2
+    assert interface.read_text(encoding="utf-8") == original
+    file = json.loads(report.read_text())["files"][0]
+    assert file["validation"]["target_compile"] == "failed"
+    assert file["validation"]["decision"]["status"] == "blocked"
+
+
+def test_target_validation_does_not_normalize_selected_candidate(tmp_path: Path) -> None:
+    contract = tmp_path / "selected.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+
+    code = main([str(contract), "--write", "--select", "VY002"])
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original

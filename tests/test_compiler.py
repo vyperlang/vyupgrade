@@ -114,23 +114,90 @@ def test_explicit_compiler_path_skips_uv_wrapper() -> None:
     assert _compiler_command("/tmp/vyper", "0.3.7", "3.11") == ["/tmp/vyper"]
 
 
-def test_compile_retries_without_unsupported_layout(monkeypatch) -> None:
+def test_target_compile_fails_on_unsupported_required_layout(monkeypatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        if "-f" in command and command[command.index("-f") + 1] == "abi,method_identifiers,layout":
-            return subprocess.CompletedProcess(command, 1, "", "ValueError: Unsupported format type 'layout'")
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n", "")
+        return subprocess.CompletedProcess(
+            command, 1, "", "ValueError: Unsupported format type 'layout'"
+        )
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
     result = _run_compile(["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),)))
 
-    assert result.status == "passed"
-    assert result.artifacts == {"abi": [], "method_identifiers": {}}
+    assert result.status == "failed"
+    assert result.unavailable_formats == ("layout",)
+    assert "required output format 'layout'" in (result.stderr or "")
     assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout"
-    assert calls[1][calls[1].index("-f") + 1] == "abi,method_identifiers"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "artifacts, unavailable",
+    [
+        (
+            {"abi": [None], "method_identifiers": {}, "layout": {}},
+            ["abi"],
+        ),
+        (
+            {
+                "abi": [{"type": "function", "inputs": [None]}],
+                "method_identifiers": {},
+                "layout": {},
+            },
+            ["abi"],
+        ),
+        (
+            {"abi": [], "method_identifiers": {"f()": None}, "layout": {}},
+            ["method_identifiers"],
+        ),
+        (
+            {"abi": [], "method_identifiers": {}, "layout": {"storage_layout": []}},
+            ["layout"],
+        ),
+        (
+            {
+                "abi": [],
+                "method_identifiers": {},
+                "layout": {"storage_layout": {"owner": {"slot": 0}}},
+            },
+            ["layout"],
+        ),
+    ],
+)
+def test_validation_artifacts_reject_malformed_nested_schemas(
+    artifacts, unavailable
+) -> None:
+    from vyupgrade.compiler import unavailable_validation_artifacts
+
+    result = CompileResult("passed", artifacts=artifacts)
+
+    assert unavailable_validation_artifacts(result) == unavailable
+
+
+def test_source_compile_degrades_on_unsupported_legacy_layout(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[command.index("-f") + 1] == "abi,method_identifiers,layout":
+            return subprocess.CompletedProcess(
+                command, 1, "", "ValueError: Unsupported format type 'layout'"
+            )
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile_with_formats_for_test(
+        ["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "layout")
+    )
+
+    assert result.status == "degraded"
+    assert result.artifacts == {"abi": [], "method_identifiers": {}}
+    assert result.unavailable_formats == ("layout",)
+    assert calls[-1][calls[-1].index("-f") + 1] == "abi,method_identifiers"
 
 
 def test_compile_retries_without_legacy_keyerror_format(monkeypatch) -> None:
@@ -149,7 +216,8 @@ def test_compile_retries_without_legacy_keyerror_format(monkeypatch) -> None:
 
     result = _run_compile_with_formats_for_test(["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "ast"))
 
-    assert result.status == "passed"
+    assert result.status == "degraded"
+    assert result.unavailable_formats == ("method_identifiers", "ast")
     assert calls[-1][calls[-1].index("-f") + 1] == "abi"
 
 
@@ -178,15 +246,38 @@ def test_compile_retries_without_ast_for_legacy_span_error(monkeypatch) -> None:
         ["vyper"], Path("/tmp/contract.vy"), ("abi", "method_identifiers", "layout", "ast")
     )
 
-    assert result.status == "passed"
+    assert result.status == "degraded"
     assert result.artifacts == {"abi": []}
+    assert result.unavailable_formats == ("ast", "layout", "method_identifiers")
     assert calls[-1][calls[-1].index("-f") + 1] == "abi"
 
 
 def _run_compile_with_formats_for_test(command: list[str], path: Path, formats: tuple[str, ...]) -> CompileResult:
     from vyupgrade.compiler import _run_compile_with_formats
 
-    return _run_compile_with_formats(command, path, Config(paths=(path,)), formats, (), False)
+    return _run_compile_with_formats(
+        command,
+        path,
+        Config(paths=(path,)),
+        formats,
+        (),
+        False,
+        allow_unsupported_formats=True,
+    )
+
+
+def test_target_compile_fails_when_compiler_omits_requested_output(monkeypatch) -> None:
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
+
+    assert result.status == "failed"
+    assert result.stderr == "could not parse compiler output: expected 3 compiler outputs, received 2"
 
 
 def test_compile_installs_declared_vyper_import_dependencies(monkeypatch, tmp_path) -> None:
@@ -412,6 +503,7 @@ def test_compile_source_ast_requests_ast_format(monkeypatch, tmp_path) -> None:
         formats: tuple[str, ...],
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["run"] = (command, path, formats, extra_paths, suppress_warnings)
         return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
@@ -442,6 +534,7 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
         formats: tuple[str, ...],
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls["run"] = (command, path, formats, extra_paths, suppress_warnings)
         return CompileResult("passed", artifacts={"ast": {"ast_type": "Module"}})
@@ -471,6 +564,7 @@ def test_compile_source_file_retries_legacy_span_error_with_final_newline(
         formats: tuple[str, ...],
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
+        **_kwargs,
     ) -> CompileResult:
         calls.append((path, path.read_bytes()))
         if len(calls) == 1:
@@ -555,7 +649,7 @@ def test_compile_target_source_enables_decimals_for_math_import(monkeypatch, tmp
     assert calls["enable_decimals"] is True
 
 
-def test_compile_target_source_bumps_temp_pragma_for_validation(monkeypatch, tmp_path) -> None:
+def test_compile_target_source_compiles_exact_candidate_bytes(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.2.11\n", encoding="utf-8")
     calls: dict[str, object] = {}
@@ -581,8 +675,37 @@ def test_compile_target_source_bumps_temp_pragma_for_validation(monkeypatch, tmp
     )
 
     assert result.status == "passed"
-    assert "#pragma version 0.4.3" in calls["source"]
-    assert "#pragma version 0.2.11" not in calls["source"]
+    assert calls["source"] == "#pragma version 0.2.11\n@external\ndef f():\n    pass\n"
+
+
+def test_compile_target_interface_uses_import_harness(monkeypatch, tmp_path) -> None:
+    interface = tmp_path / "IToken.vyi"
+    source = "@external\ndef balanceOf(owner: address) -> uint256: ...\n"
+    interface.write_text(source, encoding="utf-8")
+    calls: dict[str, str] = {}
+
+    monkeypatch.setattr("vyupgrade.compiler._prepare_command", lambda *_args: (["vyper"], True))
+
+    def fake_run_compile(
+        command: list[str],
+        path: Path,
+        config: Config,
+        extra_paths: tuple[Path, ...],
+        suppress_warnings: bool,
+    ) -> CompileResult:
+        calls["harness"] = path.read_text(encoding="utf-8")
+        module = calls["harness"].split("import ", 1)[1].split(" as ", 1)[0]
+        calls["interface"] = (path.parent / f"{module}.vyi").read_text(encoding="utf-8")
+        return CompileResult("passed", artifacts={"abi": [], "method_identifiers": {}, "layout": {}})
+
+    monkeypatch.setattr("vyupgrade.compiler._run_compile", fake_run_compile)
+
+    result = compile_target_source(interface, source, Config(paths=(interface,)))
+
+    assert result.status == "passed"
+    assert calls["interface"] == source
+    assert calls["harness"].startswith("#pragma version 0.4.3\nimport vyupgrade_interface_")
+    assert not list(tmp_path.glob("vyupgrade_interface_*"))
 
 
 def test_target_validation_source_removes_duplicate_vyper_pragmas() -> None:
@@ -1043,7 +1166,7 @@ def test_target_overlay_rewrites_standard_json_src_package_imports(tmp_path) -> 
         assert (overlay.root / "utils" / "interfaces" / "IERC5267.vyi").exists()
 
 
-def test_target_overlay_rewrites_local_sibling_absolute_imports(tmp_path) -> None:
+def test_target_overlay_preserves_exact_override_bytes(tmp_path) -> None:
     package = tmp_path / "package"
     contract = package / "multijson.vy"
     math = package / "math.vy"
@@ -1058,7 +1181,9 @@ def test_target_overlay_rewrites_local_sibling_absolute_imports(tmp_path) -> Non
     ) as overlay:
         assert overlay is not None
         contract_overlay = overlay.root / "multijson.vy"
-        assert "from . import math" in contract_overlay.read_text(encoding="utf-8")
+        assert contract_overlay.read_text(encoding="utf-8") == (
+            "#pragma version 0.4.3\nimport math\n"
+        )
         assert (overlay.root / "math.vy").exists()
 
 

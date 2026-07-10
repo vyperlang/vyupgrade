@@ -12,6 +12,9 @@ from vyupgrade.compiler import CompileResult
 from vyupgrade.models import Config, FileReport
 
 
+VALIDATION_ARTIFACTS = {"abi": [], "method_identifiers": {}, "layout": {}}
+
+
 class TtyStringIO(StringIO):
     def isatty(self) -> bool:
         return True
@@ -22,7 +25,7 @@ def passing_compiler(monkeypatch):
     def compile_source_file(
         path: Path, config: Config, source_version: str | None
     ) -> CompileResult:
-        return CompileResult("passed", artifacts={})
+        return CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}})
 
     def compile_target_source(
         path: Path,
@@ -30,7 +33,7 @@ def passing_compiler(monkeypatch):
         config: Config,
         overlay=None,
     ) -> CompileResult:
-        return CompileResult("passed", artifacts={})
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
     monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
     monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
@@ -121,7 +124,7 @@ def f() -> uint256:
         path: Path, config: Config, source_version: str | None
     ) -> CompileResult:
         seen["source_version"] = source_version
-        return CompileResult("passed", artifacts={})
+        return CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}})
 
     def compile_target_source(
         path: Path,
@@ -129,7 +132,7 @@ def f() -> uint256:
         config: Config,
         overlay=None,
     ) -> CompileResult:
-        return CompileResult("passed", artifacts={})
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
     monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
     monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
@@ -167,7 +170,7 @@ def f() -> uint256:
     ) -> CompileResult:
         seen["source_version"] = source_version
         seen["source_vyper"] = config.source_vyper
-        return CompileResult("passed", artifacts={})
+        return CompileResult("passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}})
 
     def compile_target_source(
         path: Path,
@@ -175,7 +178,7 @@ def f() -> uint256:
         config: Config,
         overlay=None,
     ) -> CompileResult:
-        return CompileResult("passed", artifacts={})
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
 
     monkeypatch.setattr(cli, "compile_source_file", compile_source_file)
     monkeypatch.setattr(cli, "compile_target_source", compile_target_source)
@@ -291,6 +294,339 @@ def f(target: address):
     assert contract.read_text(encoding="utf-8") == original
 
 
+def test_write_mode_does_not_write_when_source_compile_fails(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "bad-source.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult("failed", stderr="source failed"),
+    )
+
+    code = main([str(contract), "--write", "--report-json", str(report)])
+
+    assert code == 3
+    assert contract.read_text(encoding="utf-8") == original
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is False
+    assert data["validation_decision"]["status"] == "blocked"
+    assert data["validation_decision"]["blockers"][0]["code"] == "source_compile_failed"
+
+
+def test_allow_unvalidated_source_waives_source_failure(
+    tmp_path: Path, monkeypatch, passing_compiler, capsys
+) -> None:
+    contract = tmp_path / "bad-source.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n", encoding="utf-8"
+    )
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult("failed", stderr="source failed"),
+    )
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--allow-unvalidated-source",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
+    data = json.loads(report.read_text())
+    assert data["wrote_changes"] is True
+    assert data["validation_decision"]["status"] == "waived"
+    assert data["validation_decision"]["waivers"][0]["waiver"] == (
+        "--allow-unvalidated-source"
+    )
+    assert "write validation: waived" in capsys.readouterr().out
+
+
+def test_patch_level_abi_mismatch_blocks_even_when_diagnostic_is_ignored(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contract = tmp_path / "patch-level.vy"
+    original = "#pragma version 0.4.2\n@external\ndef f():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "compile_target_source",
+        lambda *_args: CompileResult(
+            "passed",
+            artifacts={
+                **VALIDATION_ARTIFACTS,
+                "abi": [{"type": "function", "name": "changed", "inputs": []}],
+            },
+        ),
+    )
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--ignore",
+            "VYD007",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 7
+    assert contract.read_text(encoding="utf-8") == original
+    data = json.loads(report.read_text())
+    assert not [diag for diag in data["files"][0]["diagnostics"] if diag["rule"] == "VYD007"]
+    assert data["validation_decision"]["blockers"][0]["code"] == "abi_changed"
+
+
+@pytest.mark.parametrize(
+    ("target_artifacts", "flag", "code"),
+    [
+        (
+            {
+                **VALIDATION_ARTIFACTS,
+                "abi": [{"type": "function", "name": "changed", "inputs": []}],
+            },
+            "--allow-abi-change",
+            "abi_changed",
+        ),
+        (
+            {**VALIDATION_ARTIFACTS, "method_identifiers": {"changed()": "0x12345678"}},
+            "--allow-method-id-change",
+            "method_identifiers_changed",
+        ),
+        (
+            {
+                **VALIDATION_ARTIFACTS,
+                "layout": {"changed": {"slot": 0, "type": "uint256"}},
+            },
+            "--allow-storage-layout-change",
+            "storage_layout_changed",
+        ),
+    ],
+)
+def test_artifact_change_waivers_are_narrow_and_reported(
+    tmp_path: Path,
+    monkeypatch,
+    target_artifacts: dict[str, object],
+    flag: str,
+    code: str,
+) -> None:
+    contract = tmp_path / f"{code}.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n", encoding="utf-8"
+    )
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "compile_target_source",
+        lambda *_args: CompileResult("passed", artifacts=target_artifacts),
+    )
+
+    assert main([str(contract), "--write", flag, "--report-json", str(report)]) == 0
+
+    data = json.loads(report.read_text())
+    assert data["validation_decision"]["status"] == "waived"
+    assert data["validation_decision"]["waivers"] == [
+        {
+            "code": code,
+            "message": {
+                "abi_changed": "ABI changed after migration",
+                "method_identifiers_changed": "method identifiers changed after migration",
+                "storage_layout_changed": "storage layout changed after migration",
+            }[code],
+            "path": str(contract),
+            "waiver": flag,
+        }
+    ]
+
+
+def test_artifact_waiver_does_not_cover_other_diff_classes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contract = tmp_path / "multiple-diffs.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "passed", artifacts={**VALIDATION_ARTIFACTS, "ast": {}}
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "compile_target_source",
+        lambda *_args: CompileResult(
+            "passed",
+            artifacts={
+                "abi": [{"type": "function", "name": "changed", "inputs": []}],
+                "method_identifiers": {"changed()": "0x12345678"},
+                "layout": {"changed": {"slot": 0, "type": "uint256"}},
+            },
+        ),
+    )
+
+    assert (
+        main(
+            [
+                str(contract),
+                "--write",
+                "--allow-abi-change",
+                "--report-json",
+                str(report),
+            ]
+        )
+        == 7
+    )
+
+    assert contract.read_text(encoding="utf-8") == original
+    decision = json.loads(report.read_text())["validation_decision"]
+    assert [issue["code"] for issue in decision["waivers"]] == ["abi_changed"]
+    assert [issue["code"] for issue in decision["blockers"]] == [
+        "method_identifiers_changed",
+        "storage_layout_changed",
+    ]
+
+
+def test_missing_source_artifact_blocks_without_source_waiver(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "missing-source-artifact.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "degraded",
+            artifacts={"abi": [], "layout": {}, "ast": {}},
+            unavailable_formats=("method_identifiers",),
+        ),
+    )
+
+    assert main([str(contract), "--write", "--report-json", str(report)]) == 3
+    assert contract.read_text(encoding="utf-8") == original
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "degraded"
+    assert validation["source_unavailable_artifacts"] == ["method_identifiers"]
+    assert validation["source_unavailable_formats"] == ["method_identifiers"]
+
+
+def test_optional_source_ast_unavailability_is_degraded_but_safe(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "missing-source-ast.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n", encoding="utf-8"
+    )
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "degraded",
+            artifacts=VALIDATION_ARTIFACTS,
+            unavailable_formats=("ast",),
+        ),
+    )
+
+    assert main([str(contract), "--write", "--report-json", str(report)]) == 0
+
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "degraded"
+    assert validation["source_unavailable_artifacts"] == []
+    assert validation["source_unavailable_formats"] == ["ast"]
+    assert validation["decision"]["status"] == "passed"
+
+
+def test_missing_target_artifact_is_not_waived_by_source_or_diff_flags(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "missing-target-artifact.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_target_source",
+        lambda *_args: CompileResult(
+            "passed", artifacts={"abi": [], "method_identifiers": {}}
+        ),
+    )
+
+    code = main(
+        [
+            str(contract),
+            "--write",
+            "--allow-unvalidated-source",
+            "--allow-storage-layout-change",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original
+    blockers = json.loads(report.read_text())["validation_decision"]["blockers"]
+    assert [blocker["code"] for blocker in blockers] == ["target_artifacts_unavailable"]
+
+
+def test_malformed_target_artifacts_block_write(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "malformed-target-artifacts.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        cli,
+        "compile_target_source",
+        lambda *_args: CompileResult(
+            "passed",
+            artifacts={
+                "abi": [None],
+                "method_identifiers": {},
+                "layout": {"storage_layout": []},
+            },
+        ),
+    )
+
+    code = main([str(contract), "--write", "--report-json", str(report)])
+
+    assert code == 2
+    assert contract.read_text(encoding="utf-8") == original
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["target_unavailable_artifacts"] == ["abi", "layout"]
+    assert validation["decision"]["blockers"][0]["code"] == "target_artifacts_unavailable"
+
+
 def test_split_interfaces_writes_sibling_vyi_files(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Main.vy"
     contract.write_text(
@@ -388,6 +724,36 @@ report-json = "{report}"
 
     assert code == 1
     assert report.exists()
+
+
+def test_pyproject_can_waive_unvalidated_source(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "migration_03.vy"
+    contract.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n", encoding="utf-8"
+    )
+    report = tmp_path / "configured-report.json"
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f'''[tool.vyupgrade]
+paths = ["{contract}"]
+report-json = "{report}"
+allow-unvalidated-source = true
+''',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli,
+        "compile_source_file",
+        lambda *_args: CompileResult("failed", stderr="source failed"),
+    )
+
+    code = main(["--config", str(pyproject), "--write"])
+
+    assert code == 0
+    assert "#pragma version 0.4.3" in contract.read_text(encoding="utf-8")
+    assert json.loads(report.read_text())["validation_decision"]["status"] == "waived"
 
 
 def test_select_limits_applied_rules(tmp_path: Path, passing_compiler) -> None:

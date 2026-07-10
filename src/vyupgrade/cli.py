@@ -18,6 +18,7 @@ from .compiler import (
     compile_source_file,
     compile_target_source,
     target_overlay,
+    unavailable_validation_artifacts,
 )
 from .interfaces import split_interfaces_to_vyi
 from .models import Config, Diagnostic, FileReport, RewriteResult, RunReport
@@ -25,6 +26,7 @@ from .project import discover_files
 from .reporting import HumanReporter, write_json_report
 from .rule_registry import is_enabled
 from .rules import RULE_CHANGES, apply_rules
+from .validation import decide_run_validation, validation_exit_code
 from .versions import (
     MigrationContext,
     compiler_version_for_source_validation,
@@ -79,6 +81,14 @@ def main(argv: list[str] | None = None) -> int:
         enable_decimals=args.enable_decimals,
         split_interfaces=args.split_interfaces or bool(pyproject.get("split-interfaces", False)),
         format=args.format or pyproject.get("format", "none"),
+        allow_unvalidated_source=args.allow_unvalidated_source
+        or bool(pyproject.get("allow-unvalidated-source", False)),
+        allow_abi_change=args.allow_abi_change
+        or bool(pyproject.get("allow-abi-change", False)),
+        allow_method_id_change=args.allow_method_id_change
+        or bool(pyproject.get("allow-method-id-change", False)),
+        allow_storage_layout_change=args.allow_storage_layout_change
+        or bool(pyproject.get("allow-storage-layout-change", False)),
     )
 
     if config.write and config.check:
@@ -89,16 +99,15 @@ def main(argv: list[str] | None = None) -> int:
     reports: list[FileReport] = []
     diff_chunks: list[str] = []
     write_back: list[tuple[Path, str]] = []
-    any_target_failed = False
-    any_source_failed = False
     human_reporter = None if config.diff else HumanReporter(sys.stdout)
     if human_reporter:
         human_reporter.start(config.source_version, config.target_version)
 
     rewrites = _prepare_rewrites(files, config)
-    any_source_failed = any(work.source_compile.status == "failed" for work in rewrites)
-
-    any_target_failed = _verify_rewrites(rewrites, config)
+    _verify_rewrites(rewrites, config)
+    validation_decision = decide_run_validation(
+        (work.report for work in rewrites), config
+    )
 
     for work in rewrites:
         if work.report.changed:
@@ -132,14 +141,15 @@ def main(argv: list[str] | None = None) -> int:
         target_version=config.target_version,
         files=reports,
         write_requested=config.write,
-        wrote_changes=config.write and not any_target_failed,
+        wrote_changes=config.write and validation_decision.write_allowed,
+        validation_decision=validation_decision,
         test_command=config.test_command,
     )
 
     if config.diff and diff_chunks:
         _write_diff(diff_chunks, sys.stdout)
 
-    if config.write and not any_target_failed:
+    if config.write and validation_decision.write_allowed:
         for path, content in write_back:
             path.write_text(content, encoding="utf-8")
         if config.format == "mamushi" and write_back:
@@ -147,7 +157,12 @@ def main(argv: list[str] | None = None) -> int:
 
     formatter_failed = run_report.formatter_status == "failed"
 
-    if config.test_command and config.write and not any_target_failed and not formatter_failed:
+    if (
+        config.test_command
+        and config.write
+        and validation_decision.write_allowed
+        and not formatter_failed
+    ):
         proc = subprocess.run(
             config.test_command, shell=True, capture_output=True, text=True, timeout=600
         )
@@ -160,12 +175,10 @@ def main(argv: list[str] | None = None) -> int:
     if human_reporter:
         human_reporter.summary(run_report)
 
-    if any_target_failed:
-        return 2
+    if (exit_code := validation_exit_code(validation_decision)) is not None:
+        return exit_code
     if formatter_failed:
         return 6
-    if any_source_failed:
-        return 3
     if config.check and any(file.changed for file in reports):
         return 1
     if any(diag.severity == "error" for file in reports for diag in file.diagnostics):
@@ -230,6 +243,11 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
             source_compiler=source_compiler,
         )
         file_report.source_compile = source_compile.status
+        if source_compile.status != "skipped":
+            file_report.source_unavailable_artifacts = unavailable_validation_artifacts(
+                source_compile
+            )
+        file_report.source_unavailable_formats = list(source_compile.unavailable_formats)
         file_report.source_error = (
             source_compile.stderr if source_compile.status == "failed" else None
         )
@@ -247,8 +265,7 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
     return rewrites
 
 
-def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
-    any_target_failed = False
+def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> None:
     target_sources = {work.path: work.rewrite.source for work in rewrites}
     for work in rewrites:
         target_sources.update(
@@ -263,11 +280,13 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
                 continue
             target_compile = compile_target_source(work.path, work.rewrite.source, config, overlay)
             work.report.target_compile = target_compile.status
+            work.report.target_unavailable_artifacts = unavailable_validation_artifacts(
+                target_compile
+            )
+            work.report.target_unavailable_formats = list(target_compile.unavailable_formats)
             work.report.target_error = (
                 target_compile.stderr if target_compile.status == "failed" else None
             )
-            any_target_failed = any_target_failed or target_compile.status == "failed"
-
             abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
                 work.source_compile, target_compile
             )
@@ -284,7 +303,6 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> bool:
             _add_validation_diagnostics(
                 work.report, work.source_version, config, work.source_compiler
             )
-    return any_target_failed
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -308,6 +326,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-decimals", action="store_true")
     parser.add_argument("--split-interfaces", "--interfaces-to-vyi", action="store_true")
     parser.add_argument("--format", choices=["none", "mamushi"])
+    parser.add_argument("--allow-unvalidated-source", action="store_true")
+    parser.add_argument("--allow-abi-change", action="store_true")
+    parser.add_argument("--allow-method-id-change", action="store_true")
+    parser.add_argument("--allow-storage-layout-change", action="store_true")
     parser.add_argument("--config", help="path to a pyproject.toml file")
     return parser
 

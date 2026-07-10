@@ -6,6 +6,17 @@ from typing import Any, Literal
 
 
 Severity = Literal["info", "warning", "error"]
+ValidationDecisionStatus = Literal["not-required", "passed", "waived", "blocked"]
+ValidationIssueCode = Literal[
+    "target_compile_failed",
+    "target_artifacts_unavailable",
+    "source_compile_failed",
+    "source_artifacts_unavailable",
+    "artifact_comparison_unavailable",
+    "abi_changed",
+    "method_identifiers_changed",
+    "storage_layout_changed",
+]
 
 
 @dataclass(frozen=True)
@@ -40,6 +51,38 @@ class RewriteResult:
     generated_files: list[GeneratedFile] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ValidationIssue:
+    code: ValidationIssueCode
+    message: str
+    path: Path
+    waiver: str | None = None
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "path": str(self.path),
+            "waiver": self.waiver,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationDecision:
+    status: ValidationDecisionStatus = "not-required"
+    write_allowed: bool = True
+    blockers: tuple[ValidationIssue, ...] = ()
+    waivers: tuple[ValidationIssue, ...] = ()
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "write_allowed": self.write_allowed,
+            "blockers": [issue.to_json_obj() for issue in self.blockers],
+            "waivers": [issue.to_json_obj() for issue in self.waivers],
+        }
+
+
 @dataclass
 class FileReport:
     path: Path
@@ -58,6 +101,11 @@ class FileReport:
     abi_diff: list[str] = field(default_factory=list)
     method_id_diff: list[str] = field(default_factory=list)
     storage_layout_diff: list[str] = field(default_factory=list)
+    source_unavailable_artifacts: list[str] = field(default_factory=list)
+    target_unavailable_artifacts: list[str] = field(default_factory=list)
+    source_unavailable_formats: list[str] = field(default_factory=list)
+    target_unavailable_formats: list[str] = field(default_factory=list)
+    validation_decision: ValidationDecision = field(default_factory=ValidationDecision)
 
 
 @dataclass(frozen=True)
@@ -81,6 +129,10 @@ class Config:
     enable_decimals: bool = False
     split_interfaces: bool = False
     format: str = "none"
+    allow_unvalidated_source: bool = False
+    allow_abi_change: bool = False
+    allow_method_id_change: bool = False
+    allow_storage_layout_change: bool = False
     source_ast: dict[str, Any] | None = None
 
 
@@ -91,6 +143,7 @@ class RunReport:
     files: list[FileReport]
     write_requested: bool = False
     wrote_changes: bool = False
+    validation_decision: ValidationDecision = field(default_factory=ValidationDecision)
     formatter_command: str | None = None
     formatter_status: str = "skipped"
     formatter_output: str | None = None
@@ -116,6 +169,7 @@ class RunReport:
             "target_version": self.target_version,
             "write_requested": self.write_requested,
             "wrote_changes": self.wrote_changes,
+            "validation_decision": self.validation_decision.to_json_obj(),
             "files": [
                 {
                     "path": str(file.path),
@@ -133,6 +187,11 @@ class RunReport:
                         "abi_diff": file.abi_diff,
                         "method_id_diff": file.method_id_diff,
                         "storage_layout_diff": file.storage_layout_diff,
+                        "source_unavailable_artifacts": file.source_unavailable_artifacts,
+                        "target_unavailable_artifacts": file.target_unavailable_artifacts,
+                        "source_unavailable_formats": file.source_unavailable_formats,
+                        "target_unavailable_formats": file.target_unavailable_formats,
+                        "decision": file.validation_decision.to_json_obj(),
                     },
                     "source_error": file.source_error,
                     "target_error": file.target_error,
