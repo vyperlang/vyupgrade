@@ -1420,6 +1420,9 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             "target_compile": "exception",
             "source_error": f"{type(exc).__name__}: {exc}",
             "target_error": traceback.format_exc()[-2000:],
+            "validation_status": "exception",
+            "validation_blockers": [],
+            "validation_waivers": [],
             "seconds": round(time.time() - started, 3),
         }
 
@@ -1444,25 +1447,45 @@ def _smoke_summary(
     results: list[dict[str, Any]], manifest_path: Path, output_path: Path, elapsed: float
 ) -> dict[str, Any]:
     status_pairs = Counter((item["source_compile"], item["target_compile"]) for item in results)
-    failed_repos = Counter(
-        item["repo"]
+    normalized_status_pairs = Counter(
+        (
+            _normalized_compile_status(item["source_compile"]),
+            _normalized_compile_status(item["target_compile"]),
+        )
         for item in results
-        if item["source_compile"] != "passed" or item["target_compile"] != "passed"
+    )
+    validation_statuses = Counter(_smoke_validation_status(item) for item in results)
+    validation_blockers = Counter(
+        code
+        for item in results
+        for code in _validation_issue_codes(item.get("validation_blockers"))
+    )
+    validation_waivers = Counter(
+        code
+        for item in results
+        for code in _validation_issue_codes(item.get("validation_waivers"))
+    )
+    failed_repos = Counter(
+        item["repo"] for item in results if _is_smoke_safety_failure(item)
     )
     source_errors = Counter(
         item.get("source_error")
         for item in results
-        if item.get("source_error") and item["source_compile"] != "passed"
+        if item.get("source_error")
+        and _is_smoke_safety_failure(item)
+        and item["source_compile"] not in {"passed", "degraded"}
     )
     target_errors = Counter(
         item.get("target_error")
         for item in results
-        if item.get("target_error") and item["target_compile"] != "passed"
+        if item.get("target_error")
+        and _is_smoke_safety_failure(item)
+        and item["target_compile"] != "passed"
     )
     failed_compilers = Counter(
         item.get("source_compiler") or item.get("pragma") or "unknown"
         for item in results
-        if item["source_compile"] != "passed" or item["target_compile"] != "passed"
+        if _is_smoke_safety_failure(item)
     )
     fixes = Counter(fix for item in results for fix in item.get("fixes", []))
     diagnostics = Counter(diag for item in results for diag in item.get("diagnostics", []))
@@ -1475,6 +1498,13 @@ def _smoke_summary(
         "status_pairs": {
             f"{source}->{target}": count for (source, target), count in status_pairs.most_common()
         },
+        "normalized_status_pairs": {
+            f"{source}->{target}": count
+            for (source, target), count in normalized_status_pairs.most_common()
+        },
+        "validation_statuses": dict(validation_statuses.most_common()),
+        "validation_blockers": dict(validation_blockers.most_common()),
+        "validation_waivers": dict(validation_waivers.most_common()),
         "failed_repos": failed_repos.most_common(20),
         "changed": sum(1 for item in results if item.get("changed")),
         "abi_changed": sum(1 for item in results if item.get("abi_equal") is False),
@@ -1488,6 +1518,33 @@ def _smoke_summary(
         "top_fixes": fixes.most_common(20),
         "top_diagnostics": diagnostics.most_common(20),
     }
+
+
+def _normalized_compile_status(status: str) -> str:
+    return "passed" if status == "degraded" else status
+
+
+def _smoke_validation_status(item: dict[str, Any]) -> str:
+    if "exception" in {item.get("source_compile"), item.get("target_compile")}:
+        return "exception"
+    status = item.get("validation_status")
+    return status if isinstance(status, str) and status else "unknown"
+
+
+def _is_smoke_safety_failure(item: dict[str, Any]) -> bool:
+    return _smoke_validation_status(item) in {"blocked", "exception"}
+
+
+def _validation_issue_codes(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        code
+        for issue in value
+        if isinstance(issue, dict)
+        and isinstance((code := issue.get("code")), str)
+        and code
+    ]
 
 
 def _build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -1523,12 +1580,31 @@ def _smoke_run_identity(
     return {
         "checkpoint_version": 2,
         "smoke_schema_version": SMOKE_RESULT_SCHEMA_VERSION,
+        "runner_sha256": _smoke_runner_digest(),
         "manifest_path": str(manifest_path.resolve()),
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "target_version": target_version,
         "selected_items": len(items),
         "selected_items_sha256": _json_digest(items),
     }
+
+
+def _smoke_runner_digest() -> str:
+    package_root = Path(engine.__file__).resolve().parent
+    sources = [
+        ("scripts/corpus.py", Path(__file__).resolve()),
+        *(
+            (f"vyupgrade/{path.relative_to(package_root)}", path)
+            for path in sorted(package_root.rglob("*.py"))
+        ),
+    ]
+    digest = hashlib.sha256()
+    for label, path in sources:
+        digest.update(str(label).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _load_smoke_checkpoint(

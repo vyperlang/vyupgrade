@@ -449,6 +449,9 @@ def test_smoke_summary_groups_failures_and_rules(tmp_path: Path) -> None:
                 "source_compile": "passed",
                 "target_compile": "failed",
                 "target_error": "target failed",
+                "validation_status": "blocked",
+                "validation_blockers": [{"code": "target_compile_failed"}],
+                "validation_waivers": [],
                 "fixes": ["VY001"],
                 "diagnostics": ["VYD001"],
             },
@@ -459,6 +462,59 @@ def test_smoke_summary_groups_failures_and_rules(tmp_path: Path) -> None:
                 "target_compile": "failed",
                 "source_error": "source failed",
                 "target_error": "target failed",
+                "validation_status": "blocked",
+                "validation_blockers": [
+                    {"code": "source_compile_failed"},
+                    {"code": "target_compile_failed"},
+                ],
+                "validation_waivers": [],
+                "fixes": [],
+                "diagnostics": [],
+            },
+            {
+                "repo": "safe-degraded",
+                "source_compiler": "0.2.15",
+                "source_compile": "degraded",
+                "target_compile": "passed",
+                "source_error": "unsupported optional source artifact",
+                "validation_status": "passed",
+                "validation_blockers": [],
+                "validation_waivers": [],
+                "fixes": [],
+                "diagnostics": [],
+            },
+            {
+                "repo": "safe-waived",
+                "source_compiler": "0.2.15",
+                "source_compile": "degraded",
+                "target_compile": "passed",
+                "source_error": "waived source artifact gap",
+                "validation_status": "waived",
+                "validation_blockers": [],
+                "validation_waivers": [{"code": "source_artifacts_unavailable"}],
+                "fixes": [],
+                "diagnostics": [],
+            },
+            {
+                "repo": "crashed",
+                "source_compiler": "0.1.0",
+                "source_compile": "exception",
+                "target_compile": "exception",
+                "source_error": "runner exploded",
+                "target_error": "traceback",
+                "fixes": [],
+                "diagnostics": [],
+            },
+            {
+                "repo": "artifact-change",
+                "source_compiler": "0.4.0",
+                "source_compile": "passed",
+                "target_compile": "passed",
+                "source_error": "harmless source warning",
+                "target_error": "harmless target warning",
+                "validation_status": "blocked",
+                "validation_blockers": [{"code": "storage_layout_changed"}],
+                "validation_waivers": [],
                 "fixes": [],
                 "diagnostics": [],
             },
@@ -468,11 +524,46 @@ def test_smoke_summary_groups_failures_and_rules(tmp_path: Path) -> None:
         1.2,
     )
 
-    assert summary["failed_compilers"] == [("0.3.10", 1), ("0.2.16", 1)]
-    assert summary["top_target_errors"] == [("target failed", 2)]
-    assert summary["top_source_errors"] == [("source failed", 1)]
+    assert summary["failed_compilers"] == [
+        ("0.3.10", 1),
+        ("0.2.16", 1),
+        ("0.1.0", 1),
+        ("0.4.0", 1),
+    ]
+    assert summary["top_target_errors"] == [("target failed", 2), ("traceback", 1)]
+    assert summary["top_source_errors"] == [("source failed", 1), ("runner exploded", 1)]
     assert summary["top_fixes"] == [("VY001", 1)]
     assert summary["top_diagnostics"] == [("VYD001", 1)]
+    assert summary["status_pairs"] == {
+        "degraded->passed": 2,
+        "passed->failed": 1,
+        "failed->failed": 1,
+        "exception->exception": 1,
+        "passed->passed": 1,
+    }
+    assert summary["normalized_status_pairs"] == {
+        "passed->passed": 3,
+        "passed->failed": 1,
+        "failed->failed": 1,
+        "exception->exception": 1,
+    }
+    assert summary["validation_statuses"] == {
+        "blocked": 3,
+        "passed": 1,
+        "waived": 1,
+        "exception": 1,
+    }
+    assert summary["validation_blockers"] == {
+        "target_compile_failed": 2,
+        "source_compile_failed": 1,
+        "storage_layout_changed": 1,
+    }
+    assert summary["validation_waivers"] == {"source_artifacts_unavailable": 1}
+    assert summary["failed_repos"] == [
+        ("chainsecurity", 2),
+        ("crashed", 1),
+        ("artifact-change", 1),
+    ]
 
 
 def test_smoke_items_filters_by_corpus_path_when_paths_are_given(tmp_path: Path) -> None:
@@ -659,6 +750,52 @@ def test_smoke_does_not_resume_when_run_identity_changes(monkeypatch, tmp_path: 
     assert sorted(submitted) == [0, 1]
     results = json.loads(output_path.read_text(encoding="utf-8"))
     assert {result["target_version"] for result in results} == {"0.4.3"}
+
+
+def test_smoke_does_not_resume_when_runner_source_changes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    corpus = _load_corpus_module()
+    items = [{"index": index, "repo": "test"} for index in range(2)]
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"items": items}), encoding="utf-8")
+    output_path = tmp_path / "smoke-results.json"
+    target_version = "0.4.3"
+    monkeypatch.setattr(corpus, "_smoke_runner_digest", lambda: "old-runner")
+    identity = corpus._smoke_run_identity(manifest_path, target_version, items)
+    corpus._write_smoke_checkpoint(
+        output_path,
+        [
+            {
+                **items[0],
+                "source_compile": "passed",
+                "target_compile": "passed",
+                "target_version": target_version,
+            }
+        ],
+        identity,
+    )
+    monkeypatch.setattr(corpus, "_smoke_runner_digest", lambda: "new-runner")
+    submitted: list[int] = []
+
+    def fake_smoke_one(item, requested_target):
+        submitted.append(item["index"])
+        return {
+            **item,
+            "source_compile": "passed",
+            "target_compile": "passed",
+            "target_version": requested_target,
+        }
+
+    monkeypatch.setattr(corpus, "_smoke_one", fake_smoke_one)
+
+    corpus.smoke_corpus(manifest_path, output_path, target_version, 2, 0)
+
+    assert sorted(submitted) == [0, 1]
+    checkpoint = json.loads(
+        corpus._checkpoint_path(output_path).read_text(encoding="utf-8")
+    )
+    assert checkpoint["identity"]["runner_sha256"] == "new-runner"
 
 
 def test_smoke_does_not_resume_results_that_are_not_an_ordered_prefix(

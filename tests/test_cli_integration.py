@@ -63,6 +63,45 @@ def x() -> uint256:
     } == {"lib.vy": "passed", "main.vy": "passed"}
 
 
+def test_repeated_singleton_natspec_fields_compile_after_rewrite(tmp_path: Path) -> None:
+    contract = tmp_path / "documented.vy"
+    contract.write_text(
+        '''# @version 0.3.10
+@external
+def collect_fees() -> uint256:
+    """
+    @dev First detail
+    @dev Second detail
+    @dev Third detail
+    @dev Fourth detail
+    """
+    return 0
+''',
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--check", "--report-json", str(report)])
+
+    assert code == 1
+    file = json.loads(report.read_text(encoding="utf-8"))["files"][0]
+    assert file["validation"]["target_compile"] == "passed"
+    assert file["validation"]["decision"]["status"] == "passed"
+
+
+def test_legacy_erc4626_interface_getter_stub_compiles(tmp_path: Path) -> None:
+    contract = tmp_path / "ERC4626Mock.vy"
+    shutil.copyfile(Path("tests/fixtures/erc4626_interface_getter.vy"), contract)
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--check", "--report-json", str(report)])
+
+    assert code == 1
+    file = json.loads(report.read_text(encoding="utf-8"))["files"][0]
+    assert file["validation"]["target_compile"] == "passed"
+    assert file["validation"]["decision"]["status"] == "passed"
+
+
 def test_alpha_target_validation_uses_alpha_compiler(tmp_path: Path) -> None:
     contract = tmp_path / "sqrt.vy"
     contract.write_text(

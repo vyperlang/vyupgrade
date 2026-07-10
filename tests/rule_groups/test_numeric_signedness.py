@@ -678,6 +678,50 @@ def f():
     assert "self.points_sum[convert(gauge_type, int128)]" in result.source
 
 
+def test_unsigned_loop_prefers_casting_nonnegative_signed_constant(config) -> None:
+    source = """# @version 0.3.7
+MAX_SKIP_TICKS: constant(int256) = 1024
+
+@external
+def f(flag: bool):
+    for i in range(MAX_SKIP_TICKS + 1):
+        assert i < MAX_SKIP_TICKS
+        assert flag and i < MAX_SKIP_TICKS
+"""
+
+    first = apply_rules(source, config())
+    second = apply_rules(first.source, config())
+
+    assert (
+        "for i: uint256 in range(convert(MAX_SKIP_TICKS, uint256) + 1"
+        in first.source
+    )
+    assert "assert i < convert(MAX_SKIP_TICKS, uint256)" in first.source
+    assert "assert flag and i < convert(MAX_SKIP_TICKS, uint256)" in first.source
+    assert "convert(i, int256)" not in first.source
+    assert second.source == first.source
+
+
+def test_unsigned_loop_casts_to_signed_when_constant_does_not_fit(config) -> None:
+    source = """# @version 0.3.7
+MIN_TICK: constant(int256) = -1
+
+@external
+def f(flag: bool):
+    for i in range(10):
+        assert i > MIN_TICK
+        assert flag and i > MIN_TICK
+"""
+
+    first = apply_rules(source, config())
+    second = apply_rules(first.source, config())
+
+    assert "assert convert(i, int256) > MIN_TICK" in first.source
+    assert "assert flag and convert(i, int256) > MIN_TICK" in first.source
+    assert "convert(MIN_TICK, uint256)" not in first.source
+    assert second.source == first.source
+
+
 def test_signed_parameter_not_converted_in_uint_arithmetic(config) -> None:
     source = """# @version 0.3.7
 @internal
