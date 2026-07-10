@@ -742,14 +742,16 @@ def _reserved_local_names(rule_context: RuleContext) -> tuple[str, list[Fix], li
 def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     facts = rule_context.facts
+    lines = source.splitlines(keepends=True)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     in_docstring = False
     quote = ""
     doc_function_start: int | None = None
     seen_singleton_natspec_fields: set[str] = set()
+    reserved_natspec_tags: set[str] = set()
     offset = 0
-    for line_no, raw_line in enumerate(source.splitlines(keepends=True), start=1):
+    for line_no, raw_line in enumerate(lines, start=1):
         line = raw_line.rstrip("\n")
         stripped = line.lstrip()
         if not in_docstring:
@@ -758,10 +760,12 @@ def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list
                 in_docstring = True
                 doc_function_start = _function_start_at_line(facts, line_no)
                 seen_singleton_natspec_fields = set()
+                reserved_natspec_tags = _natspec_tags_until_close(lines, line_no, quote)
                 if stripped.count(quote) >= 2:
                     in_docstring = False
                     doc_function_start = None
                     seen_singleton_natspec_fields = set()
+                    reserved_natspec_tags = set()
             offset += len(raw_line)
             continue
 
@@ -769,12 +773,17 @@ def _natspec_strictness(rule_context: RuleContext) -> tuple[str, list[Fix], list
             in_docstring = False
             doc_function_start = None
             seen_singleton_natspec_fields = set()
+            reserved_natspec_tags = set()
             offset += len(raw_line)
             continue
 
         singleton_tag = _natspec_singleton_tag(line)
         if singleton_tag is not None and singleton_tag in seen_singleton_natspec_fields:
-            replacement = _duplicate_natspec_line_replacement(line, singleton_tag)
+            replacement = _duplicate_natspec_line_replacement(
+                line,
+                singleton_tag,
+                reserved_natspec_tags,
+            )
             if replacement is None:
                 edits.append(TextEdit(offset, offset + len(raw_line), ""))
                 fixes.append(
@@ -833,14 +842,39 @@ def _natspec_singleton_tag(line: str) -> str | None:
     return tag if tag in _SINGLETON_NATSPEC_FIELDS else None
 
 
-def _duplicate_natspec_line_replacement(line: str, tag: str) -> str | None:
+def _natspec_tags_until_close(lines: list[str], start: int, quote: str) -> set[str]:
+    tags: set[str] = set()
+    for raw_line in lines[start:]:
+        stripped = raw_line.lstrip()
+        if stripped.startswith(quote):
+            break
+        match = re.match(r"^\s*@(\S+)", raw_line)
+        if match is not None:
+            tags.add(match.group(1))
+    return tags
+
+
+def _next_custom_natspec_tag(tag: str, reserved: set[str]) -> str:
+    candidate = f"custom:{tag}"
+    suffix = 2
+    while candidate in reserved:
+        candidate = f"custom:{tag}-{suffix}"
+        suffix += 1
+    reserved.add(candidate)
+    return candidate
+
+
+def _duplicate_natspec_line_replacement(
+    line: str, tag: str, reserved: set[str]
+) -> str | None:
     match = re.match(r"^(\s*)@[A-Za-z_][A-Za-z0-9_-]*(\s+.*)?$", line)
     if match is None:
         return line
     body = match.group(2)
     if body is None or not body.strip():
         return None
-    return f"{match.group(1)}@custom:{tag}{body}"
+    custom_tag = _next_custom_natspec_tag(tag, reserved)
+    return f"{match.group(1)}@{custom_tag}{body}"
 
 
 def _function_param_names_at_start(facts: SourceFacts, start: int | None) -> set[str] | None:

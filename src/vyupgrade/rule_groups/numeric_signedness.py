@@ -146,6 +146,13 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_range_header(source, start)
                     or (name in constant_values and _inside_shift_amount(source, start))
                     or _inside_type_subscript(source, start)
+                    or (
+                        name in constant_values
+                        and comparison_target is not None
+                        and not _integer_value_fits_type(
+                            constant_values[name], comparison_target
+                        )
+                    )
                     or _signed_comparison_target_type_at(source, start, name, vars_for_line)
                     is not None
                     or _signed_internal_call_arg_target_type(source, start, name, facts) is not None
@@ -205,19 +212,42 @@ def _mixed_signed_unsigned_arithmetic(
                 loop_type = normalize_type(
                     _nearest_loop_var_type(source, start, name) or vars_for_line.get(name) or ""
                 )
+                local_expr = _local_expression(source, start)
+                comparison_expr = _comparison_expression_at(source, start)
+                comparison_peer = _comparison_peer(comparison_expr, name)
+                if (
+                    comparison_peer in constant_values
+                    and comparison_peer in facts.global_vars
+                    and _is_signed_integer_type(vars_for_line.get(comparison_peer))
+                    and _integer_value_fits_type(
+                        constant_values[comparison_peer], loop_type
+                    )
+                ):
+                    # The signed-name pass casts this constant to the loop
+                    # variable's unsigned type. Avoid casting both operands in
+                    # opposite directions.
+                    continue
                 unsigned_comparison_target = _unsigned_comparison_target_type_at(
                     source, start, name, vars_for_line, facts
                 )
                 if unsigned_comparison_target == loop_type:
                     unsigned_comparison_target = None
+                arithmetic_target = (
+                    None
+                    if comparison_peer is not None
+                    else _unsigned_name_signed_arithmetic_target_type(
+                        local_expr, name, lhs_type, vars_for_line, facts
+                    )
+                )
                 target_type = (
                     _signed_comparison_target_type(
-                        _comparison_expression_at(source, start), name, vars_for_line
+                        comparison_expr, name, vars_for_line
+                    )
+                    or _signed_comparison_target_type_at(
+                        source, start, name, vars_for_line
                     )
                     or unsigned_comparison_target
-                    or _unsigned_name_signed_arithmetic_target_type(
-                        _local_expression(source, start), name, lhs_type, vars_for_line, facts
-                    )
+                    or arithmetic_target
                     or _signed_internal_call_arg_target_type(source, start, name, facts)
                     or _signed_external_call_arg_target_type(
                         source, start, name, facts, vars_for_line

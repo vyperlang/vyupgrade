@@ -441,6 +441,21 @@ def __init__(vault: address):
     assert "asset = staticcall ERC4626(vault).asset()" in result.source
 
 
+def test_legacy_implemented_erc4626_stub_uses_abi_type_for_interface_getter(config) -> None:
+    source = Path("tests/fixtures/erc4626_interface_getter.vy").read_text(encoding="utf-8")
+
+    first = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+    second = apply_rules(
+        first.source,
+        config(source_version="0.3.10", target_version="0.4.3"),
+    )
+
+    assert "asset: public(IERC20)" in first.source
+    assert "def asset() -> address: view" in first.source
+    assert "def asset() -> IERC20: view" not in first.source
+    assert second.source == first.source
+
+
 def test_pure_local_interface_view_implementation_becomes_view(config) -> None:
     source = """# @version 0.3.3
 interface ERC165:

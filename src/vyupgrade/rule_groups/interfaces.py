@@ -953,7 +953,13 @@ def _public_getter_return_type(facts: SourceFacts, name: str) -> str | None:
         if match is None:
             break
         type_name = match.group(1).strip()
-    return type_name.strip() or None
+    type_name = type_name.strip()
+    if type_name in facts.interfaces:
+        # Interface values are encoded as addresses by public getters.  A
+        # legacy built-in interface stub must describe the getter's ABI, not
+        # the source-level storage type, or modern Vyper rejects `implements`.
+        return "address"
+    return type_name or None
 
 
 def _implementation_mutability(facts: SourceFacts, name: str, default: str) -> str:

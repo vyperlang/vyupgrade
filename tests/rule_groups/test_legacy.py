@@ -195,6 +195,56 @@ def collect_fees() -> uint256:
     assert any(fix.rule == "VY058" for fix in result.fixes)
 
 
+def test_natspec_strictness_uniquely_numbers_repeated_singleton_fields(config) -> None:
+    source = '''# @version 0.3.10
+# @dev This ordinary comment is not NatSpec.
+NOTE: constant(String[32]) = "@dev neither is this string"
+
+@external
+def collect_fees() -> uint256:
+    """
+    @dev First detail
+    @dev Second detail
+    @dev Third detail
+    @dev Fourth detail
+    """
+    return 0
+'''
+
+    first = apply_rules(source, config())
+    second = apply_rules(first.source, config())
+
+    assert "@dev First detail" in first.source
+    assert "@custom:dev Second detail" in first.source
+    assert "@custom:dev-2 Third detail" in first.source
+    assert "@custom:dev-3 Fourth detail" in first.source
+    assert "# @dev This ordinary comment is not NatSpec." in first.source
+    assert '"@dev neither is this string"' in first.source
+    assert second.source == first.source
+
+
+def test_natspec_strictness_avoids_existing_custom_tag_names(config) -> None:
+    source = '''# @version 0.3.10
+@external
+def collect_fees() -> uint256:
+    """
+    @dev First detail
+    @custom:dev Existing custom detail
+    @dev Second detail
+    @custom:dev-3 Another existing custom detail
+    @dev Third detail
+    """
+    return 0
+'''
+
+    result = apply_rules(source, config())
+
+    assert "@custom:dev Existing custom detail" in result.source
+    assert "@custom:dev-2 Second detail" in result.source
+    assert "@custom:dev-3 Another existing custom detail" in result.source
+    assert "@custom:dev-4 Third detail" in result.source
+
+
 def test_pragma_rewrite_bumps_to_enabled_target_version(config) -> None:
     source = """# @version 0.3.8
 @external
