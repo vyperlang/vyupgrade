@@ -60,6 +60,7 @@ class CompileResult:
     artifacts: dict[str, object] | None = None
     stderr: str | None = None
     command: list[str] | None = None
+    unavailable_formats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,96 @@ class TargetOverlay:
     paths: Mapping[Path, Path]
     source_roots: tuple[Path, ...]
     search_paths: tuple[Path, ...]
+
+
+def unavailable_validation_artifacts(result: CompileResult) -> list[str]:
+    artifacts = result.artifacts or {}
+    validators: dict[str, Callable[[object], bool]] = {
+        "abi": _valid_abi_artifact,
+        "method_identifiers": _valid_method_identifiers_artifact,
+        "layout": _valid_layout_artifact,
+    }
+    return [
+        name
+        for name, validator in validators.items()
+        if not validator(artifacts.get(name))
+    ]
+
+
+def _valid_abi_artifact(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    return all(_valid_abi_entry(entry) for entry in value)
+
+
+def _valid_abi_entry(value: object) -> bool:
+    if not isinstance(value, dict) or not _nonempty_string(value.get("type")):
+        return False
+    if "name" in value and not isinstance(value["name"], str):
+        return False
+    for field in ("inputs", "outputs"):
+        if field in value and not _valid_abi_parameters(value[field]):
+            return False
+    return True
+
+
+def _valid_abi_parameters(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    for parameter in value:
+        if not isinstance(parameter, dict) or not _nonempty_string(parameter.get("type")):
+            return False
+        if "name" in parameter and not isinstance(parameter["name"], str):
+            return False
+        if "components" in parameter and not _valid_abi_parameters(parameter["components"]):
+            return False
+    return True
+
+
+def _valid_method_identifiers_artifact(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        _nonempty_string(signature) and _nonempty_string(selector)
+        for signature, selector in value.items()
+    )
+
+
+def _valid_layout_artifact(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if "storage_layout" in value:
+        storage = value["storage_layout"]
+        transient = value.get("transient_storage_layout", {})
+        return _valid_storage_entries(storage) and _valid_storage_entries(transient)
+    return _valid_storage_entries(value)
+
+
+def _valid_storage_entries(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(name, str)
+        and isinstance(entry, dict)
+        and _valid_storage_slot(entry.get("slot"))
+        and _nonempty_string(entry.get("type"))
+        for name, entry in value.items()
+    )
+
+
+def _valid_storage_slot(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 0
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return int(value, 0) >= 0
+    except ValueError:
+        return False
+
+
+def _nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
@@ -85,6 +176,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         SOURCE_FORMATS,
         (),
         suppress_warnings,
+        allow_unsupported_formats=True,
     )
     if _should_retry_source_with_final_newline(path, result):
         return _compile_source_file_with_final_newline(command, path, config, suppress_warnings)
@@ -118,6 +210,7 @@ def _compile_source_file_with_final_newline(
             SOURCE_FORMATS,
             (),
             suppress_warnings,
+            allow_unsupported_formats=True,
         )
     finally:
         with suppress(OSError):
@@ -138,24 +231,30 @@ def _should_retry_source_with_final_newline(path: Path, result: CompileResult) -
 def compile_target_source(
     path: Path, source: str, config: Config, overlay: TargetOverlay | None = None
 ) -> CompileResult:
-    if path.suffix != ".vy":
+    if path.suffix not in {".vy", ".vyi"}:
         return CompileResult("skipped")
-    compile_source = _target_validation_source(
-        source, config.target_version, is_interface=path.suffix == ".vyi"
-    )
     if overlay is not None:
         tmp_path = overlay.paths.get(path.resolve())
         if tmp_path is not None:
             command, suppress_warnings = _prepare_command(
                 config.target_vyper, config.target_version, config.target_python
             )
-            compile_config = _target_compile_config(compile_source, config)
+            compile_config = _target_compile_config(source, config)
             compile_config = replace(
                 compile_config,
                 compiler_search_paths=_overlay_search_paths(
                     overlay, compile_config.compiler_search_paths
                 ),
             )
+            if path.suffix == ".vyi":
+                return _compile_target_interface(
+                    command,
+                    tmp_path,
+                    source,
+                    compile_config,
+                    (),
+                    suppress_warnings,
+                )
             return _run_compile(
                 command,
                 tmp_path,
@@ -163,6 +262,19 @@ def compile_target_source(
                 extra_paths=(),
                 suppress_warnings=suppress_warnings,
             )
+    command, suppress_warnings = _prepare_command(
+        config.target_vyper, config.target_version, config.target_python
+    )
+    compile_config = _target_compile_config(source, config)
+    if path.suffix == ".vyi":
+        return _compile_target_interface(
+            command,
+            path,
+            source,
+            compile_config,
+            (path.parent,),
+            suppress_warnings,
+        )
     try:
         tmp = tempfile.NamedTemporaryFile(
             "w",
@@ -181,13 +293,9 @@ def compile_target_source(
             delete=False,
         )
     with tmp:
-        tmp.write(compile_source)
+        tmp.write(source)
         tmp_path = Path(tmp.name)
     try:
-        command, suppress_warnings = _prepare_command(
-            config.target_vyper, config.target_version, config.target_python
-        )
-        compile_config = _target_compile_config(compile_source, config)
         return _run_compile(
             command,
             tmp_path,
@@ -197,6 +305,64 @@ def compile_target_source(
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _compile_target_interface(
+    command: list[str],
+    path: Path,
+    source: str,
+    config: Config,
+    extra_paths: tuple[Path, ...],
+    suppress_warnings: bool,
+) -> CompileResult:
+    try:
+        interface_file = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix="vyupgrade_interface_",
+            suffix=".vyi",
+            dir=path.parent,
+            delete=False,
+        )
+    except OSError as exc:
+        return CompileResult(
+            "failed", stderr=f"could not stage interface for target validation: {exc}"
+        )
+    interface_path = Path(interface_file.name)
+    harness_path: Path | None = None
+    try:
+        with interface_file:
+            interface_file.write(source)
+        harness_file = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix="vyupgrade_interface_harness_",
+            suffix=".vy",
+            dir=path.parent,
+            delete=False,
+        )
+        harness_path = Path(harness_file.name)
+        with harness_file:
+            harness_file.write(
+                f"#pragma version {config.target_version}\n"
+                f"import {interface_path.stem} as InterfaceUnderTest\n"
+            )
+        interface_command = _with_project_import_dependencies(command, interface_path)
+        return _run_compile(
+            interface_command,
+            harness_path,
+            config,
+            extra_paths=tuple(dict.fromkeys((path.parent, *extra_paths))),
+            suppress_warnings=suppress_warnings,
+        )
+    except OSError as exc:
+        return CompileResult(
+            "failed", stderr=f"could not create interface validation harness: {exc}"
+        )
+    finally:
+        interface_path.unlink(missing_ok=True)
+        if harness_path is not None:
+            harness_path.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -243,15 +409,7 @@ def target_overlay(
                 continue
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            validation_source = _standard_json_package_dependency_source(path, source, common)
-            target.write_text(
-                _target_validation_source(
-                    validation_source,
-                    target_version,
-                    is_interface=path.suffix == ".vyi",
-                ),
-                encoding="utf-8",
-            )
+            target.write_text(source, encoding="utf-8")
             paths[path] = target
             overlay_search_paths.add(target.parent)
         _copy_project_configs(common, root)
@@ -583,6 +741,7 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         ("ast",),
         (),
         suppress_warnings,
+        allow_unsupported_formats=True,
     )
 
 
@@ -1310,6 +1469,9 @@ def _run_compile_with_formats(
     formats: tuple[str, ...],
     extra_paths: tuple[Path, ...],
     suppress_warnings: bool,
+    *,
+    allow_unsupported_formats: bool = False,
+    unavailable_formats: tuple[str, ...] = (),
 ) -> CompileResult:
     full = [*_with_project_import_dependencies(command, path), "-f", ",".join(formats)]
     if _supports_search_paths(command):
@@ -1338,32 +1500,90 @@ def _run_compile_with_formats(
         stderr = proc.stderr.strip() or proc.stdout.strip()
         unsupported = _unsupported_output_format(stderr, formats)
         if unsupported is not None:
+            unavailable = tuple(dict.fromkeys((*unavailable_formats, unsupported)))
+            if not allow_unsupported_formats:
+                return CompileResult(
+                    "failed",
+                    stderr=f"target compiler did not support required output format '{unsupported}': {stderr}",
+                    command=full,
+                    unavailable_formats=unavailable,
+                )
             fallback_formats = tuple(name for name in formats if name != unsupported)
+            if not fallback_formats:
+                return CompileResult(
+                    "failed",
+                    stderr="source compiler did not support any requested output formats",
+                    command=full,
+                    unavailable_formats=unavailable,
+                )
             return _run_compile_with_formats(
-                command, path, config, fallback_formats, extra_paths, suppress_warnings
+                command,
+                path,
+                config,
+                fallback_formats,
+                extra_paths,
+                suppress_warnings,
+                allow_unsupported_formats=True,
+                unavailable_formats=unavailable,
             )
-        span_error_format = _legacy_span_error_format(stderr, formats)
+        span_error_format = (
+            _legacy_span_error_format(stderr, formats) if allow_unsupported_formats else None
+        )
         if span_error_format is not None:
+            unavailable = tuple(
+                dict.fromkeys((*unavailable_formats, span_error_format))
+            )
             fallback_formats = tuple(name for name in formats if name != span_error_format)
+            if not fallback_formats:
+                return CompileResult(
+                    "failed",
+                    stderr="source compiler could not produce any requested output formats",
+                    command=full,
+                    unavailable_formats=unavailable,
+                )
             return _run_compile_with_formats(
-                command, path, config, fallback_formats, extra_paths, suppress_warnings
+                command,
+                path,
+                config,
+                fallback_formats,
+                extra_paths,
+                suppress_warnings,
+                allow_unsupported_formats=True,
+                unavailable_formats=unavailable,
             )
         retry_command = _command_with_missing_module_dependency(command, path, stderr)
         if retry_command is not None:
             return _run_compile_with_formats(
-                retry_command, path, config, formats, extra_paths, suppress_warnings
+                retry_command,
+                path,
+                config,
+                formats,
+                extra_paths,
+                suppress_warnings,
+                allow_unsupported_formats=allow_unsupported_formats,
+                unavailable_formats=unavailable_formats,
             )
         return CompileResult(
-            "failed", stderr=proc.stderr.strip() or proc.stdout.strip(), command=full
+            "failed",
+            stderr=proc.stderr.strip() or proc.stdout.strip(),
+            command=full,
+            unavailable_formats=unavailable_formats,
         )
     try:
         artifacts = _parse_outputs(proc.stdout, formats)
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         return CompileResult(
-            "failed", stderr=f"could not parse compiler output: {exc}", command=full
+            "failed",
+            stderr=f"could not parse compiler output: {exc}",
+            command=full,
+            unavailable_formats=unavailable_formats,
         )
     return CompileResult(
-        "passed", artifacts=artifacts, stderr=proc.stderr.strip() or None, command=full
+        "degraded" if unavailable_formats else "passed",
+        artifacts=artifacts,
+        stderr=proc.stderr.strip() or None,
+        command=full,
+        unavailable_formats=unavailable_formats,
     )
 
 
@@ -1589,7 +1809,11 @@ def _package_with_version(name: str, version: str) -> str | None:
 
 def _parse_outputs(stdout: str, formats: tuple[str, ...] = FORMATS) -> dict[str, object]:
     chunks = [line for line in stdout.splitlines() if line.strip()]
+    if len(chunks) != len(formats):
+        raise ValueError(
+            f"expected {len(formats)} compiler outputs, received {len(chunks)}"
+        )
     artifacts: dict[str, object] = {}
-    for name, raw in zip(formats, chunks, strict=False):
+    for name, raw in zip(formats, chunks, strict=True):
         artifacts[name] = json.loads(raw)
     return artifacts

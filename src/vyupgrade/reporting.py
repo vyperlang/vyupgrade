@@ -131,10 +131,26 @@ def _render_text_file(file: FileReport) -> str:
         if status == "failed" and error:
             lines.append(f"  {error_label}:")
             lines.extend(f"    {line}" for line in error.splitlines())
+    if file.source_unavailable_formats:
+        lines.append(
+            "  source unavailable outputs: " + ", ".join(file.source_unavailable_formats)
+        )
+    if file.target_unavailable_formats:
+        lines.append(
+            "  target unavailable outputs: " + ", ".join(file.target_unavailable_formats)
+        )
     for label, equal, diff in _artifact_checks(file):
         if equal is not None:
             lines.append(f"  {label}: {equal}")
             lines.extend(f"    {line}" for line in diff)
+    lines.append(f"  validation decision: {file.validation_decision.status}")
+    lines.extend(
+        f"  validation blocker: {issue.message}" for issue in file.validation_decision.blockers
+    )
+    lines.extend(
+        f"  validation waiver: {issue.waiver} ({issue.message})"
+        for issue in file.validation_decision.waivers
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -143,7 +159,13 @@ def _render_text_summary(report: RunReport) -> str:
         "",
         *(f"{verb} {count} {label}" for verb, count, label in _summary_items(report)),
         f"left {report.diagnostic_count} review diagnostics",
+        f"write validation: {report.validation_decision.status}",
     ]
+    waiver_flags = sorted(
+        {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
+    )
+    if waiver_flags:
+        lines.append(f"validation waivers: {', '.join(waiver_flags)}")
     if not report.write_requested and report.changed_count:
         lines.append("run with --write to apply these changes")
     if report.formatter_command:
@@ -169,6 +191,18 @@ def _render_summary(console: Console, report: RunReport) -> None:
             _count_style(report.diagnostic_count),
         )
     )
+    console.print(
+        _label_value(
+            "write validation",
+            report.validation_decision.status,
+            _status_style(report.validation_decision.status),
+        )
+    )
+    waiver_flags = sorted(
+        {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
+    )
+    if waiver_flags:
+        console.print(_label_value("validation waivers", ", ".join(waiver_flags), "vy.warning"))
     if not report.write_requested and report.changed_count:
         console.print(Text("run with --write to apply these changes", style="vy.muted"))
     if report.formatter_command:
@@ -200,10 +234,39 @@ def _render_file(console: Console, file: FileReport) -> None:
             console.print(_indented(f"{error_label}:", "vy.error"))
             for line in error.splitlines():
                 console.print(_indented(f"  {line}", "vy.error"))
+    if file.source_unavailable_formats:
+        console.print(
+            _indented(
+                "source unavailable outputs: " + ", ".join(file.source_unavailable_formats),
+                "vy.warning",
+            )
+        )
+    if file.target_unavailable_formats:
+        console.print(
+            _indented(
+                "target unavailable outputs: " + ", ".join(file.target_unavailable_formats),
+                "vy.error",
+            )
+        )
     for label, equal, diff in _artifact_checks(file):
         if equal is not None:
             console.print(_bool_line(label, equal))
             _render_detail_lines(console, diff)
+    console.print(
+        _label_value(
+            "  validation decision",
+            file.validation_decision.status,
+            _status_style(file.validation_decision.status),
+        )
+    )
+    for issue in file.validation_decision.blockers:
+        console.print(_indented(f"validation blocker: {issue.message}", "vy.error"))
+    for issue in file.validation_decision.waivers:
+        console.print(
+            _indented(
+                f"validation waiver: {issue.waiver} ({issue.message})", "vy.warning"
+            )
+        )
 
 
 def _compile_outputs(file: FileReport) -> tuple[tuple[str, str, str, str | None], ...]:
@@ -311,6 +374,10 @@ def _count_style(count: int) -> str:
 def _status_style(status: str) -> str:
     return {
         "passed": "vy.success",
+        "waived": "vy.warning",
+        "blocked": "vy.error",
+        "not-required": "vy.muted",
+        "degraded": "vy.warning",
         "failed": "vy.error",
         "skipped": "vy.muted",
     }.get(status, "vy.warning")

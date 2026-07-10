@@ -62,8 +62,10 @@ satisfying compiler no newer than the requested target.
 For each file, `vyupgrade` compiles the original under its source compiler and
 the rewritten output under the target compiler, then compares the two
 artifacts. A migration is only written back when every file still compiles
-under the target. Differences in ABI, method identifiers, or storage layout are
-surfaced as diagnostics rather than silently accepted.
+under the target, the source validation succeeded, every required artifact is
+available, and ABI, method identifiers, and storage layout compare equal. This
+write decision is independent of diagnostic selection and rule version gating.
+Standalone `.vyi` inputs are target-compiled through a generated import harness.
 
 Compiler subprocesses run through the bundled `uv`, using
 `uv run --no-project --with vyper==<version>` so each side gets the exact
@@ -76,8 +78,15 @@ For `0.1.0b*` source compilers, `vyupgrade` runs the compiler through a
 `typed-ast` compatibility wrapper so the legacy compiler sees pre-Python-3.8
 AST node classes without requiring a local Python 3.6 or 3.7 interpreter. When
 an old compiler cannot produce a modern validation output format, that format is
-dropped for source validation instead of blocking a compile check that the
-compiler never supported.
+dropped and reported as unavailable. Writes then remain blocked unless the
+source-validation gap is explicitly accepted with `--allow-unvalidated-source`.
+Target compilers must produce every requested validation output.
+
+The target compiler receives the exact migrated source bytes. Historical
+normalization is limited to copied dependencies in the temporary validation
+overlay and is not applied to files that would be written.
+Optional `--format mamushi` output is still produced after this validation and
+is not recompiled; post-format validation remains separate follow-up work.
 
 Dependency inference is intentionally conservative. Exact requirements,
 ordinary version ranges, and Git dependencies are supported. Project-specific
@@ -90,7 +99,7 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--target-version` — target Vyper version or spec (default `0.4.3`).
 - `--source-version` — override the per-file inferred source version.
 - `--diff` — print a unified diff instead of the report.
-- `--write` — apply changes in place (only when every file compiles).
+- `--write` — apply changes in place only after the validation decision passes.
 - `--check` — exit non-zero if any file would change; write nothing.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
 - `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
@@ -102,6 +111,10 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--source-vyper` / `--target-vyper` — pin the exact compiler version for each side.
 - `--source-python` / `--target-python` — pin the Python interpreter for each compiler subprocess.
 - `--compiler-search-paths` — extra import search paths for the compiler.
+- `--allow-unvalidated-source` — write despite a failed source compile or unavailable source artifacts.
+- `--allow-abi-change` — write despite an ABI comparison mismatch.
+- `--allow-method-id-change` — write despite a method-identifier comparison mismatch.
+- `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
 ### Configuration
@@ -118,16 +131,22 @@ report-json = "vyupgrade-report.json"
 aggressive = false
 split-interfaces = false
 format = "none"
+allow-unvalidated-source = false
+allow-abi-change = false
+allow-method-id-change = false
+allow-storage-layout-change = false
 ```
 
 ### Exit codes
 
 - `0` — success.
 - `1` — `--check` found files that would change.
-- `2` — a file failed to compile under the target compiler.
-- `3` — a file failed to compile under the source compiler.
+- `2` — target compilation or required target artifacts failed validation.
+- `3` — source compilation or source artifact availability failed validation.
 - `4` — usage error (no paths, or conflicting flags).
 - `5` — an error-severity diagnostic was raised.
+- `6` — the requested formatter failed.
+- `7` — an unwaived ABI, method-identifier, or storage-layout mismatch blocked the write.
 
 ## Coverage
 

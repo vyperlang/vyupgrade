@@ -6,7 +6,14 @@ from pathlib import Path
 from rich.console import Console
 
 from vyupgrade import __version__
-from vyupgrade.models import Diagnostic, FileReport, Fix, RunReport
+from vyupgrade.models import (
+    Diagnostic,
+    FileReport,
+    Fix,
+    RunReport,
+    ValidationDecision,
+    ValidationIssue,
+)
 from vyupgrade.reporting import (
     THEME,
     HumanReporter,
@@ -76,6 +83,38 @@ def test_render_text_labels_resolved_source_compiler() -> None:
     text = render_text(report)
 
     assert "source compile (0.4.3): passed" in text
+
+
+def test_render_text_records_validation_blockers_and_waivers() -> None:
+    path = Path("changed.vy")
+    blocker = ValidationIssue("abi_changed", "ABI changed after migration", path)
+    waiver = ValidationIssue(
+        "source_compile_failed",
+        "source compilation did not pass",
+        path,
+        "--allow-unvalidated-source",
+    )
+    file_report = FileReport(
+        path=path,
+        changed=True,
+        source_compile="failed",
+        target_compile="passed",
+        validation_decision=ValidationDecision("blocked", False, (blocker,), (waiver,)),
+    )
+    report = RunReport(
+        source_version=None,
+        target_version="0.4.3",
+        files=[file_report],
+        validation_decision=file_report.validation_decision,
+    )
+
+    text = render_text(report)
+
+    assert "validation decision: blocked" in text
+    assert "validation blocker: ABI changed after migration" in text
+    assert "validation waiver: --allow-unvalidated-source" in text
+    assert "write validation: blocked" in text
+    assert "validation waivers: --allow-unvalidated-source" in text
 
 
 def test_render_text_groups_repeated_fixes_and_diagnostics_by_rule_message() -> None:

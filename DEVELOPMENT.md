@@ -55,8 +55,12 @@ The CLI flow is:
 6. `cli._verify_rewrites()` builds a temporary target overlay, compiles migrated
    sources under the target compiler, and compares ABI, method identifiers, and
    storage layout.
-7. The CLI writes diffs, in-place changes, human reports, and JSON reports only
-   after validation has completed.
+7. `validation.decide_run_validation()` turns compiler and artifact outcomes
+   into a typed, fail-closed write decision. Rule selection and diagnostic
+   version gating do not participate in this safety decision.
+8. The CLI writes in-place changes only when the validation decision passes or
+   every blocker has a matching explicit waiver; reports record the decision
+   either way.
 
 Important files:
 
