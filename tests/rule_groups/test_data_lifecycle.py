@@ -85,6 +85,32 @@ def read_flag() -> bool:
     assert any(fix.rule == "VY093" for fix in result.fixes)
 
 
+def test_reserved_flag_getter_ignores_documented_function_examples(config) -> None:
+    source = '''# @version 0.2.12
+"""
+@external
+def flag():
+    pass
+"""
+flag: public(bool)
+
+@external
+def set_flag():
+    self.flag = True
+'''
+    selected = config(source_version="0.2.12", select=frozenset({"VY093"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+    _before_doc, documented, migrated = first.source.split('"""', 2)
+
+    assert "@external\ndef flag():\n    pass" in documented
+    assert "def flag() -> bool:" not in documented
+    assert "_flag: bool" in migrated
+    assert "def flag() -> bool:" in migrated
+    assert second.source == first.source
+
+
 def test_unbounded_dynarray_int128_limit_is_capped(config) -> None:
     source = """# @version 0.3.6
 struct Pair:
@@ -452,6 +478,31 @@ def __init__(owner: address) -> bool:
     assert any(fix.rule == "VY002" and "return value" in fix.message for fix in result.fixes)
 
 
+def test_constructor_decorator_rewrite_ignores_docstrings(config) -> None:
+    source = '''# @version 0.3.10
+"""
+@external
+def __init__():
+    return documented_value
+"""
+
+@external
+def __init__():
+    pass
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY002"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert (
+        '"""\n@external\ndef __init__():\n    return documented_value\n"""'
+        in first.source
+    )
+    assert "@deploy\ndef __init__():" in first.source
+    assert second.source == first.source
+
+
 def test_pr_3769_single_named_reentrancy_lock_is_rewritten(config) -> None:
     source = """# @version 0.3.10
 @nonreentrant("lock")
@@ -464,6 +515,38 @@ def f():
 
     assert '@nonreentrant("lock")' not in result.source
     assert "@nonreentrant\n@external" in result.source
+
+
+def test_nonreentrant_rewrite_ignores_non_code_text(config) -> None:
+    source = '''# @version 0.3.10
+"""
+@internal
+@nonreentrant("docstring")
+def documented_example():
+    pass
+"""
+NOTE: constant(String[64]) = '@nonreentrant("literal")'
+# @nonreentrant("comment")
+
+@internal
+@nonreentrant("actual")
+def f():
+    pass
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY090"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert '@nonreentrant("docstring")' in first.source
+    assert '''NOTE: constant(String[64]) = '@nonreentrant("literal")' '''.strip() in first.source
+    assert '# @nonreentrant("comment")' in first.source
+    assert '@nonreentrant("actual")' not in first.source
+    assert "_vyupgrade_reentrancy_lock_slot: uint256" in first.source
+    assert first.source.index('"""\nNOTE:') < first.source.index(
+        "_vyupgrade_reentrancy_lock_slot"
+    )
+    assert second.source == first.source
 
 
 def test_named_reentrancy_lock_reserves_legacy_storage_slot(config) -> None:

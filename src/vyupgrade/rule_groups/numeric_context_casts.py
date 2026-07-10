@@ -288,7 +288,11 @@ def _typed_external_call_arguments(
                 cursor += len(arg) + 1
                 continue
             vars_for_arg = _vars_for_argument(source, arg_start, arg, vars_for_line)
-            bytes_replacement = _dynamic_bytes_hex_arg_replacement(arg, expected)
+            bytes_replacement = (
+                _dynamic_bytes_hex_arg_replacement(arg, expected)
+                if rule_context.is_enabled("VY053")
+                else None
+            )
             if bytes_replacement is not None:
                 edits.append(TextEdit(arg_start, arg_start + len(arg), bytes_replacement))
                 fixes.append(
@@ -300,6 +304,9 @@ def _typed_external_call_arguments(
                         bytes_replacement,
                     )
                 )
+                cursor = arg_start + len(arg) + 1
+                continue
+            if not rule_context.is_enabled("VY052"):
                 cursor = arg_start + len(arg) + 1
                 continue
             replacement = cast_integer_arg_to_expected(arg, expected, vars_for_arg, facts)

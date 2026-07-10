@@ -23,6 +23,7 @@ from ..source import (
     code_mask,
     find_matching,
     line_number,
+    line_starts_in_code,
     split_top_level_arg_spans,
     split_top_level_args,
     span_is_code,
@@ -45,10 +46,14 @@ def _mixed_signed_unsigned_arithmetic(
     config = rule_context.config
     facts = rule_context.facts
     constant_values = integer_constant_values(source, config.source_ast)
+    mask = rule_context.code_mask
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     offset = 0
     for raw_line in source.splitlines(keepends=True):
+        if not line_starts_in_code(source, mask, offset):
+            offset += len(raw_line)
+            continue
         line = raw_line.rstrip("\n")
         code_line = line.split("#", 1)[0]
         if not code_line.startswith((" ", "\t")) or not (

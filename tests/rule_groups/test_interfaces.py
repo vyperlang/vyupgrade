@@ -65,6 +65,31 @@ interface PayableReceiver:
     assert any(fix.rule == "VY123" for fix in result.fixes)
 
 
+def test_interface_default_function_ignores_docstrings(config) -> None:
+    source = '''#pragma version ^0.3.0
+"""
+interface Documented:
+    def __default__(): payable
+"""
+# interface Commented:
+#     def __default__(): payable
+
+interface PayableReceiver:
+    def __default__(): payable
+    def ping() -> bool: view
+'''
+    selected = config(source_version="0.3.0", select=frozenset({"VY123"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert 'interface Documented:\n    def __default__(): payable\n"""' in first.source
+    assert "#     def __default__(): payable" in first.source
+    assert "interface PayableReceiver:\n    def __default__(): payable" not in first.source
+    assert "    def ping() -> bool: view" in first.source
+    assert second.source == first.source
+
+
 def test_modern_erc_interface_imports(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC4626, ERC721
@@ -76,6 +101,46 @@ asset: public(ERC4626)
 
     assert "from ethereum.ercs import IERC4626, IERC721" in result.source
     assert "asset: public(IERC4626)" in result.source
+
+
+def test_interface_imports_ignore_documented_implements_declarations(config) -> None:
+    source = '''# @version 0.3.10
+"""
+implements: ERC721
+"""
+from vyper.interfaces import ERC721
+
+token: ERC721
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY020"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert '"""\nimplements: ERC721\n"""' in first.source
+    assert "from ethereum.ercs import IERC721" in first.source
+    assert "token: IERC721" in first.source
+    assert "interface ERC721:" not in first.source
+    assert second.source == first.source
+
+
+def test_interface_view_mutability_ignores_documented_implementations(config) -> None:
+    source = '''# @version 0.3.10
+interface Target:
+    def value() -> uint256: nonpayable
+
+"""
+@view
+def value() -> uint256:
+    return 1
+"""
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY014"}))
+
+    result = apply_rules(source, selected)
+
+    assert "def value() -> uint256: nonpayable" in result.source
+    assert not result.fixes
 
 
 def test_interface_storage_assignment_cast_matches_declared_type(config) -> None:

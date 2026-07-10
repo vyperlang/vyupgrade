@@ -67,6 +67,17 @@ def span_is_code(mask: list[bool], start: int, end: int) -> bool:
     return start >= 0 and end <= len(mask) and all(mask[start:end])
 
 
+def line_starts_in_code(source: str, mask: list[bool], offset: int) -> bool:
+    """Return whether the line containing ``offset`` begins outside a string."""
+    line_start = source.rfind("\n", 0, offset) + 1
+    if line_start > 0 and not mask[line_start - 1]:
+        return False
+    first = line_start
+    while first < len(source) and source[first] in " \t":
+        first += 1
+    return span_is_code(mask, line_start, first)
+
+
 def code_identifiers(source: str) -> set[str]:
     mask = code_mask(source)
     return {

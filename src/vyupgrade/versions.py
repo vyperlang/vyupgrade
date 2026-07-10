@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from .source import code_mask, line_starts_in_code
+
 
 PRAGMA_RE = re.compile(r"^\s*#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
 VERSION_RE = re.compile(r"0\.(?:1|2|3|4|5)\.\d+(?:(?:a|b|rc)\d+)?")
@@ -73,8 +75,11 @@ class MigrationContext:
 
 
 def infer_pragma(source: str) -> str | None:
-    match = PRAGMA_RE.search(source)
-    return match.group(1).strip() if match else None
+    mask = code_mask(source)
+    for match in PRAGMA_RE.finditer(source):
+        if line_starts_in_code(source, mask, match.start()):
+            return match.group(1).strip()
+    return None
 
 
 def parse_version(raw: str | None) -> VyperVersion | None:

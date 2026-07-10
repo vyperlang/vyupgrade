@@ -435,13 +435,16 @@ def _sentinel_range_bound(
         ):
             continue
         if not config.aggressive:
-            diagnostics.append(
-                Diagnostic(
-                    "VYD017",
-                    line_number(source, match.start()),
-                    "sentinel range break can be collapsed with bound=... under --aggressive",
+            if rule_context.is_enabled("VYD017"):
+                diagnostics.append(
+                    Diagnostic(
+                        "VYD017",
+                        line_number(source, match.start()),
+                        "sentinel range break can be collapsed with bound=... under --aggressive",
+                    )
                 )
-            )
+            continue
+        if not rule_context.is_enabled("VY071"):
             continue
         stop = _bounded_sentinel_stop(sentinel.stop, bound_arg, bound_value, constant_values)
         edits.append(TextEdit(match.end() + arg_start, match.end() + arg_end, stop))
@@ -621,13 +624,16 @@ def _range_bound(
             args[0], args[1], integer_constant_values(source, config.source_ast)
         )
         if bound is None:
-            diagnostics.append(
-                Diagnostic(
-                    "VYD011",
-                    line_number(source, match.start()),
-                    "range(start, stop) has runtime bounds; add bound=... manually",
+            if rule_context.is_enabled("VYD011"):
+                diagnostics.append(
+                    Diagnostic(
+                        "VYD011",
+                        line_number(source, match.start()),
+                        "range(start, stop) has runtime bounds; add bound=... manually",
+                    )
                 )
-            )
+            continue
+        if not rule_context.is_enabled("VY071"):
             continue
         vars_for_line = facts.vars_at_line(line_number(source, match.start()))
         for cast_edit, before, after in _range_stop_max_value_cast_edits(

@@ -179,6 +179,38 @@ def f(geyser: address):
     assert any(fix.rule == "VY053" for fix in result.fixes)
 
 
+def test_typed_external_call_argument_selection_isolated_by_code(config) -> None:
+    source = """# @version 0.3.10
+interface Target:
+    def f(value: uint256, data: Bytes[32]): nonpayable
+
+@external
+def g(target: address, value: int128):
+    Target(target).f(value, 0x00)
+"""
+
+    bytes_only = apply_rules(source, config(select=frozenset({"VY053"})))
+    integers_only = apply_rules(source, config(select=frozenset({"VY052"})))
+    without_bytes = apply_rules(source, config(ignore=frozenset({"VY053"})))
+    without_integers = apply_rules(source, config(ignore=frozenset({"VY052"})))
+
+    assert 'Target(target).f(value, b"\\x00")' in bytes_only.source
+    assert "convert(value, uint256)" not in bytes_only.source
+    assert "Target(target).f(convert(value, uint256), 0x00)" in integers_only.source
+    assert "convert(value, uint256)" in without_bytes.source
+    assert 'b"\\x00"' not in without_bytes.source
+    assert "convert(value, uint256)" not in without_integers.source
+    assert 'b"\\x00"' in without_integers.source
+    assert (
+        apply_rules(bytes_only.source, config(select=frozenset({"VY053"}))).source
+        == bytes_only.source
+    )
+    assert (
+        apply_rules(integers_only.source, config(select=frozenset({"VY052"}))).source
+        == integers_only.source
+    )
+
+
 def test_fixed_bytes_hex_literal_is_left_alone(config) -> None:
     source = """# @version 0.3.10
 value: bytes32 = 0x00

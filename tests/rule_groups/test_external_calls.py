@@ -22,6 +22,32 @@ def set_delegation(delegation: address):
     assert any(fix.rule == "VY057" for fix in result.fixes)
 
 
+def test_ignored_external_call_results_ignore_non_code_text(config) -> None:
+    source = '''# @version 0.3.10
+interface Target:
+    def balanceOf(owner: address) -> uint256: view
+
+@external
+def f(target: address):
+    """
+    staticcall Target(target).balanceOf(self)
+    """
+    note: String[64] = "staticcall Target(target).balanceOf(self)"
+    # staticcall Target(target).balanceOf(self)
+    staticcall Target(target).balanceOf(self)
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY057"}))
+
+    first = apply_rules(source, selected)
+    second = apply_rules(first.source, selected)
+
+    assert '"""\n    staticcall Target(target).balanceOf(self)\n    """' in first.source
+    assert 'note: String[64] = "staticcall Target(target).balanceOf(self)"' in first.source
+    assert "# staticcall Target(target).balanceOf(self)" in first.source
+    assert "__vyupgrade_discard_12: uint256 = staticcall Target(target).balanceOf(self)" in first.source
+    assert second.source == first.source
+
+
 def test_ignored_external_call_without_return_stays_statement(config) -> None:
     source = """# @version 0.3.10
 interface Token:

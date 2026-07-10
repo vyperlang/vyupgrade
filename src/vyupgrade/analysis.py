@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .source import code_mask, span_is_code
+from .source import code_mask, find_matching, span_is_code
 from .source import split_top_level_args
 from .vyper_builtins import (
     BUILTIN_INTERFACE_PARAMS,
@@ -370,12 +370,31 @@ def iterable_element_type(type_name: str | None) -> str | None:
     if type_name is None:
         return None
     type_name = type_name.strip()
-    dyn_match = re.match(r"DynArray\[\s*([^,\]]+)", type_name)
-    if dyn_match:
-        return dyn_match.group(1).strip()
-    static_match = re.match(r"(.+)\[[^\]]+\]$", type_name)
-    if static_match and not type_name.startswith(("HashMap[", "Bytes[", "String[")):
-        return static_match.group(1).strip()
+    if type_name.startswith("DynArray["):
+        open_index = type_name.find("[")
+        close_index = find_matching(type_name, open_index, "[", "]")
+        if close_index == len(type_name) - 1:
+            parts = split_top_level_args(type_name[open_index + 1 : close_index])
+            if parts is not None and len(parts) == 2:
+                return parts[0].strip()
+    if type_name.endswith("]"):
+        depth = 0
+        for index in range(len(type_name) - 1, -1, -1):
+            char = type_name[index]
+            if char == "]":
+                depth += 1
+            elif char == "[":
+                depth -= 1
+                if depth == 0:
+                    element = type_name[:index].strip()
+                    length = type_name[index + 1 : -1].strip()
+                    if (
+                        element
+                        and length
+                        and element not in {"Bytes", "DynArray", "HashMap", "String"}
+                    ):
+                        return element
+                    break
     return None
 
 

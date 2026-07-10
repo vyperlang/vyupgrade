@@ -16,6 +16,32 @@ def f(items: DynArray[address, 10]):
     assert "for item: address in items:" in result.source
 
 
+def test_nested_dynarray_loop_type_inference(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(items: DynArray[DynArray[uint256, 2], 3]):
+    for item in items:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for item: DynArray[uint256, 2] in items:" in result.source
+
+
+def test_nested_static_array_loop_type_inference(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(items: uint256[2][3]):
+    for item in items:
+        pass
+"""
+
+    result = apply_rules(source, config())
+
+    assert "for item: uint256[2] in items:" in result.source
+
+
 def test_range_loop_uses_known_bound_integer_type(config) -> None:
     source = """# @version 0.3.10
 N_COINS: constant(int128) = 2
@@ -347,6 +373,27 @@ def f(start: uint256):
     assert "for i: uint256 in range" in result.source
 
 
+def test_range_bound_selection_does_not_leak_fix_edits(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(start: uint256):
+    for i in range(start, start + 101):
+        pass
+"""
+
+    selected_diagnostic = apply_rules(source, config(select=frozenset({"VYD011"})))
+    ignored_fix = apply_rules(source, config(ignore=frozenset({"VY071"})))
+    fix_only_config = config(
+        source_version="0.3.10", select=frozenset({"VY071"})
+    )
+    fix_only = apply_rules(source, fix_only_config)
+
+    assert selected_diagnostic.source == source
+    assert "bound=101" not in ignored_fix.source
+    assert not [fix for fix in ignored_fix.fixes if fix.rule == "VY071"]
+    assert apply_rules(fix_only.source, fix_only_config).source == fix_only.source
+
+
 def test_sentinel_break_range_warns_without_rewrite_by_default(config) -> None:
     source = """# @version 0.3.10
 MAX_POOLS: constant(uint256) = 2000
@@ -389,6 +436,34 @@ def f(pool_count: uint256) -> uint256:
     assert "if i == pool_count" not in result.source
     assert any(fix.rule == "VY071" for fix in result.fixes)
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD017"]
+
+
+def test_sentinel_range_selection_does_not_leak_aggressive_edits(config) -> None:
+    source = """# @version 0.3.10
+MAX_POOLS: constant(uint256) = 2000
+
+@external
+def f(pool_count: uint256):
+    for i in range(MAX_POOLS):
+        if i == pool_count:
+            break
+        pass
+"""
+
+    selected_diagnostic = apply_rules(
+        source, config(select=frozenset({"VYD017"}), aggressive=True)
+    )
+    ignored_fix = apply_rules(source, config(ignore=frozenset({"VY071"}), aggressive=True))
+    fix_only_config = config(
+        source_version="0.3.10", select=frozenset({"VY071"}), aggressive=True
+    )
+    fix_only = apply_rules(source, fix_only_config)
+
+    assert selected_diagnostic.source == source
+    assert "if i == pool_count:" in ignored_fix.source
+    assert "bound=MAX_POOLS" not in ignored_fix.source
+    assert not [fix for fix in ignored_fix.fixes if fix.rule == "VY071"]
+    assert apply_rules(fix_only.source, fix_only_config).source == fix_only.source
 
 
 def test_sentinel_break_range_skips_min_when_constant_stop_is_within_bound(config) -> None:

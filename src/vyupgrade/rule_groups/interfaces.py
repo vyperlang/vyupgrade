@@ -488,13 +488,17 @@ def _implemented_interface_methods(
 
 
 def _implemented_interface_names(source: str) -> set[str]:
+    mask = code_mask(source)
     names: set[str] = set()
     for match in re.finditer(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
+        if not span_is_code(mask, match.start(1), match.end(1)):
+            continue
         names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group(1)))
     return names
 
 
 def _view_implementation_names(source: str) -> set[str]:
+    mask = code_mask(source)
     names = {
         match.group(1)
         for match in re.finditer(
@@ -502,9 +506,13 @@ def _view_implementation_names(source: str) -> set[str]:
             source,
             re.MULTILINE,
         )
+        if span_is_code(mask, match.start(1), match.end(1))
     }
     decorators: set[str] = set()
-    for line in source.splitlines():
+    offsets = _line_offsets(source)
+    for index, line in enumerate(source.splitlines(keepends=True)):
+        if not _line_match_starts_outside_string(source, mask, offsets[index]):
+            continue
         stripped = line.strip()
         decorator = re.fullmatch(r"@([A-Za-z_][A-Za-z0-9_]*)", stripped)
         if decorator is not None:
@@ -1159,6 +1167,7 @@ def _interface_default_function(
     source = rule_context.source
     lines = source.splitlines(keepends=True)
     offsets = _line_offsets(source)
+    mask = rule_context.code_mask
     interface_indent: int | None = None
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -1168,6 +1177,9 @@ def _interface_default_function(
         line = lines[index]
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        if not _line_match_starts_outside_string(source, mask, offsets[index]):
             index += 1
             continue
         indent = len(line) - len(line.lstrip(" \t"))
