@@ -143,6 +143,14 @@ def _render_text_file(file: FileReport) -> str:
         if equal is not None:
             lines.append(f"  {label}: {equal}")
             lines.extend(f"    {line}" for line in diff)
+    if file.original_sha256 is not None:
+        lines.append(f"  original SHA-256: {file.original_sha256}")
+    if file.candidate_sha256 is not None:
+        lines.append(f"  candidate SHA-256: {file.candidate_sha256}")
+    if file.final_sha256 is not None:
+        lines.append(f"  final SHA-256: {file.final_sha256}")
+    if file.final_matches_candidate is not None:
+        lines.append(f"  final bytes match candidate: {file.final_matches_candidate}")
     lines.append(f"  validation decision: {file.validation_decision.status}")
     lines.extend(
         f"  validation blocker: {issue.message}" for issue in file.validation_decision.blockers
@@ -168,6 +176,10 @@ def _render_text_summary(report: RunReport) -> str:
         lines.append(f"validation waivers: {', '.join(waiver_flags)}")
     if not report.write_requested and report.changed_count:
         lines.append("run with --write to apply these changes")
+    if report.write_status != "skipped":
+        lines.append(f"write transaction: {report.write_status}")
+        if report.write_output:
+            lines.append(report.write_output.rstrip())
     if report.formatter_command:
         lines.append(f"formatter: {report.formatter_status}")
         if report.formatter_output:
@@ -205,6 +217,16 @@ def _render_summary(console: Console, report: RunReport) -> None:
         console.print(_label_value("validation waivers", ", ".join(waiver_flags), "vy.warning"))
     if not report.write_requested and report.changed_count:
         console.print(Text("run with --write to apply these changes", style="vy.muted"))
+    if report.write_status != "skipped":
+        console.print(
+            _label_value(
+                "write transaction",
+                report.write_status,
+                _status_style(report.write_status),
+            )
+        )
+        if report.write_output:
+            console.print(report.write_output.rstrip())
     if report.formatter_command:
         console.print(
             _label_value(
@@ -252,6 +274,16 @@ def _render_file(console: Console, file: FileReport) -> None:
         if equal is not None:
             console.print(_bool_line(label, equal))
             _render_detail_lines(console, diff)
+    if file.original_sha256 is not None:
+        console.print(_indented(f"original SHA-256: {file.original_sha256}", "vy.muted"))
+    if file.candidate_sha256 is not None:
+        console.print(_indented(f"candidate SHA-256: {file.candidate_sha256}", "vy.muted"))
+    if file.final_sha256 is not None:
+        console.print(_indented(f"final SHA-256: {file.final_sha256}", "vy.muted"))
+    if file.final_matches_candidate is not None:
+        console.print(
+            _bool_line("final bytes match candidate", file.final_matches_candidate)
+        )
     console.print(
         _label_value(
             "  validation decision",
@@ -376,6 +408,9 @@ def _status_style(status: str) -> str:
         "passed": "vy.success",
         "waived": "vy.warning",
         "blocked": "vy.error",
+        "rollback-incomplete": "vy.error",
+        "committed": "vy.success",
+        "no-op": "vy.muted",
         "not-required": "vy.muted",
         "degraded": "vy.warning",
         "failed": "vy.error",

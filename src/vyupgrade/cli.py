@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -21,7 +21,15 @@ from .compiler import (
     unavailable_validation_artifacts,
 )
 from .interfaces import split_interfaces_to_vyi
-from .models import Config, Diagnostic, FileReport, RewriteResult, RunReport
+from .models import (
+    Config,
+    Diagnostic,
+    FileReport,
+    GeneratedFile,
+    RewriteResult,
+    RunReport,
+    ValidationDecision,
+)
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
 from .rule_registry import is_enabled
@@ -34,6 +42,7 @@ from .versions import (
     default_evm_version_for_spec,
     infer_pragma,
 )
+from .write_plan import MigrationPlan, PlanConflictError, WriteTransactionError
 
 
 @dataclass
@@ -96,89 +105,106 @@ def main(argv: list[str] | None = None) -> int:
         return 4
 
     files = discover_files(config.paths)
-    reports: list[FileReport] = []
-    diff_chunks: list[str] = []
-    write_back: list[tuple[Path, str]] = []
     human_reporter = None if config.diff else HumanReporter(sys.stdout)
     if human_reporter:
         human_reporter.start(config.source_version, config.target_version)
 
     rewrites = _prepare_rewrites(files, config)
-    _verify_rewrites(rewrites, config)
-    validation_decision = decide_run_validation(
-        (work.report for work in rewrites), config
-    )
-
-    for work in rewrites:
-        if work.report.changed:
-            _record_change(work.path, work.original, work.rewrite.source, write_back, diff_chunks)
-        reports.append(work.report)
-        if human_reporter:
-            human_reporter.file(work.report)
-        for generated_file in work.rewrite.generated_files:
-            previous = (
-                generated_file.path.read_text(encoding="utf-8")
-                if generated_file.path.exists()
-                else ""
-            )
-            if not _record_change(
-                generated_file.path,
-                previous,
-                generated_file.source,
-                write_back,
-                diff_chunks,
-            ):
-                continue
-            generated_report = FileReport(
-                path=generated_file.path, changed=True, fixes=[generated_file.fix]
-            )
-            reports.append(generated_report)
-            if human_reporter:
-                human_reporter.file(generated_report)
+    reports, generated_reports, plan, plan_error = _build_migration_plan(rewrites)
+    if plan_error is None:
+        _verify_rewrites(rewrites, generated_reports, config, plan)
+        validation_decision = decide_run_validation(reports, config)
+    else:
+        validation_decision = decide_run_validation((), config)
 
     run_report = RunReport(
         source_version=config.source_version,
         target_version=config.target_version,
         files=reports,
         write_requested=config.write,
-        wrote_changes=config.write and validation_decision.write_allowed,
         validation_decision=validation_decision,
         test_command=config.test_command,
     )
+    if plan_error is not None:
+        run_report.write_status = "failed"
+        run_report.write_output = plan_error
 
+    if config.write and plan_error is None and validation_decision.write_allowed:
+        if config.format == "mamushi" and plan.writes:
+            _run_mamushi(plan, run_report)
+            if run_report.formatter_status == "passed":
+                _verify_rewrites(rewrites, generated_reports, config, plan)
+                validation_decision = decide_run_validation(reports, config)
+                run_report.validation_decision = validation_decision
+                if not validation_decision.write_allowed:
+                    run_report.write_status = "blocked"
+                    run_report.write_output = (
+                        "formatted candidates did not pass final validation"
+                    )
+            else:
+                run_report.write_status = "failed"
+                run_report.write_output = "formatter failed before the write transaction"
+        if (
+            run_report.formatter_status != "failed"
+            and validation_decision.write_allowed
+        ):
+            try:
+                run_report.wrote_changes = plan.commit()
+                run_report.write_status = (
+                    "committed" if run_report.wrote_changes else "no-op"
+                )
+                run_report.wrote_changes, _mismatches = plan.refresh_final_state()
+            except WriteTransactionError as exc:
+                changed, mismatches = plan.refresh_final_state()
+                run_report.wrote_changes = changed
+                run_report.write_status = (
+                    "rollback-incomplete" if exc.rollback_incomplete else "failed"
+                )
+                run_report.write_output = str(exc)
+                if mismatches:
+                    run_report.write_output += "; on-disk bytes differ from candidates: " + ", ".join(
+                        str(path) for path in mismatches
+                    )
+
+    diff_chunks = plan.diff_chunks()
     if config.diff and diff_chunks:
         _write_diff(diff_chunks, sys.stdout)
-
-    if config.write and validation_decision.write_allowed:
-        for path, content in write_back:
-            path.write_text(content, encoding="utf-8")
-        if config.format == "mamushi" and write_back:
-            _run_mamushi([path for path, _ in write_back], run_report)
-
-    formatter_failed = run_report.formatter_status == "failed"
 
     if (
         config.test_command
         and config.write
         and validation_decision.write_allowed
-        and not formatter_failed
+        and run_report.write_status in {"committed", "no-op"}
     ):
-        proc = subprocess.run(
-            config.test_command, shell=True, capture_output=True, text=True, timeout=600
-        )
-        run_report.test_status = "passed" if proc.returncode == 0 else "failed"
-        run_report.test_output = (proc.stdout + proc.stderr).strip()
+        _run_test_command(config.test_command, run_report)
+        run_report.wrote_changes, mismatches = plan.refresh_final_state()
+        if mismatches:
+            drift = "test command changed planned destinations: " + ", ".join(
+                str(path) for path in mismatches
+            )
+            run_report.test_status = "failed"
+            run_report.test_output = "\n".join(
+                part for part in (run_report.test_output, drift) if part
+            )
 
     if config.report_json:
         write_json_report(config.report_json, run_report)
 
     if human_reporter:
+        for report in reports:
+            human_reporter.file(report)
         human_reporter.summary(run_report)
 
+    if run_report.write_status in {"failed", "rollback-incomplete"}:
+        if run_report.formatter_status == "failed":
+            return 6
+        return 9
     if (exit_code := validation_exit_code(validation_decision)) is not None:
         return exit_code
-    if formatter_failed:
+    if run_report.formatter_status == "failed":
         return 6
+    if run_report.test_status == "failed":
+        return 8
     if config.check and any(file.changed for file in reports):
         return 1
     if any(diag.severity == "error" for file in reports for diag in file.diagnostics):
@@ -189,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
 def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
     rewrites: list[RewriteWork] = []
     for path in files:
-        original = path.read_text(encoding="utf-8")
+        original = path.read_bytes().decode("utf-8")
         source_version = config.source_version or infer_pragma(original)
         context = MigrationContext.from_specs(source_version, config.target_version)
         if context.source_newer_than_target():
@@ -265,28 +291,37 @@ def _prepare_rewrites(files: list[Path], config: Config) -> list[RewriteWork]:
     return rewrites
 
 
-def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> None:
-    target_sources = {work.path: work.rewrite.source for work in rewrites}
+def _verify_rewrites(
+    rewrites: list[RewriteWork],
+    generated_reports: list[tuple[GeneratedFile, FileReport]],
+    config: Config,
+    plan: MigrationPlan,
+) -> None:
+    target_sources = {
+        work.path: plan.candidate_source(work.path, work.rewrite.source)
+        for work in rewrites
+    }
     for work in rewrites:
         target_sources.update(
             {
-                generated_file.path: generated_file.source
+                generated_file.path: plan.candidate_source(
+                    generated_file.path, generated_file.source
+                )
                 for generated_file in work.rewrite.generated_files
             }
         )
+    for generated_file, report in generated_reports:
+        target_sources[report.path] = plan.candidate_source(
+            report.path, generated_file.source
+        )
     with target_overlay(target_sources, config.target_version, config.compiler_search_paths) as overlay:
         for work in rewrites:
+            _reset_target_validation(work.report)
             if any(diagnostic.rule == "VYD016" for diagnostic in work.report.diagnostics):
                 continue
-            target_compile = compile_target_source(work.path, work.rewrite.source, config, overlay)
-            work.report.target_compile = target_compile.status
-            work.report.target_unavailable_artifacts = unavailable_validation_artifacts(
-                target_compile
-            )
-            work.report.target_unavailable_formats = list(target_compile.unavailable_formats)
-            work.report.target_error = (
-                target_compile.stderr if target_compile.status == "failed" else None
-            )
+            target_source = target_sources[work.path]
+            target_compile = compile_target_source(work.path, target_source, config, overlay)
+            _record_target_compile(work.report, target_compile)
             abi_equal, method_ids_equal, storage_layout_equal = compare_artifacts(
                 work.source_compile, target_compile
             )
@@ -303,6 +338,43 @@ def _verify_rewrites(rewrites: list[RewriteWork], config: Config) -> None:
             _add_validation_diagnostics(
                 work.report, work.source_version, config, work.source_compiler
             )
+        for _generated_file, report in generated_reports:
+            _reset_target_validation(report)
+            target_compile = compile_target_source(
+                report.path,
+                target_sources[report.path],
+                config,
+                overlay,
+            )
+            _record_target_compile(report, target_compile)
+
+
+def _record_target_compile(report: FileReport, target_compile: CompileResult) -> None:
+    report.target_compile = target_compile.status
+    report.target_unavailable_artifacts = unavailable_validation_artifacts(target_compile)
+    report.target_unavailable_formats = list(target_compile.unavailable_formats)
+    report.target_error = (
+        target_compile.stderr if target_compile.status == "failed" else None
+    )
+
+
+def _reset_target_validation(report: FileReport) -> None:
+    report.target_compile = "skipped"
+    report.target_unavailable_artifacts.clear()
+    report.target_unavailable_formats.clear()
+    report.target_error = None
+    report.abi_equal = None
+    report.method_ids_equal = None
+    report.storage_layout_equal = None
+    report.abi_diff.clear()
+    report.method_id_diff.clear()
+    report.storage_layout_diff.clear()
+    report.validation_decision = ValidationDecision()
+    report.diagnostics = [
+        diagnostic
+        for diagnostic in report.diagnostics
+        if diagnostic.rule not in {"VYD006", "VYD007", "VYD008", "VYD009"}
+    ]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -334,25 +406,40 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _record_change(
-    path: Path,
-    previous: str,
-    current: str,
-    write_back: list[tuple[Path, str]],
-    diff_chunks: list[str],
-) -> bool:
-    if previous == current:
-        return False
-    write_back.append((path, current))
-    diff_chunks.extend(
-        difflib.unified_diff(
-            previous.splitlines(keepends=True),
-            current.splitlines(keepends=True),
-            fromfile=str(path),
-            tofile=str(path),
-        )
-    )
-    return True
+def _build_migration_plan(
+    rewrites: list[RewriteWork],
+) -> tuple[
+    list[FileReport],
+    list[tuple[GeneratedFile, FileReport]],
+    MigrationPlan,
+    str | None,
+]:
+    reports = [work.report for work in rewrites]
+    generated_reports: list[tuple[GeneratedFile, FileReport]] = []
+    for work in rewrites:
+        for generated_file in work.rewrite.generated_files:
+            generated_report = FileReport(
+                path=generated_file.path,
+                changed=True,
+                fixes=[generated_file.fix],
+            )
+            reports.append(generated_report)
+            generated_reports.append((generated_file, generated_report))
+
+    plan = MigrationPlan()
+    try:
+        for work in rewrites:
+            plan.add_source(
+                work.path,
+                work.original,
+                work.rewrite.source,
+                work.report,
+            )
+        for generated_file, report in generated_reports:
+            plan.add_generated(generated_file.path, generated_file.source, report)
+    except PlanConflictError as exc:
+        return reports, generated_reports, plan, str(exc)
+    return reports, generated_reports, plan, None
 
 
 def _write_diff(diff_chunks: list[str], stream: TextIO) -> None:
@@ -500,35 +587,110 @@ def _evm_default_diagnostic(source_version: str | None, target_version: str) -> 
     return Diagnostic("VYD009", 1, message)
 
 
-def _run_mamushi(paths: list[Path], report: RunReport) -> None:
-    command = ["mamushi", *map(str, paths)]
-    report.formatter_command = shlex.join(command)
+def _run_mamushi(plan: MigrationPlan, report: RunReport) -> None:
+    with tempfile.TemporaryDirectory(prefix="vyupgrade-format-") as raw_directory:
+        directory = Path(raw_directory)
+        staged: dict[Path, Path] = {}
+        try:
+            common_parent = Path(
+                os.path.commonpath([str(entry.path.parent) for entry in plan.writes])
+            )
+            for entry in plan.writes:
+                staged_path = directory / entry.path.relative_to(common_parent)
+                staged_path.parent.mkdir(parents=True, exist_ok=True)
+                staged_path.write_bytes(entry.candidate)
+                staged[entry.path] = staged_path
+        except OSError as exc:
+            report.formatter_status = "failed"
+            report.formatter_output = f"could not stage formatter inputs: {exc}"
+            return
+
+        command = ["mamushi", *map(str, staged.values())]
+        report.formatter_command = shlex.join(command)
+        try:
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=120)
+        except FileNotFoundError:
+            report.formatter_status = "failed"
+            report.formatter_output = "mamushi executable not found"
+            return
+        except subprocess.TimeoutExpired as exc:
+            report.formatter_status = "failed"
+            output = _command_output(exc.stdout, exc.stderr)
+            report.formatter_output = "\n".join(
+                part
+                for part in (
+                    f"mamushi timed out after {exc.timeout:g} seconds",
+                    output,
+                )
+                if part
+            )
+            return
+        except OSError as exc:
+            report.formatter_status = "failed"
+            report.formatter_output = f"mamushi failed to start: {exc}"
+            return
+
+        report.formatter_status = "passed" if proc.returncode == 0 else "failed"
+        output = _command_output(proc.stdout, proc.stderr)
+        if proc.returncode != 0:
+            report.formatter_output = "\n".join(
+                part
+                for part in (
+                    f"mamushi exited with status {proc.returncode}",
+                    output,
+                )
+                if part
+            )
+            return
+
+        try:
+            formatted = {
+                destination: staged_path.read_bytes()
+                for destination, staged_path in staged.items()
+            }
+            for candidate in formatted.values():
+                candidate.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            report.formatter_status = "failed"
+            report.formatter_output = f"could not read formatted candidates: {exc}"
+            return
+        plan.update_candidates(formatted)
+        report.formatter_output = output or None
+
+
+def _run_test_command(command: str, report: RunReport) -> None:
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=120)
-    except FileNotFoundError:
-        report.formatter_status = "failed"
-        report.formatter_output = "mamushi executable not found"
-        return
+        proc = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
     except subprocess.TimeoutExpired as exc:
-        report.formatter_status = "failed"
+        report.test_status = "failed"
         output = _command_output(exc.stdout, exc.stderr)
-        report.formatter_output = "\n".join(
-            part for part in (f"mamushi timed out after {exc.timeout:g} seconds", output) if part
+        report.test_output = "\n".join(
+            part
+            for part in (f"test command timed out after {exc.timeout:g} seconds", output)
+            if part
         )
         return
     except OSError as exc:
-        report.formatter_status = "failed"
-        report.formatter_output = f"mamushi failed to start: {exc}"
+        report.test_status = "failed"
+        report.test_output = f"test command failed to start: {exc}"
         return
 
-    report.formatter_status = "passed" if proc.returncode == 0 else "failed"
+    report.test_status = "passed" if proc.returncode == 0 else "failed"
     output = _command_output(proc.stdout, proc.stderr)
-    if proc.returncode != 0:
-        report.formatter_output = "\n".join(
-            part for part in (f"mamushi exited with status {proc.returncode}", output) if part
-        )
+    if proc.returncode == 0:
+        report.test_output = output or None
     else:
-        report.formatter_output = output or None
+        report.test_output = "\n".join(
+            part
+            for part in (f"test command exited with status {proc.returncode}", output)
+            if part
+        )
 
 
 def _command_output(stdout: str | bytes | None, stderr: str | bytes | None) -> str:

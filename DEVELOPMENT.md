@@ -52,15 +52,31 @@ The CLI flow is:
    rule pipeline from `RULES`.
 5. Optional interface splitting generates sibling `.vyi` files when
    `--split-interfaces` is enabled and `VY120` is active.
-6. `cli._verify_rewrites()` builds a temporary target overlay, compiles migrated
+6. `write_plan.MigrationPlan` resolves every destination, rejects duplicate
+   generated outputs and pre-existing generated-file collisions, and records
+   original and candidate SHA-256 hashes.
+7. `cli._verify_rewrites()` builds a temporary target overlay, compiles migrated
    sources under the target compiler, and compares ABI, method identifiers, and
    storage layout.
-7. `validation.decide_run_validation()` turns compiler and artifact outcomes
+8. `validation.decide_run_validation()` turns compiler and artifact outcomes
    into a typed, fail-closed write decision. Rule selection and diagnostic
    version gating do not participate in this safety decision.
-8. The CLI writes in-place changes only when the validation decision passes or
-   every blocker has a matching explicit waiver; reports record the decision
-   either way.
+9. Optional formatting runs only on temporary candidate files. The exact
+   formatted bytes replace the candidates and pass through target validation
+   again before writes are allowed.
+10. The write plan stages every destination and commits it as one rollback-aware
+    transaction only when validation passes or every blocker has an explicit
+    waiver. A post-write test failure is reported and exits nonzero, but does not
+    roll back the write or any external side effects from the test command.
+
+The write transaction rechecks every planned source and no-op dependency before
+commit and checks each changed destination again immediately before replacement.
+Portable POSIX filesystems do not expose a content compare-and-swap rename, so an
+external writer that ignores coordination can still race the final check. Existing
+files are copied to staging with `copy2`, permission modes are retained, and changed
+hard-linked or read-only files are rejected. Platform-specific ownership, ACL, flag,
+or extended-attribute behavior remains filesystem dependent. An incomplete rollback
+is reported explicitly with final on-disk hashes instead of being described as clean.
 
 Important files:
 
@@ -70,6 +86,8 @@ Important files:
 - `src/vyupgrade/versions.py` owns supported Vyper versions and spec resolution.
 - `src/vyupgrade/compiler.py` owns compiler subprocesses, temporary overlays,
   dependency inference, and artifact comparison canonicalization.
+- `src/vyupgrade/write_plan.py` owns destination collision checks, candidate
+  hashes, staged replacements, and rollback on partial write failure.
 - `src/vyupgrade/analysis.py` extracts lightweight source facts for type-aware
   rules.
 - `src/vyupgrade/ast_facts.py` extracts facts from compiler AST output.
