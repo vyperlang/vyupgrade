@@ -18,8 +18,12 @@ from vyupgrade.compiler import (
     compile_source_file,
     compile_target_source,
     target_overlay,
+    unavailable_validation_artifacts,
 )
 from vyupgrade.models import Config
+
+
+TARGET_COMPILER_OUTPUT = '[]\n{}\n{}\n{"ast_type":"Module","body":[]}\n'
 
 
 @pytest.fixture(autouse=True)
@@ -130,8 +134,72 @@ def test_target_compile_fails_on_unsupported_required_layout(monkeypatch) -> Non
     assert result.status == "failed"
     assert result.unavailable_formats == ("layout",)
     assert "required output format 'layout'" in (result.stderr or "")
-    assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout"
+    assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout,ast"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "ast_error",
+    [
+        "KeyError: 'ast'",
+        "ValueError: start (57,7) precedes previous end (58,0)",
+    ],
+)
+def test_target_compile_falls_back_when_optional_ast_is_unavailable(
+    monkeypatch,
+    ast_error: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        requested = command[command.index("-f") + 1]
+        if requested.endswith(",ast"):
+            return subprocess.CompletedProcess(command, 1, "", ast_error)
+        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
+
+    assert result.status == "passed"
+    assert result.artifacts == {"abi": [], "method_identifiers": {}, "layout": {}}
+    assert result.unavailable_formats == ("ast",)
+    assert [call[call.index("-f") + 1] for call in calls] == [
+        "abi,method_identifiers,layout,ast",
+        "abi,method_identifiers,layout",
+    ]
+
+
+@pytest.mark.parametrize(
+    "required_error",
+    [
+        "ValueError: Unsupported format type 'layout'",
+        "ValueError: start (57,7) precedes previous end (58,0)",
+    ],
+)
+def test_target_compile_does_not_drop_required_formats_after_ast_fallback(
+    monkeypatch,
+    required_error: str,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        requested = command[command.index("-f") + 1]
+        error = "KeyError: 'ast'" if requested.endswith(",ast") else required_error
+        return subprocess.CompletedProcess(command, 1, "", error)
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = _run_compile(
+        ["vyper"], Path("/tmp/contract.vy"), Config(paths=(Path("/tmp/contract.vy"),))
+    )
+
+    assert result.status == "failed"
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -277,7 +345,7 @@ def test_target_compile_fails_when_compiler_omits_requested_output(monkeypatch) 
     )
 
     assert result.status == "failed"
-    assert result.stderr == "could not parse compiler output: expected 3 compiler outputs, received 2"
+    assert result.stderr == "could not parse compiler output: expected 4 compiler outputs, received 2"
 
 
 def test_compile_installs_declared_vyper_import_dependencies(monkeypatch, tmp_path) -> None:
@@ -302,7 +370,7 @@ snekmate = "0.1.2"
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -335,7 +403,7 @@ def test_compile_skips_search_paths_for_legacy_prerelease_cli(monkeypatch, tmp_p
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -365,7 +433,7 @@ snekmate = "0.1.2"
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -397,7 +465,7 @@ def test_compile_can_suppress_modern_vyper_warnings(monkeypatch) -> None:
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "[]\n{}\n{}\n", "")
+        return subprocess.CompletedProcess(command, 0, TARGET_COMPILER_OUTPUT, "")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -449,7 +517,7 @@ curve-std = {git = "https://github.com/curvefi/curve-std.git", rev = "09ad21756c
                 stdout="",
                 stderr="vyper.exceptions.ModuleNotFound: curve_std.stableswap.lp_oracle_2",
             )
-        return subprocess.CompletedProcess(command, 0, stdout="[]\n{}\n{}\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout=TARGET_COMPILER_OUTPUT, stderr="")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -473,7 +541,7 @@ def test_compile_installs_common_import_dependency_without_pyproject(monkeypatch
 
     def fake_run(command, **_kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout="[]\n{}\n{}\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout=TARGET_COMPILER_OUTPUT, stderr="")
 
     monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
 
@@ -1583,7 +1651,11 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
         "passed",
         artifacts={
             "layout": {
-                "token": {"location": "storage", "slot": 0, "type": "ERC20"},
+                "token": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "interface ERC20",
+                },
                 "balance": {"location": "storage", "slot": 1, "type": "uint256"},
                 "pool": {"location": "storage", "slot": 2, "type": "interface IPool"},
                 "factories": {
@@ -1609,7 +1681,7 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                 "tokens": {
                     "location": "storage",
                     "slot": 7,
-                    "type": "DynArray[ERC20, 255]",
+                    "type": "DynArray[interface ERC20, 255]",
                 },
             }
         },
@@ -1619,12 +1691,12 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
         artifacts={
             "layout": {
                 "storage_layout": {
-                    "token": {"slot": 0, "type": "/tmp/IERC20.vyi", "n_slots": 1},
+                    "token": {"slot": 0, "type": "/tmp/ERC20.vyi", "n_slots": 1},
                     "balance": {"slot": 1, "type": "uint256", "n_slots": 1},
-                    "pool": {"slot": 2, "type": "IPool", "n_slots": 1},
+                    "pool": {"slot": 2, "type": "/tmp/IPool.vyi", "n_slots": 1},
                     "factories": {
                         "slot": 3,
-                        "type": "HashMap[address, IFactory]",
+                        "type": "HashMap[address, /tmp/IFactory.vyi]",
                         "n_slots": 1,
                     },
                     "loan": {
@@ -1644,18 +1716,1293 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
                     },
                     "tokens": {
                         "slot": 7,
-                        "type": "DynArray[/tmp/site-packages/vyper/builtins/interfaces/IERC20.vyi, 255]",
+                        "type": "DynArray[/tmp/site-packages/vyper/builtins/interfaces/ERC20.vyi, 255]",
                         "n_slots": 256,
                     },
-                },
-                "transient_storage_layout": {
-                    "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock"},
                 },
             }
         },
     )
 
     assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    ("source_type", "target_type", "equal"),
+    [
+        (
+            "corpus/vyper/contracts/chainsecurity/10_0x60f/contracts/bridgers/IBridger",
+            "/tmp/target/contracts/bridgers/IBridger.vyi",
+            False,
+        ),
+        (
+            "HashMap[address, corpus/vyper/contracts/project/interfaces/IBridger]",
+            "HashMap[address, /tmp/target/interfaces/IBridger.vyi]",
+            False,
+        ),
+        (
+            "DynArray[corpus/vyper/contracts/project/interfaces/IBridger, 8]",
+            "DynArray[/tmp/target/interfaces/IBridger.vyi, 8]",
+            False,
+        ),
+        ("/tmp/modules/one/Pool", "/tmp/modules/two/Pool", False),
+        ("/tmp/modules/one/Pool.vy", "/tmp/modules/two/Pool.vy", False),
+        (
+            "DynArray[/tmp/modules/one/Pool.vy, 8]",
+            "DynArray[/tmp/modules/two/Pool.vy, 8]",
+            False,
+        ),
+        ("IBridger", "/tmp/foo+bar/IBridger.vyi", False),
+        ("IBridger", "/tmp/foo@bar/IBridger.vyi", False),
+        ("IBridger", "/tmp/foo (copy)/IBridger.vyi", False),
+        ("IBridger", r"C:\target\interfaces\IBridger.vyi", False),
+        (
+            "HashMap[address, IBridger]",
+            "HashMap[address, /tmp/foo+bar/IBridger.vyi]",
+            False,
+        ),
+        (
+            "DynArray[IBridger, 8]",
+            "DynArray[/tmp/foo (copy)/IBridger.vyi, 8]",
+            False,
+        ),
+        (
+            "HashMap[IBridger, DynArray[IPool, 8]]",
+            "HashMap[/tmp/foo@bar/IBridger.vyi, DynArray[/tmp/foo (copy)/IPool.vyi, 8]]",
+            False,
+        ),
+        (
+            "HashMap[IBridger, DynArray[IPool, 8]]",
+            r"HashMap[C:\target\IBridger.vyi, DynArray[C:\target\IPool.vyi, 8]]",
+            False,
+        ),
+        ("interface IBridger", "/tmp/IBridger.vyi", True),
+        (
+            "HashMap[address, interface IBridger]",
+            "HashMap[address, /tmp/IBridger.vyi]",
+            True,
+        ),
+        (
+            "DynArray[interface IBridger, 8]",
+            "DynArray[/tmp/IBridger.vyi, 8]",
+            True,
+        ),
+    ],
+)
+def test_compare_artifacts_normalizes_relative_and_absolute_storage_type_paths(
+    source_type: str,
+    target_type: str,
+    equal: bool,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {"bridger": {"slot": 4, "type": source_type}}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {"bridger": {"slot": 4, "type": target_type}}}},
+    )
+
+    assert compare_artifacts(source, target) == (None, None, equal)
+    assert bool(compare_artifact_details(source, target)[2]) is not equal
+
+
+@pytest.mark.parametrize(
+    "type_name",
+    [
+        "/tmp/modules/Pool",
+        "/tmp/modules/Pool.vy",
+        r"C:\modules\Pool.vy",
+        "DynArray[/tmp/modules/Pool.vy, 8]",
+    ],
+)
+def test_compare_artifacts_preserves_matching_non_interface_paths_as_unknown(
+    type_name: str,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"storage_layout": {"pool": {"slot": 4, "type": type_name}}}
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"storage_layout": {"pool": {"slot": 4, "type": type_name}}}
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    "target_type",
+    [
+        "DynArray[/tmp/foo,bar/IPool.vyi, 8]",
+        "DynArray[/tmp/foo[bar]/IPool.vyi, 8]",
+    ],
+)
+def test_compare_artifacts_preserves_ambiguous_path_delimiters_fail_closed(
+    target_type: str,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "pools": {"slot": 4, "type": "DynArray[IPool, 8]"}
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {"pools": {"slot": 4, "type": target_type}}
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(target) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+    assert compare_artifacts(source, target) == (None, None, None)
+    assert compare_artifact_details(source, target)[2] == []
+
+
+def test_compare_artifacts_normalizes_nested_module_layouts() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "access": {
+                        "hasRole": {
+                            "slot": 0,
+                            "type": "HashMap[bytes32, HashMap[address, bool]]",
+                        },
+                        "getRoleAdmin": {
+                            "slot": 1,
+                            "type": "HashMap[bytes32, bytes32]",
+                        },
+                    },
+                    "vault": {
+                        "accounting": {
+                            "owner": {"slot": 2, "type": "address"},
+                        }
+                    },
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "access": {
+                        "hasRole": {
+                            "slot": "0x0",
+                            "type": "HashMap[bytes32, HashMap[address, bool]]",
+                        },
+                        "getRoleAdmin": {
+                            "slot": "1",
+                            "type": "HashMap[bytes32, bytes32]",
+                        },
+                    },
+                    "vault": {
+                        "accounting": {
+                            "owner": {"slot": "0x2", "type": "address"},
+                        }
+                    },
+                },
+                "code_layout": {
+                    "ignored": {"offset": 0, "type": "uint256", "length": 32}
+                },
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifact_details(source, target)[2] == []
+
+
+def test_layout_artifact_accepts_code_only_immutables_as_empty_storage() -> None:
+    immutable_only = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "code_layout": {
+                    "OWNER": {"offset": 0, "type": "address", "length": 32},
+                    "module": {
+                        "LIMIT": {"offset": 32, "type": "uint256", "length": 32}
+                    },
+                }
+            }
+        },
+    )
+    empty_storage = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {}}},
+    )
+
+    assert unavailable_validation_artifacts(immutable_only) == ["abi", "method_identifiers"]
+    assert compare_artifacts(immutable_only, empty_storage) == (None, None, True)
+    assert compare_artifact_details(immutable_only, empty_storage)[2] == []
+
+
+def test_layout_artifact_accepts_all_known_top_level_wrappers() -> None:
+    result = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "owner": {"slot": 0, "type": "address", "n_slots": 1}
+                },
+                "transient_storage_layout": {
+                    "scratch": {"slot": 0, "type": "uint256", "n_slots": 1}
+                },
+                "code_layout": {
+                    "LIMIT": {"offset": 0, "type": "uint256", "length": 32}
+                },
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(result) == ["abi", "method_identifiers"]
+
+
+@pytest.mark.parametrize(
+    "unknown_sibling",
+    [
+        {"metadata": {}},
+        {"owner": {"slot": 1, "type": "address", "n_slots": 1}},
+    ],
+)
+def test_layout_artifact_rejects_unknown_top_level_wrapper_siblings(
+    unknown_sibling: dict[str, object],
+) -> None:
+    result = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "owner": {"slot": 0, "type": "address", "n_slots": 1}
+                },
+                **unknown_sibling,
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+@pytest.mark.parametrize(
+    "code_layout",
+    [
+        {"OWNER": {"offset": 0, "type": "address"}},
+        {"OWNER": {"offset": -1, "type": "address", "length": 32}},
+        {"OWNER": {"offset": 0, "type": "address", "length": 0}},
+        {
+            "OWNER": {
+                "offset": 0,
+                "type": "address",
+                "length": 32,
+                "unknown": 1,
+            }
+        },
+        {"module": {}},
+    ],
+)
+def test_layout_artifact_rejects_malformed_code_layout(
+    code_layout: dict[str, object],
+) -> None:
+    result = CompileResult("passed", artifacts={"layout": {"code_layout": code_layout}})
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {
+            "storage_layout": {
+                "owner": {"slot": 0, "type": "address", "n_slots": 1},
+                "balance": {"slot": 1, "type": "uint256"},
+            }
+        },
+        {
+            "storage_layout": {
+                "owner": {"slot": 0, "type": "address", "n_slots": 1}
+            },
+            "transient_storage_layout": {
+                "scratch": {"slot": 0, "type": "uint256"}
+            },
+        },
+    ],
+)
+def test_layout_artifact_rejects_mixed_n_slots_schema(
+    layout: dict[str, object],
+) -> None:
+    result = CompileResult("passed", artifacts={"layout": layout})
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {
+            "storage_layout": {
+                "values": {
+                    "slot": 2**256 - 1,
+                    "type": "uint256[2]",
+                    "n_slots": 2,
+                }
+            }
+        },
+        {
+            "storage_layout": {
+                "values": {"slot": 2**256 - 2, "type": "uint256[3]", "n_slots": 3}
+            }
+        },
+    ],
+)
+def test_layout_artifact_rejects_storage_spans_past_uint256(
+    layout: dict[str, object],
+) -> None:
+    result = CompileResult("passed", artifacts={"layout": layout})
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+@pytest.mark.parametrize("wrapper", ["storage_layout", "transient_storage_layout"])
+def test_layout_artifact_rejects_overlapping_ranges(wrapper: str) -> None:
+    result = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                wrapper: {
+                    "values": {"slot": 4, "type": "uint256[2]", "n_slots": 2},
+                    "owner": {"slot": 5, "type": "address", "n_slots": 1},
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+def test_compare_artifact_details_qualifies_nested_module_changes() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "left": {"owner": {"slot": 0, "type": "address"}},
+                    "right": {"owner": {"slot": 1, "type": "address"}},
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "left": {"owner": {"slot": 0, "type": "address"}},
+                    "right": {"owner": {"slot": 2, "type": "address"}},
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2] == [
+        "changed storage: right.owner slot 1 address -> 2 address"
+    ]
+
+
+@pytest.mark.parametrize("malformed_side", ["source", "target"])
+@pytest.mark.parametrize(
+    "malformed_layout",
+    [
+        {"storage_layout": {"vault": {"owner": {"slot": 0}}}},
+        {
+            "storage_layout": {
+                "vault": {
+                    "owner": {"slot": 0, "type": "address", "n_slots": None}
+                }
+            }
+        },
+        {
+            "storage_layout": {
+                "vault": {
+                    "owner": {
+                        "slot": 0,
+                        "type": "address",
+                        "nested": {"balance": {"slot": 1, "type": "uint256"}},
+                    }
+                }
+            }
+        },
+    ],
+)
+def test_compare_artifacts_rejects_malformed_nested_module_layouts(
+    malformed_side: str, malformed_layout: dict[str, object]
+) -> None:
+    valid_layout = {
+        "storage_layout": {
+            "vault": {"owner": {"slot": 0, "type": "address"}},
+        }
+    }
+    source_layout = malformed_layout if malformed_side == "source" else valid_layout
+    target_layout = malformed_layout if malformed_side == "target" else valid_layout
+    source = CompileResult("passed", artifacts={"layout": source_layout})
+    target = CompileResult("passed", artifacts={"layout": target_layout})
+
+    malformed = source if malformed_side == "source" else target
+    assert unavailable_validation_artifacts(malformed) == ["abi", "method_identifiers", "layout"]
+    assert compare_artifacts(source, target) == (None, None, None)
+    assert compare_artifact_details(source, target)[2] == []
+
+
+def test_compare_artifacts_rejects_changed_unknown_storage_leaf_scalar() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "owner": {
+                        "slot": 0,
+                        "type": "address",
+                        "n_slots": 1,
+                        "compiler_metadata": 1,
+                    }
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "owner": {
+                        "slot": 0,
+                        "type": "address",
+                        "n_slots": 1,
+                        "compiler_metadata": 2,
+                    }
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+    assert unavailable_validation_artifacts(target) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+    assert compare_artifacts(source, target) == (None, None, None)
+
+
+def test_compare_artifacts_rejects_empty_nested_storage_namespace() -> None:
+    malformed = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {"vault": {"owner": {}}}}},
+    )
+    valid = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {"vault": {"owner": {"slot": 0, "type": "address"}}}
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(malformed) == ["abi", "method_identifiers", "layout"]
+    assert compare_artifacts(malformed, valid) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {
+            "storage_layout": {
+                "owner": {"slot": 0, "type": "address", "location": "transient"}
+            }
+        },
+        {
+            "storage_layout": {
+                "owner": {"slot": 0, "type": "address", "location": "memory"}
+            }
+        },
+        {
+            "storage_layout": {},
+            "transient_storage_layout": {
+                "scratch": {"slot": 0, "type": "uint256", "location": "storage"}
+            },
+        },
+    ],
+)
+def test_layout_artifact_rejects_leaf_location_outside_containing_namespace(
+    layout: dict[str, object],
+) -> None:
+    result = CompileResult("passed", artifacts={"layout": layout})
+
+    assert unavailable_validation_artifacts(result) == ["abi", "method_identifiers", "layout"]
+
+
+def test_compare_artifacts_compares_n_slots_when_both_layouts_supply_it() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "values": {"slot": 0, "type": "CustomStruct", "n_slots": 1}
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "values": {"slot": 0, "type": "CustomStruct", "n_slots": 2}
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2] == [
+        "changed storage: values slot 0 CustomStruct -> 0 CustomStruct "
+        "(n_slots 1 -> 2)"
+    ]
+
+
+def test_compare_artifacts_infers_known_width_when_legacy_layout_omits_it() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"values": {"slot": 0, "type": "uint256"}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "values": {"slot": 0, "type": "uint256", "n_slots": 1}
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+def test_layout_artifact_rejects_explicit_width_for_known_scalar() -> None:
+    result = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "values": {"slot": 0, "type": "uint256", "n_slots": 2}
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("type_name", "n_slots"),
+    [
+        ("bool", 1),
+        ("address", 1),
+        ("uint256", 1),
+        ("bytes32", 1),
+        ("HashMap[address, uint256]", 1),
+        ("uint256[3]", 3),
+        ("address[2][3]", 6),
+        ("DynArray[uint256, 3]", 4),
+        ("DynArray[uint256[2], 3]", 7),
+        ("DynArray[uint256, 3][3]", 12),
+        ("DynArray[DynArray[uint256, 3][3], 3][5]", 185),
+        ("Bytes[64]", 3),
+        ("String[32]", 2),
+    ],
+)
+def test_compare_artifacts_infers_known_legacy_storage_widths(
+    type_name: str,
+    n_slots: int,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": type_name}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "value": {"slot": 0, "type": type_name, "n_slots": n_slots}
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+def test_compare_artifacts_infers_explicit_legacy_interface_width() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"pool": {"slot": 0, "type": "interface Pool"}}
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "pool": {"slot": 0, "type": "Pool.vyi", "n_slots": 1}
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    (
+        "source_type",
+        "target_type",
+        "target_n_slots",
+        "interface_names",
+        "target_annotation",
+    ),
+    [
+        (
+            "interface Pool",
+            "Pool",
+            1,
+            ("Pool",),
+            {"ast_type": "Name", "id": "Pool"},
+        ),
+        (
+            "HashMap[address, interface Pool]",
+            "HashMap[address, Pool]",
+            None,
+            ("Pool",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "HashMap"},
+                "slice": {
+                    "ast_type": "Tuple",
+                    "elements": [
+                        {"ast_type": "Name", "id": "address"},
+                        {"ast_type": "Name", "id": "Pool"},
+                    ],
+                },
+            },
+        ),
+        (
+            "DynArray[interface Pool, 8]",
+            "DynArray[Pool, 8]",
+            9,
+            ("Pool",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "DynArray"},
+                "slice": {
+                    "ast_type": "Tuple",
+                    "elements": [
+                        {"ast_type": "Name", "id": "Pool"},
+                        {"ast_type": "Int", "value": 8},
+                    ],
+                },
+            },
+        ),
+        (
+            "interface Pool[3]",
+            "Pool[3]",
+            3,
+            ("Pool",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "Pool"},
+                "slice": {"ast_type": "Int", "value": 3},
+            },
+        ),
+        (
+            "HashMap[interface IERC20, interface AuctionZap]",
+            "HashMap[interface IERC20, AuctionZap]",
+            None,
+            ("AuctionZap",),
+            {
+                "ast_type": "Subscript",
+                "value": {"ast_type": "Name", "id": "HashMap"},
+                "slice": {
+                    "ast_type": "Tuple",
+                    "elements": [
+                        {"ast_type": "Name", "id": "IERC20"},
+                        {"ast_type": "Name", "id": "AuctionZap"},
+                    ],
+                },
+            },
+        ),
+    ],
+)
+def test_compare_artifacts_accepts_pairwise_interface_marker_omission(
+    source_type: str,
+    target_type: str,
+    target_n_slots: int | None,
+    interface_names: tuple[str, ...],
+    target_annotation: dict[str, object],
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": source_type}}},
+    )
+    target_entry: dict[str, object] = {"slot": 0, "type": target_type}
+    if target_n_slots is not None:
+        target_entry["n_slots"] = target_n_slots
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"storage_layout": {"value": target_entry}},
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    *(
+                        {"ast_type": "InterfaceDef", "name": name}
+                        for name in interface_names
+                    ),
+                    {
+                        "ast_type": "VariableDecl",
+                        "target": {"ast_type": "Name", "id": "value"},
+                        "annotation": target_annotation,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifact_details(source, target)[2] == []
+
+
+@pytest.mark.parametrize(
+    "target_body",
+    [
+        [],
+        [{"ast_type": "StructDef", "name": "Pool"}],
+        [
+            {
+                "ast_type": "FunctionDef",
+                "name": "unrelated",
+                "body": [{"ast_type": "InterfaceDef", "name": "Pool"}],
+            }
+        ],
+    ],
+)
+def test_compare_artifacts_requires_top_level_target_interface_evidence(
+    target_body: list[dict[str, object]],
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "value": {
+                    "slot": 0,
+                    "type": "HashMap[address, interface Pool]",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "value": {"slot": 0, "type": "HashMap[address, Pool]"}
+                }
+            },
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    *target_body,
+                    {
+                        "ast_type": "VariableDecl",
+                        "target": {"ast_type": "Name", "id": "value"},
+                        "annotation": {
+                            "ast_type": "Subscript",
+                            "value": {"ast_type": "Name", "id": "HashMap"},
+                            "slice": {
+                                "ast_type": "Tuple",
+                                "elements": [
+                                    {"ast_type": "Name", "id": "address"},
+                                    {"ast_type": "Name", "id": "Pool"},
+                                ],
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+@pytest.mark.parametrize(
+    "target_ast",
+    [
+        None,
+        [],
+        {},
+        {"ast_type": "Module", "body": "invalid"},
+        {"ast": {"ast_type": "StructDef", "body": []}},
+    ],
+)
+def test_compare_artifacts_rejects_missing_or_malformed_target_ast(
+    target_ast: object,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "value": {
+                    "slot": 0,
+                    "type": "HashMap[address, interface Pool]",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "value": {"slot": 0, "type": "HashMap[address, Pool]"}
+                }
+            },
+            "ast": target_ast,
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+def test_compare_artifacts_does_not_apply_root_evidence_to_nested_layout_key() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "child": {
+                        "values": {
+                            "slot": 0,
+                            "type": "HashMap[address, interface Pool]",
+                        }
+                    }
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "child": {
+                        "values": {
+                            "slot": 0,
+                            "type": "HashMap[address, Pool]",
+                        }
+                    }
+                }
+            },
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    {"ast_type": "InterfaceDef", "name": "Pool"},
+                    {
+                        "ast_type": "VariableDecl",
+                        "target": {"ast_type": "Name", "id": "values"},
+                        "annotation": {
+                            "ast_type": "Subscript",
+                            "value": {"ast_type": "Name", "id": "HashMap"},
+                            "slice": {
+                                "ast_type": "Tuple",
+                                "elements": [
+                                    {"ast_type": "Name", "id": "address"},
+                                    {"ast_type": "Name", "id": "Pool"},
+                                ],
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+@pytest.mark.parametrize(
+    ("source_type", "target_type", "target_n_slots"),
+    [
+        ("interface IERC20", "ERC20", 1),
+        ("interface Pool", "Pool", 2),
+        (
+            "HashMap[interface Foo, Bar]",
+            "HashMap[Foo, interface Bar]",
+            None,
+        ),
+        (
+            "HashMap[address, Pool]",
+            "HashMap[address, interface Pool]",
+            None,
+        ),
+    ],
+)
+def test_compare_artifacts_rejects_interface_marker_aliases_and_width_changes(
+    source_type: str,
+    target_type: str,
+    target_n_slots: int | None,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": source_type}}},
+    )
+    target_entry: dict[str, object] = {"slot": 0, "type": target_type}
+    if target_n_slots is not None:
+        target_entry["n_slots"] = target_n_slots
+    target = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {"value": target_entry}}},
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2]
+
+
+@pytest.mark.parametrize(
+    "source_type",
+    [
+        "/tmp/site-packages/vyper/builtins/interfaces/IERC20.vyi[3]",
+        "IERC20.vyi[3]",
+    ],
+)
+def test_compare_artifacts_infers_fixed_array_of_vyi_interface_width(
+    source_type: str,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"tokens": {"slot": 0, "type": source_type}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "tokens": {
+                        "slot": 0,
+                        "type": "interface IERC20[3]",
+                        "n_slots": 3,
+                    }
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+def test_compare_artifacts_propagates_delimited_vyi_evidence_into_dynarray() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "pools": {
+                    "slot": 0,
+                    "type": "DynArray[interface Pool, 8]",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "pools": {
+                        "slot": 0,
+                        "type": "DynArray[Pool.vyi, 8]",
+                        "n_slots": 9,
+                    }
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+def test_compare_artifacts_rejects_one_sided_unknown_storage_width() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": "CustomStruct"}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "value": {"slot": 0, "type": "CustomStruct", "n_slots": 2}
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2] == [
+        "changed storage: value slot 0 CustomStruct -> 0 CustomStruct "
+        "(n_slots unknown -> 2)"
+    ]
+
+
+def test_compare_artifacts_accepts_symmetric_unknown_omitted_widths() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": "CustomStruct"}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={"layout": {"value": {"slot": 0, "type": "CustomStruct"}}},
+    )
+
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    "storage_layout",
+    [
+        {
+            "a.b": {"slot": 0, "type": "address"},
+            "a": {"b": {"slot": 1, "type": "address"}},
+        },
+        {
+            "nonreentrant.lock": {"slot": 0, "type": "nonreentrant lock"},
+            "_vyupgrade_reentrancy_lock_slot": {"slot": 0, "type": "uint256"},
+        },
+    ],
+)
+def test_layout_artifact_rejects_flattened_and_normalized_name_collisions(
+    storage_layout: dict[str, object],
+) -> None:
+    result = CompileResult(
+        "passed", artifacts={"layout": {"storage_layout": storage_layout}}
+    )
+
+    assert unavailable_validation_artifacts(result) == ["abi", "method_identifiers", "layout"]
+
+
+def test_layout_artifact_distinguishes_legacy_storage_layout_variable_from_wrapper() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "uint256",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "storage_layout": {"slot": 0, "type": "uint256", "n_slots": 1}
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    ("name", "location"),
+    [
+        ("storage_layout", "storage"),
+        ("transient_storage_layout", "transient"),
+        ("code_layout", "storage"),
+    ],
+)
+def test_layout_artifact_preserves_explicit_legacy_wrapper_named_variables(
+    name: str,
+    location: str,
+) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                name: {
+                    "location": location,
+                    "slot": 0,
+                    "type": "uint256",
+                }
+            }
+        },
+    )
+    target_layout: dict[str, object] = {"storage_layout": {}}
+    wrapper = "transient_storage_layout" if location == "transient" else "storage_layout"
+    target_layout[wrapper] = {
+        name: {"slot": 0, "type": "uint256", "n_slots": 1}
+    }
+    target = CompileResult("passed", artifacts={"layout": target_layout})
+
+    assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+
+
+@pytest.mark.parametrize(
+    ("name", "node"),
+    [
+        ("storage_layout", {"slot": 0, "type": "uint256"}),
+        ("transient_storage_layout", {"slot": 0, "type": "uint256"}),
+        (
+            "code_layout",
+            {"offset": 0, "type": "uint256", "length": 32},
+        ),
+        (
+            "storage_layout",
+            {"location": "memory", "slot": 0, "type": "uint256"},
+        ),
+    ],
+)
+def test_layout_artifact_rejects_truncated_or_ambiguous_wrapper_named_roots(
+    name: str,
+    node: dict[str, object],
+) -> None:
+    result = CompileResult("passed", artifacts={"layout": {name: node}})
+
+    assert unavailable_validation_artifacts(result) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+
+
+@pytest.mark.parametrize("slot", [2**256, str(2**256), hex(2**256)])
+def test_layout_artifact_rejects_slots_outside_uint256(slot: int | str) -> None:
+    result = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"storage_layout": {"owner": {"slot": slot, "type": "address"}}}
+        },
+    )
+
+    assert unavailable_validation_artifacts(result) == ["abi", "method_identifiers", "layout"]
+
+
+def test_compare_artifacts_compares_transient_layouts_explicitly() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "scratch": {"location": "transient", "slot": 0, "type": "uint256"}
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {},
+                "transient_storage_layout": {
+                    "scratch": {"slot": 1, "type": "address"}
+                },
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2] == [
+        "changed transient storage: scratch slot 0 uint256 -> 1 address"
+    ]
+
+
+@pytest.mark.parametrize("target_slot", ["16", "0x10"])
+def test_compare_artifacts_normalizes_numeric_string_storage_slots(target_slot: str) -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={"layout": {"storage_layout": {"owner": {"slot": 16, "type": "address"}}}},
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {"storage_layout": {"owner": {"slot": target_slot, "type": "address"}}}
+        },
+    )
+
+    assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
+    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifact_details(source, target)[2] == []
 
 
 def test_compare_artifacts_flags_real_storage_slot_shift() -> None:
@@ -1680,7 +3027,11 @@ def test_compare_artifacts_flags_real_storage_slot_shift() -> None:
                     "balance": {"slot": 0, "type": "uint256", "n_slots": 1},
                 },
                 "transient_storage_layout": {
-                    "$.nonreentrant_key": {"slot": 0, "type": "nonreentrant lock"},
+                    "$.nonreentrant_key": {
+                        "slot": 0,
+                        "type": "nonreentrant lock",
+                        "n_slots": 1,
+                    },
                 },
             }
         },
@@ -1753,6 +3104,150 @@ def test_compare_artifacts_normalizes_generated_nonreentrant_storage_gap() -> No
     )
 
     assert compare_artifacts(source, target) == (None, None, True)
+
+
+def test_compare_artifacts_does_not_treat_prefixed_user_variable_as_lock() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "_vyupgrade_reentrancy_lock_slot_user_data": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "uint256",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "$.nonreentrant_key": {
+                        "slot": 0,
+                        "type": "nonreentrant lock",
+                        "n_slots": 1,
+                    }
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2] == [
+        "removed storage: _vyupgrade_reentrancy_lock_slot_user_data slot 0 uint256",
+        "added storage: $nonreentrant:0 slot 0 nonreentrant lock",
+    ]
+
+
+def test_compare_artifacts_requires_exact_generated_gap_name_and_lock_counterpart() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "_vyupgrade_reentrancy_lock_slot_user_data": {
+                        "slot": 0,
+                        "type": "uint256",
+                        "n_slots": 1,
+                    }
+                }
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+
+
+def test_compare_artifacts_rejects_generated_gap_with_non_singleton_span() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "_vyupgrade_reentrancy_lock_slot": {
+                        "slot": 0,
+                        "type": "uint256",
+                        "n_slots": 2,
+                    }
+                }
+            }
+        },
+    )
+
+    assert unavailable_validation_artifacts(target) == [
+        "abi",
+        "method_identifiers",
+        "layout",
+    ]
+    assert compare_artifacts(source, target) == (None, None, None)
+
+
+def test_compare_artifacts_does_not_hide_gap_when_lock_moved_to_transient() -> None:
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "nonreentrant.lock": {
+                    "location": "storage",
+                    "slot": 0,
+                    "type": "nonreentrant lock",
+                }
+            }
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "_vyupgrade_reentrancy_lock_slot": {
+                        "slot": 0,
+                        "type": "uint256",
+                        "n_slots": 1,
+                    }
+                },
+                "transient_storage_layout": {
+                    "$.nonreentrant_key": {
+                        "slot": 0,
+                        "type": "nonreentrant lock",
+                        "n_slots": 1,
+                    }
+                },
+            }
+        },
+    )
+
+    assert compare_artifacts(source, target) == (None, None, False)
+    assert compare_artifact_details(source, target)[2] == [
+        "moved storage to transient: $nonreentrant:0 slot 0 nonreentrant lock -> $nonreentrant:0 slot 0 nonreentrant lock",
+        "added storage: _vyupgrade_reentrancy_lock_slot slot 0 uint256",
+    ]
 
 
 def test_compare_artifacts_treats_transient_only_nonreentrant_move_as_persistent_equal() -> None:
@@ -1833,9 +3328,19 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
                         "slot": 16,
                         "type": "HashMap[ERC20, enum Epoch('SLEEP','COLLECT','EXCHANGE','FORWARD')]",
                     },
-                    "get_gauge": {
+                    "permission": {
                         "location": "storage",
                         "slot": 17,
+                        "type": "flag Permission('READ','WRITE')",
+                    },
+                    "permissions": {
+                        "location": "storage",
+                        "slot": 18,
+                        "type": "HashMap[address, flag Permission('READ','WRITE')]",
+                    },
+                    "get_gauge": {
+                        "location": "storage",
+                        "slot": 19,
                         "type": "address[115792089237316195423570985008687907853269984665640564039457584007913129639935]",
                     },
                 }
@@ -1851,8 +3356,16 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
                         "slot": 16,
                         "type": "HashMap[ERC20, Epoch]",
                     },
-                    "get_gauge": {
+                    "permission": {
                         "slot": 17,
+                        "type": "Permission",
+                    },
+                    "permissions": {
+                        "slot": 18,
+                        "type": "HashMap[address, Permission]",
+                    },
+                    "get_gauge": {
+                        "slot": 19,
                         "type": "HashMap[uint256, address]",
                     },
                 }
