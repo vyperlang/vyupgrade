@@ -56,7 +56,7 @@ class MigrationRequest:
     original: str
     source_version: str | None
     source_attempts: tuple[SourceCompileAttempt, ...]
-    skip_target_on_vyd016: bool = True
+    skip_target_on_blocked_source: bool = True
 
 
 @dataclass
@@ -216,12 +216,12 @@ def validate_migrations(
                 migration.report, migration.validation_diagnostics
             )
             migration.target_compile = None
+            source_context = MigrationContext.from_specs(
+                migration.request.source_version, config.target_version
+            )
             if (
-                migration.request.skip_target_on_vyd016
-                and any(
-                    diagnostic.rule == "VYD016"
-                    for diagnostic in migration.report.diagnostics
-                )
+                migration.request.skip_target_on_blocked_source
+                and not source_context.source_can_migrate_to_target()
             ):
                 continue
             target_compile = compile_target_source(

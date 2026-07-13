@@ -577,5 +577,7 @@ modern Python interpreter.
 - `VYD007`: ABI or method identifiers changed after migration.
 - `VYD008`: storage layout changed after migration.
 - `VYD009`: target compiler default EVM version differs from source-era default.
-- `VYD016`: source version matches no compiler supported by this `vyupgrade`
-  release, or resolves to a compiler newer than the requested target.
+- `VYD016`: source version resolves to a compiler newer than the requested
+  target.
+- `VYD018`: source version matches no compiler supported by this `vyupgrade`
+  release.

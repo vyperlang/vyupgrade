@@ -145,11 +145,18 @@ def test_source_ast_is_owned_by_each_file(monkeypatch, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("source_version", "target_version"),
-    [(">=0.5.0a1,<0.6.0", "0.4.3"), ("0.4.4", "0.5.0a3")],
+    ("source_version", "target_version", "diagnostic_code"),
+    [
+        (">=0.5.0a1,<0.6.0", "0.4.3", "VYD016"),
+        ("0.4.4", "0.5.0a3", "VYD018"),
+    ],
 )
-def test_blocked_source_cannot_split_interfaces_when_diagnostic_is_ignored(
-    source_version: str, target_version: str, tmp_path: Path
+def test_blocked_source_cannot_validate_or_split_when_diagnostic_is_ignored(
+    source_version: str,
+    target_version: str,
+    diagnostic_code: str,
+    monkeypatch,
+    tmp_path: Path,
 ) -> None:
     path = tmp_path / "Main.vy"
     original = f"""#pragma version {source_version}
@@ -162,14 +169,23 @@ interface Token:
         tmp_path,
         target_version=target_version,
         split_interfaces=True,
-        ignore=frozenset({"VYD016"}),
+        ignore=frozenset({diagnostic_code}),
     )
 
     batch = engine.prepare_migrations((request,), config)
+    monkeypatch.setattr(
+        engine,
+        "compile_target_source",
+        lambda *_args, **_kwargs: pytest.fail("blocked source reached target compiler"),
+    )
+    decision = engine.validate_migrations(batch, config)
 
     assert batch.files[0].rewrite.source == original
     assert batch.files[0].report.diagnostics == []
     assert batch.files[0].report.changed is False
+    assert batch.files[0].report.source_compile == "skipped"
+    assert batch.files[0].report.target_compile == "skipped"
+    assert decision.status == "not-required"
     assert batch.generated == []
 
 

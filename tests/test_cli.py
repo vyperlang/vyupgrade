@@ -1371,7 +1371,7 @@ def f() -> uint256:
     assert file_report["changed"] is False
     assert file_report["diagnostics"] == [
         {
-            "rule": "VYD016",
+            "rule": "VYD018",
             "line": 1,
             "message": "source version 0.5.0 matches no Vyper compiler supported by this vyupgrade release",
             "severity": "error",

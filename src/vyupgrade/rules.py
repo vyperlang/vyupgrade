@@ -97,6 +97,7 @@ METADATA_RULES = (
             crossing("VYD008", (0, 4, 0)),
             crossing("VYD009", (0, 4, 0)),
             target_floor("VYD016", (0, 1, 0)),
+            target_floor("VYD018", (0, 1, 0)),
         ),
     ),
 )
@@ -145,7 +146,7 @@ def _blocked_source_version_result(
 def _unsupported_source_version_diagnostic(context: MigrationContext) -> Diagnostic:
     assert context.source_spec is not None
     return Diagnostic(
-        "VYD016",
+        "VYD018",
         1,
         f"source version {context.source_spec} matches no Vyper compiler supported by this vyupgrade release",
         "error",
