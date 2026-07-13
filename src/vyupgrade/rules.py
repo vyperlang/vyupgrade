@@ -55,12 +55,17 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
         config.source_version or infer_pragma(source), config.target_version
     )
     rule_context = RuleContext(source, config, context, path, RULE_CHANGES)
-    if context.source_newer_than_target():
-        diagnostic = _source_newer_than_target_diagnostic(context)
-        return RewriteResult(
+    if context.source_spec_unsupported():
+        return _blocked_source_version_result(
             source,
-            [],
-            [diagnostic] if rule_context.is_enabled(diagnostic.rule) else [],
+            rule_context,
+            _unsupported_source_version_diagnostic(context),
+        )
+    if context.source_newer_than_target():
+        return _blocked_source_version_result(
+            source,
+            rule_context,
+            _source_newer_than_target_diagnostic(context),
         )
 
     current = source
@@ -125,6 +130,26 @@ RULES = (
     *METADATA_RULES,
 )
 RULE_CHANGES = rule_changes(RULES)
+
+
+def _blocked_source_version_result(
+    source: str, rule_context: RuleContext, diagnostic: Diagnostic
+) -> RewriteResult:
+    return RewriteResult(
+        source,
+        [],
+        [diagnostic] if rule_context.is_enabled(diagnostic.rule) else [],
+    )
+
+
+def _unsupported_source_version_diagnostic(context: MigrationContext) -> Diagnostic:
+    assert context.source_spec is not None
+    return Diagnostic(
+        "VYD016",
+        1,
+        f"source version {context.source_spec} matches no Vyper compiler supported by this vyupgrade release",
+        "error",
+    )
 
 
 def _source_newer_than_target_diagnostic(context: MigrationContext) -> Diagnostic:

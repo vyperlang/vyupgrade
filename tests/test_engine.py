@@ -144,23 +144,23 @@ def test_source_ast_is_owned_by_each_file(monkeypatch, tmp_path: Path) -> None:
     assert config.source_ast == {"stale": True}
 
 
-def test_newer_source_cannot_split_interfaces_when_diagnostic_is_ignored(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("source_version", "target_version"),
+    [(">=0.5.0a1,<0.6.0", "0.4.3"), ("0.4.4", "0.5.0a3")],
+)
+def test_blocked_source_cannot_split_interfaces_when_diagnostic_is_ignored(
+    source_version: str, target_version: str, tmp_path: Path
 ) -> None:
     path = tmp_path / "Main.vy"
-    original = """#pragma version >=0.5.0a1,<0.6.0
+    original = f"""#pragma version {source_version}
 
 interface Token:
     def balanceOf(owner: address) -> uint256: view
 """
-    request = MigrationRequest(
-        path,
-        original,
-        ">=0.5.0a1,<0.6.0",
-        (),
-    )
+    request = MigrationRequest(path, original, source_version, ())
     config = _config(
         tmp_path,
+        target_version=target_version,
         split_interfaces=True,
         ignore=frozenset({"VYD016"}),
     )

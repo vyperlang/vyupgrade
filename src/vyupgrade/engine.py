@@ -104,7 +104,7 @@ def bounded_migration_request(path: Path, original: str, config: Config) -> Migr
     """Build the target-bounded source compiler request used by the CLI."""
     source_version = config.source_version or infer_pragma(original)
     context = MigrationContext.from_specs(source_version, config.target_version)
-    if context.source_newer_than_target():
+    if not context.source_can_migrate_to_target():
         attempts: tuple[SourceCompileAttempt, ...] = ()
     elif config.source_vyper:
         attempts = (SourceCompileAttempt(source_version, source_version),)
@@ -141,9 +141,9 @@ def prepare_migrations(
         if (
             config.split_interfaces
             and request.path.suffix == ".vy"
-            and not MigrationContext.from_specs(
+            and MigrationContext.from_specs(
                 source_version, config.target_version
-            ).source_newer_than_target()
+            ).source_can_migrate_to_target()
             and _rule_enabled("VY120", source_version, config)
         ):
             split = split_interfaces_to_vyi(rewrite.source, request.path)
