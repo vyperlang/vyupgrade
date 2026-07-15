@@ -7,7 +7,9 @@ import pytest
 
 from vyupgrade.compiler import (
     CompileResult,
+    OverlayLayoutConflictError,
     _compiler_command,
+    _overlay_search_paths,
     _run_compile,
     _supports_warning_policy,
     _target_validation_source,
@@ -916,6 +918,67 @@ def _write_import_closure_fixture(
     )
 
 
+def _write_external_import_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, dict[Path, str], tuple[Path, ...]]:
+    project = tmp_path / "project"
+    contract = project / "src" / "main.vy"
+    local_dependency = project / "src" / "local.vy"
+    site_packages = tmp_path / "site-packages"
+    external_dependency = site_packages / "depkg" / "util.vy"
+    contract.parent.mkdir(parents=True)
+    external_dependency.parent.mkdir(parents=True)
+    source = (
+        "#pragma version 0.4.3\n"
+        "from . import local\n"
+        "from depkg import util\n"
+    )
+    contract.write_text(source, encoding="utf-8")
+    local_dependency.write_text(
+        "# @version 0.3.10\nLOCAL: constant(uint256) = 1\n",
+        encoding="utf-8",
+    )
+    external_dependency.write_text(
+        "# @version 0.3.10\nEXTERNAL: constant(uint256) = 2\n",
+        encoding="utf-8",
+    )
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "overlay-project"\n',
+        encoding="utf-8",
+    )
+    return contract, external_dependency, {contract: source}, (site_packages,)
+
+
+def _write_create2_collision_fixture(
+    tmp_path: Path,
+    create2_source: str | None,
+) -> tuple[Path, Path, dict[Path, str]]:
+    project = tmp_path / "project"
+    contract = project / "factory.vy"
+    utils = project / "snekmate" / "utils"
+    create2_address = utils / "create2_address.vy"
+    create2 = utils / "create2.vy"
+    utils.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='create2'\n")
+    contract_source = (
+        "#pragma version 0.4.3\n"
+        "from snekmate.utils import create2_address, create2\n"
+    )
+    create2_address_source = (
+        "# @version 0.3.10\n"
+        "def _compute_address(value: uint256) -> address:\n"
+        "    return empty(address)\n"
+    )
+    if create2_source is None:
+        create2_source = create2_address_source.replace(
+            "_compute_address", "_compute_create2_address"
+        )
+    contract.write_text(contract_source)
+    create2_address.write_text(create2_address_source)
+    create2.write_text(create2_source)
+    return create2_address, create2, {contract: contract_source}
+
+
 def test_resolve_import_closure_lists_transitive_dependencies(tmp_path) -> None:
     contract, sources, search_paths, expected_dependencies = (
         _write_import_closure_fixture(tmp_path)
@@ -1082,6 +1145,418 @@ def test_materialize_target_overlay_empty_sources_returns_none(tmp_path) -> None
     root = tmp_path / "materialized"
 
     assert materialize_target_overlay({}, "0.4.3", root) is None
+
+
+def test_closure_overlay_places_external_dep_import_root_relative(
+    tmp_path,
+) -> None:
+    contract, dependency, sources, search_paths = _write_external_import_fixture(
+        tmp_path
+    )
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        root,
+        search_paths,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    target = root / "depkg" / "util.vy"
+    assert target.read_text(encoding="utf-8") == _target_validation_source(
+        dependency.read_text(encoding="utf-8"), "0.4.3"
+    )
+    assert overlay.paths[dependency.resolve()] == target
+    assert overlay.source_roots == (
+        contract.parents[1].resolve(),
+        search_paths[0].resolve(),
+    )
+
+
+def test_closure_overlay_places_external_candidate_bytes(tmp_path) -> None:
+    _contract, dependency, sources, search_paths = _write_external_import_fixture(
+        tmp_path
+    )
+    candidate = (
+        "#pragma version 0.4.3\n"
+        "EXTERNAL: constant(uint256) = 99\n"
+        "# candidate bytes stay exact\n"
+    )
+    sources[dependency] = candidate
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        root,
+        search_paths,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    target = root / "depkg" / "util.vy"
+    assert target.read_bytes() == candidate.encode()
+    assert overlay.paths[dependency.resolve()] == target
+
+
+def test_closure_overlay_paths_equal_resolved_closure(tmp_path) -> None:
+    _contract, _dependency, sources, search_paths = _write_external_import_fixture(
+        tmp_path
+    )
+    closure = resolve_import_closure(sources, search_paths)
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        root,
+        search_paths,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    assert set(overlay.paths) == set(closure.files)
+    assert (root / "pyproject.toml").is_file()
+    assert root / "pyproject.toml" not in overlay.paths.values()
+
+
+def test_closure_overlay_multi_root_placement(tmp_path) -> None:
+    first_root = tmp_path / "repo" / "a"
+    second_root = tmp_path / "repo" / "b"
+    first = first_root / "x.vy"
+    second = second_root / "y.vy"
+    first_root.mkdir(parents=True)
+    second_root.mkdir(parents=True)
+    (first_root / "pyproject.toml").write_text("[project]\nname='a'\n")
+    (second_root / "pyproject.toml").write_text("[project]\nname='b'\n")
+    first_source = "#pragma version 0.4.3\nX: constant(uint256) = 1\n"
+    second_source = "#pragma version 0.4.3\nY: constant(uint256) = 2\n"
+    first.write_text(first_source)
+    second.write_text(second_source)
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        {first: first_source, second: second_source},
+        "0.4.3",
+        root,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    assert (root / "x.vy").read_text() == first_source
+    assert (root / "y.vy").read_text() == second_source
+    assert not (root / "a" / "x.vy").exists()
+    assert not (root / "b" / "y.vy").exists()
+    assert overlay.source_roots == (first_root.resolve(), second_root.resolve())
+
+
+def test_closure_overlay_conflicting_destinations_raise(tmp_path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first = first_root / "pkg" / "util.vy"
+    second = second_root / "pkg" / "util.vy"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    (first_root / "pyproject.toml").write_text("[project]\nname='first'\n")
+    (second_root / "pyproject.toml").write_text("[project]\nname='second'\n")
+    first_source = "#pragma version 0.4.3\nVALUE: constant(uint256) = 1\n"
+    second_source = "#pragma version 0.4.3\nVALUE: constant(uint256) = 2\n"
+    first.write_text(first_source)
+    second.write_text(second_source)
+    target = tmp_path / "overlay" / "pkg" / "util.vy"
+
+    with pytest.raises(OverlayLayoutConflictError) as exc_info:
+        materialize_target_overlay(
+            {first: first_source, second: second_source},
+            "0.4.3",
+            tmp_path / "overlay",
+            include_dependencies=True,
+        )
+
+    message = str(exc_info.value)
+    assert str(first.resolve()) in message
+    assert str(second.resolve()) in message
+    assert str(target) in message
+
+
+def test_closure_overlay_identical_content_collisions_dedupe(tmp_path) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first = first_root / "pkg" / "util.vy"
+    second = second_root / "pkg" / "util.vy"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    (first_root / "pyproject.toml").write_text("[project]\nname='first'\n")
+    (second_root / "pyproject.toml").write_text("[project]\nname='second'\n")
+    source = "#pragma version 0.4.3\nVALUE: constant(uint256) = 1\n"
+    first.write_text(source)
+    second.write_text(source)
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        {first: source, second: source},
+        "0.4.3",
+        root,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    target = root / "pkg" / "util.vy"
+    assert target.read_text() == source
+    assert overlay.paths[first.resolve()] == target
+    assert overlay.paths[second.resolve()] == target
+    assert list((root / "pkg").glob("util.vy")) == [target]
+
+
+def test_closure_overlay_drops_external_search_paths_from_compile_paths(
+    tmp_path,
+) -> None:
+    _contract, _dependency, sources, search_paths = _write_external_import_fixture(
+        tmp_path
+    )
+
+    with target_overlay(
+        sources,
+        "0.4.3",
+        search_paths,
+        include_dependencies=True,
+    ) as closure_overlay:
+        assert closure_overlay is not None
+        closure_paths = _overlay_search_paths(closure_overlay, search_paths)
+    with target_overlay(sources, "0.4.3", search_paths) as default_overlay:
+        assert default_overlay is not None
+        default_paths = _overlay_search_paths(default_overlay, search_paths)
+
+    assert search_paths[0] not in closure_paths
+    assert search_paths[0] in default_paths
+
+
+def test_closure_overlay_create2_alias_beside_override(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "factory.vy"
+    create2_address = project / "snekmate" / "utils" / "create2_address.vy"
+    create2_address.parent.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='create2'\n")
+    contract_source = (
+        "#pragma version 0.4.3\nfrom snekmate.utils import create2\n"
+    )
+    candidate = (
+        "#pragma version 0.4.3\n"
+        "def _compute_address(value: uint256) -> address:\n"
+        "    return empty(address)\n"
+    )
+    contract.write_text(contract_source)
+    create2_address.write_text(candidate)
+    sources = {contract: contract_source, create2_address: candidate}
+
+    closure_root = tmp_path / "closure"
+    closure = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        closure_root,
+        include_dependencies=True,
+    )
+    default_root = tmp_path / "default"
+    default = materialize_target_overlay(sources, "0.4.3", default_root)
+
+    assert closure is not None
+    assert default is not None
+    alias = closure_root / "snekmate" / "utils" / "create2.vy"
+    assert (
+        alias.read_text()
+        == candidate.replace("_compute_address", "_compute_create2_address")
+    )
+    assert (
+        closure_root / "snekmate" / "utils" / "create2_address.vy"
+    ).read_text() == candidate
+    assert alias not in closure.paths.values()
+    assert not (default_root / "snekmate" / "utils" / "create2.vy").exists()
+
+
+def test_default_overlay_create2_alias_collision_preserves_last_write(
+    tmp_path,
+) -> None:
+    create2_source = (
+        "# @version 0.3.10\n"
+        "REAL_CREATE2: constant(uint256) = 2\n"
+    )
+    _create2_address, _create2, sources = _write_create2_collision_fixture(
+        tmp_path, create2_source
+    )
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(sources, "0.4.3", root)
+
+    assert overlay is not None
+    assert (root / "snekmate" / "utils" / "create2.vy").read_text() == (
+        _target_validation_source(create2_source, "0.4.3")
+    )
+
+
+def test_closure_overlay_create2_alias_collision_raises(tmp_path) -> None:
+    create2_source = (
+        "# @version 0.3.10\n"
+        "REAL_CREATE2: constant(uint256) = 2\n"
+    )
+    create2_address, create2, sources = _write_create2_collision_fixture(
+        tmp_path, create2_source
+    )
+
+    with pytest.raises(OverlayLayoutConflictError) as exc_info:
+        materialize_target_overlay(
+            sources,
+            "0.4.3",
+            tmp_path / "overlay",
+            include_dependencies=True,
+        )
+
+    message = str(exc_info.value)
+    assert str(create2_address.resolve()) in message
+    assert str(create2.resolve()) in message
+
+
+def test_closure_overlay_create2_alias_identical_content_dedupes(
+    tmp_path,
+) -> None:
+    _create2_address, create2, sources = _write_create2_collision_fixture(
+        tmp_path, None
+    )
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        root,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    target = root / "snekmate" / "utils" / "create2.vy"
+    assert target.read_text() == _target_validation_source(
+        create2.read_text(), "0.4.3"
+    )
+    assert overlay.paths[create2.resolve()] == target
+
+
+def test_closure_overlay_copies_project_pyproject_only(tmp_path) -> None:
+    _contract, dependency, sources, search_paths = _write_external_import_fixture(
+        tmp_path
+    )
+    project_pyproject = tmp_path / "project" / "pyproject.toml"
+    site_pyproject = search_paths[0] / "pyproject.toml"
+    site_pyproject.write_text("[project]\nname='site-packages'\n")
+    sources[dependency] = dependency.read_text()
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        root,
+        search_paths,
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    assert (root / "pyproject.toml").read_bytes() == project_pyproject.read_bytes()
+    assert site_pyproject.read_bytes() not in {
+        path.read_bytes()
+        for path in root.rglob("pyproject.toml")
+    }
+
+
+def test_closure_overlay_excludes_nested_search_path_pyprojects(
+    tmp_path,
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "src" / "main.vy"
+    search_path = project / "vendor" / "site-packages"
+    dependency = search_path / "depkg" / "util.vy"
+    contract.parent.mkdir(parents=True)
+    dependency.parent.mkdir(parents=True)
+    project_pyproject = project / "pyproject.toml"
+    dependency_pyproject = dependency.parent / "pyproject.toml"
+    project_pyproject.write_text("[project]\nname='project'\n")
+    dependency_pyproject.write_text("[project]\nname='dependency'\n")
+    source = "#pragma version 0.4.3\nfrom depkg import util\n"
+    contract.write_text(source)
+    dependency.write_text("# @version 0.3.10\n")
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        {contract: source},
+        "0.4.3",
+        root,
+        (search_path,),
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    assert (root / "pyproject.toml").read_bytes() == project_pyproject.read_bytes()
+    assert overlay.paths[dependency.resolve()] == root / "depkg" / "util.vy"
+    assert not (
+        root
+        / "vendor"
+        / "site-packages"
+        / "depkg"
+        / "pyproject.toml"
+    ).exists()
+    assert dependency_pyproject.read_bytes() not in {
+        path.read_bytes()
+        for path in root.rglob("pyproject.toml")
+    }
+
+
+def test_materialize_default_mode_ignores_external_deps(tmp_path) -> None:
+    contract, dependency, sources, search_paths = _write_external_import_fixture(
+        tmp_path
+    )
+    project = contract.parents[1]
+    local_dependency = contract.with_name("local.vy")
+    implicit_root = tmp_path / "implicit"
+    explicit_root = tmp_path / "explicit"
+
+    implicit = materialize_target_overlay(
+        sources, "0.4.3", implicit_root, search_paths
+    )
+    explicit = materialize_target_overlay(
+        sources,
+        "0.4.3",
+        explicit_root,
+        search_paths,
+        include_dependencies=False,
+    )
+
+    assert implicit is not None
+    assert explicit is not None
+
+    def tree(root: Path) -> dict[Path, bytes]:
+        return {
+            path.relative_to(root): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    expected_tree = {
+        Path("pyproject.toml"): (project / "pyproject.toml").read_bytes(),
+        Path("src/local.vy"): _target_validation_source(
+            local_dependency.read_text(), "0.4.3"
+        ).encode(),
+        Path("src/main.vy"): sources[contract].encode(),
+    }
+    assert tree(implicit_root) == expected_tree
+    assert tree(explicit_root) == expected_tree
+    assert dependency.resolve() not in implicit.paths
+    assert {
+        path: target.relative_to(implicit_root)
+        for path, target in implicit.paths.items()
+    } == {contract.resolve(): Path("src/main.vy")}
+    assert {
+        path: target.relative_to(explicit_root)
+        for path, target in explicit.paths.items()
+    } == {contract.resolve(): Path("src/main.vy")}
+    assert implicit.source_roots == explicit.source_roots == (project.resolve(),)
 
 
 

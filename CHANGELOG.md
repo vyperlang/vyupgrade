@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added a public import-closure primitive (resolve_import_closure) and a reusable overlay materializer, single-sourcing the validation dependency traversal.
+- Added opt-in closure-mode overlay materialization: the full import closure (including external search-path dependencies) can be materialized import-root-relative for dependency-closure upgrades.
 
 ## 0.5.1 - 2026-07-10
 

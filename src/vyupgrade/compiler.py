@@ -54,6 +54,9 @@ VALIDATION_MODULE_ALIASES = {
     "create2": "create2_address",
 }
 
+class OverlayLayoutConflictError(ValueError):
+    """Two closure members with different content map to one overlay path."""
+
 
 @dataclass
 class CompileResult:
@@ -352,8 +355,8 @@ def resolve_import_closure(
 ) -> ImportClosure:
     """Resolve the full transitive closure, including external search-path files.
 
-    Overlay materialization copies only closure members under ``common_root``;
-    external configured-search-path dependencies remain available in place.
+    Default overlay materialization copies only closure members under
+    ``common_root``; closure mode materializes external dependencies too.
     """
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
@@ -381,6 +384,8 @@ def target_overlay(
     sources: Mapping[Path, str],
     target_version: str,
     search_paths: tuple[Path, ...] = (),
+    *,
+    include_dependencies: bool = False,
 ) -> Iterator[TargetOverlay | None]:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
@@ -388,7 +393,11 @@ def target_overlay(
         return
     with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
         overlay = materialize_target_overlay(
-            resolved_sources, target_version, Path(tmp), search_paths
+            resolved_sources,
+            target_version,
+            Path(tmp),
+            search_paths,
+            include_dependencies=include_dependencies,
         )
         assert overlay is not None
         yield overlay
@@ -399,40 +408,73 @@ def materialize_target_overlay(
     target_version: str,
     root: Path,
     search_paths: tuple[Path, ...] = (),
+    *,
+    include_dependencies: bool = False,
 ) -> TargetOverlay | None:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
         return None
     roots, import_roots, common = _overlay_roots(resolved_sources, search_paths)
+    destination = _overlay_destination_resolver(
+        common, import_roots, root, include_dependencies
+    )
+    placed: dict[Path, Path] | None = {} if include_dependencies else None
+    members: dict[Path, Path] = {}
     paths: dict[Path, Path] = {}
     overlay_search_paths: set[Path] = set()
     for source_root in roots:
-        overlay_search_paths.update(
-            _copy_validation_sources(
-                source_root,
-                import_roots,
-                common,
-                root,
-                target_version,
-                resolved_sources,
-            )
+        copied_search_paths, copied = _copy_validation_sources(
+            source_root,
+            import_roots,
+            common,
+            root,
+            target_version,
+            resolved_sources,
+            destination,
+            placed,
         )
-    overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
+        overlay_search_paths.update(copied_search_paths)
+        if include_dependencies:
+            members.update(copied)
+    if not include_dependencies:
+        overlay_search_paths.update(
+            _overlay_configured_search_paths(search_paths, common, root)
+        )
     for path, source in resolved_sources.items():
-        try:
-            relative = path.relative_to(common)
-        except ValueError:
+        target = destination(path)
+        if target is None:
             continue
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source, encoding="utf-8")
+        if placed is None or _claim_overlay_destination(
+            placed, target, path, source
+        ):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source, encoding="utf-8")
         paths[path] = target
         overlay_search_paths.add(target.parent)
-    _copy_project_configs(common, root)
+        if include_dependencies and path.name == "create2_address.vy":
+            alias = target.with_name("create2.vy")
+            alias_source = _target_validation_create2_alias_source(source)
+            if placed is None or _claim_overlay_destination(
+                placed, alias, path, alias_source
+            ):
+                alias.write_text(alias_source, encoding="utf-8")
+    if include_dependencies:
+        configured_search_paths = tuple(
+            search_path.resolve() for search_path in search_paths
+        )
+        for source_root in roots:
+            if source_root not in configured_search_paths:
+                _copy_project_configs(
+                    source_root,
+                    root,
+                    excluded_roots=configured_search_paths,
+                )
+    else:
+        _copy_project_configs(common, root)
     return TargetOverlay(
         root=root,
-        paths=paths,
-        source_roots=roots,
+        paths={**members, **paths} if include_dependencies else paths,
+        source_roots=import_roots if include_dependencies else roots,
         search_paths=tuple(
             sorted(
                 (path for path in overlay_search_paths if path != root),
@@ -458,6 +500,56 @@ def _overlay_roots(
     )
     common = Path(os.path.commonpath([str(root) for root in roots]))
     return roots, import_roots, common
+
+
+def _closure_import_root(path: Path, import_roots: tuple[Path, ...]) -> Path:
+    containing_roots = tuple(
+        root for root in import_roots if _is_relative_to(path, root)
+    )
+    assert containing_roots, f"closure member is outside import roots: {path}"
+    return max(containing_roots, key=lambda root: len(root.parts))
+
+
+def _overlay_destination_resolver(
+    common_root: Path,
+    import_roots: tuple[Path, ...],
+    target_root: Path,
+    include_dependencies: bool,
+) -> Callable[[Path], Path | None]:
+    if include_dependencies:
+
+        def destination(path: Path) -> Path:
+            import_root = _closure_import_root(path, import_roots)
+            return target_root / path.relative_to(import_root)
+
+        return destination
+
+    def destination(path: Path) -> Path | None:
+        try:
+            return target_root / path.relative_to(common_root)
+        except ValueError:
+            return None
+
+    return destination
+
+
+def _claim_overlay_destination(
+    placed: dict[Path, Path],
+    target: Path,
+    source_path: Path,
+    content: str,
+) -> bool:
+    existing_source = placed.get(target)
+    if existing_source is None:
+        placed[target] = source_path
+        return True
+    if existing_source == source_path:
+        return True
+    if target.read_bytes() == content.encode("utf-8"):
+        return False
+    raise OverlayLayoutConflictError(
+        f"overlay destination {target} maps both {existing_source} and {source_path}"
+    )
 
 def _overlay_configured_search_paths(
     search_paths: tuple[Path, ...], common_root: Path, target_root: Path
@@ -565,62 +657,74 @@ def _copy_validation_sources(
     target_root: Path,
     target_version: str,
     overrides: Mapping[Path, str],
-) -> set[Path]:
+    destination: Callable[[Path], Path | None],
+    placed: dict[Path, Path] | None,
+) -> tuple[set[Path], dict[Path, Path]]:
     search_paths: set[Path] = set()
+    copied: dict[Path, Path] = {}
     for resolved, source in _walk_validation_sources(
         source_root, import_roots, common_root, overrides
     ):
+        target = destination(resolved)
+        if target is None:
+            continue
         _copy_validation_source(
             resolved,
             source,
+            target,
             common_root,
-            target_root,
             target_version,
             search_paths,
+            placed,
         )
-    return search_paths
+        if resolved.suffix in VALIDATION_SOURCE_SUFFIXES:
+            copied[resolved] = target
+    return search_paths, copied
 
 
 def _copy_validation_source(
     source_path: Path,
     source: str,
+    target: Path,
     common_root: Path,
-    target_root: Path,
     target_version: str,
     search_paths: set[Path],
+    placed: dict[Path, Path] | None,
 ) -> None:
     if source_path.suffix not in VALIDATION_SOURCE_SUFFIXES:
         return
-    try:
-        relative = source_path.relative_to(common_root)
-    except ValueError:
-        return
-    target = target_root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     if source_path.suffix == ".json":
-        target.write_text(source, encoding="utf-8")
+        if placed is None or _claim_overlay_destination(
+            placed, target, source_path, source
+        ):
+            target.write_text(source, encoding="utf-8")
         search_paths.add(target.parent)
         return
-    source = _standard_json_package_dependency_source(source_path, source, common_root)
-    target.write_text(
-        _target_validation_source(
-            source,
-            target_version,
-            is_interface=source_path.suffix == ".vyi",
-        ),
-        encoding="utf-8",
+    source = _standard_json_package_dependency_source(
+        source_path, source, common_root
     )
+    content = _target_validation_source(
+        source,
+        target_version,
+        is_interface=source_path.suffix == ".vyi",
+    )
+    if placed is None or _claim_overlay_destination(
+        placed, target, source_path, content
+    ):
+        target.write_text(content, encoding="utf-8")
     search_paths.add(target.parent)
     if source_path.name == "create2_address.vy":
         alias = target.with_name("create2.vy")
-        alias.write_text(
-            _target_validation_source(
-                _target_validation_create2_alias_source(source),
-                target_version,
-                is_interface=False,
-            ),
-            encoding="utf-8",
+        alias_content = _target_validation_source(
+            _target_validation_create2_alias_source(source),
+            target_version,
+            is_interface=False,
         )
+        if placed is None or _claim_overlay_destination(
+            placed, alias, source_path, alias_content
+        ):
+            alias.write_text(alias_content, encoding="utf-8")
 
 
 def _standard_json_package_dependency_source(source_path: Path, source: str, common_root: Path) -> str:
@@ -758,16 +862,49 @@ def _validation_module_candidates(path: Path) -> tuple[Path, ...]:
     return tuple(candidate.with_suffix(suffix) for candidate in paths for suffix in sorted(VALIDATION_SOURCE_SUFFIXES))
 
 
-def _copy_project_configs(source_root: Path, target_root: Path) -> None:
+def _project_config_paths(
+    source_root: Path,
+    excluded_roots: tuple[Path, ...],
+) -> Iterator[Path]:
+    if not excluded_roots:
+        yield from source_root.rglob("pyproject.toml")
+        return
+    for directory, directories, files in os.walk(source_root):
+        current = Path(directory)
+        directories[:] = [
+            name
+            for name in directories
+            if not any(
+                _is_relative_to((current / name).resolve(), excluded_root)
+                for excluded_root in excluded_roots
+            )
+        ]
+        if "pyproject.toml" in files:
+            yield current / "pyproject.toml"
+
+
+def _copy_project_configs(
+    source_root: Path,
+    target_root: Path,
+    *,
+    excluded_roots: tuple[Path, ...] = (),
+) -> None:
     resolved_target = target_root.resolve()
-    for pyproject in list(source_root.rglob("pyproject.toml")):
+    for pyproject in _project_config_paths(source_root, excluded_roots):
         resolved_pyproject = pyproject.resolve()
         if (
             resolved_pyproject == resolved_target
             or resolved_target in resolved_pyproject.parents
+            or any(
+                _is_relative_to(resolved_pyproject, excluded_root)
+                for excluded_root in excluded_roots
+            )
         ):
             continue
-        if any(part in {".git", ".venv", "venv", "node_modules"} for part in pyproject.parts):
+        if any(
+            part in {".git", ".venv", "venv", "node_modules"}
+            for part in pyproject.parts
+        ):
             continue
         try:
             relative = pyproject.relative_to(source_root)
