@@ -171,6 +171,11 @@ def _render_text_summary(report: RunReport) -> str:
     ]
     if report.closure is not None:
         lines.append(f"dependencies: {len(report.closure.dependencies)} upgraded")
+        if report.closure.output_status != "skipped":
+            lines.append(
+                "closure output: "
+                f"{report.closure.output_dir} ({report.closure.output_status})"
+            )
     waiver_flags = sorted(
         {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
     )
@@ -224,6 +229,14 @@ def _render_summary(console: Console, report: RunReport) -> None:
                 _count_style(len(report.closure.dependencies)),
             )
         )
+        if report.closure.output_status != "skipped":
+            console.print(
+                _label_value(
+                    "closure output",
+                    f"{report.closure.output_dir} ({report.closure.output_status})",
+                    _status_style(report.closure.output_status),
+                )
+            )
     waiver_flags = sorted(
         {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
     )

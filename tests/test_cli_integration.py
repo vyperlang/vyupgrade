@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -16,6 +17,15 @@ from vyupgrade.compiler import (
     unavailable_validation_artifacts,
 )
 from vyupgrade.models import Config
+
+
+def _tree_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(path for path in root.rglob("*") if path.is_file()):
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def test_real_compiler_nested_module_layout_is_comparable(tmp_path: Path) -> None:
@@ -663,3 +673,63 @@ def test_real_compiler_include_dependencies_upgrades_closure(
     assert files[project.resolve()]["validation"]["target_compile"] == "passed"
     assert files[dependency.resolve()]["validation"]["target_compile"] == "passed"
     assert files[dependency.resolve()]["role"] == "dependency"
+
+
+def test_real_compiler_closure_output_tree_compiles_standalone(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project = project_root / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project_root / "depkg").symlink_to(
+        dependency.parent, target_is_directory=True
+    )
+    project_source = (
+        "# @version 0.3.10\n"
+        "from depkg import mod\n"
+        "\n"
+        "@external\n"
+        "def value() -> uint256:\n"
+        "    return 1\n"
+    )
+    dependency_source = (
+        "# @version 0.3.10\n"
+        "VALUE: constant(uint256) = 1\n"
+    )
+    project.write_text(project_source, encoding="utf-8")
+    dependency.write_text(dependency_source, encoding="utf-8")
+    output = project_root / "output"
+    arguments = [
+        str(project_root),
+        "--include-dependencies",
+        "--compiler-search-paths",
+        str(search_path),
+        "--closure-output",
+        str(output),
+    ]
+
+    code = main(arguments)
+    first_hash = _tree_sha256(output)
+    entry = output / "main.vy"
+    result = compile_target_source(
+        entry,
+        entry.read_text(encoding="utf-8"),
+        Config(
+            paths=(entry,),
+            target_version="0.4.3",
+            compiler_search_paths=(output,),
+        ),
+    )
+    second_code = main(arguments)
+
+    assert code == 0
+    assert second_code == 0
+    assert result.status == "passed", result.stderr
+    assert project.read_text(encoding="utf-8") == project_source
+    assert dependency.read_text(encoding="utf-8") == dependency_source
+    assert (output / "depkg" / "mod.vy").is_file()
+    assert _tree_sha256(output) == first_hash

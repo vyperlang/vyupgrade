@@ -1556,12 +1556,14 @@ def test_upgrade_closure_alias_and_pyproject_key(
     )
     alias_report = tmp_path / "alias.json"
     config_report = tmp_path / "config.json"
+    config_output = tmp_path / "config-output"
     config_path = tmp_path / "pyproject.toml"
     config_path.write_text(
         "[tool.vyupgrade]\n"
         f'paths = ["{project}"]\n'
         f'compiler-search-paths = ["{search_path}"]\n'
         "include-dependencies = true\n"
+        f'closure-output = "{config_output}"\n'
         f'report-json = "{config_report}"\n'
     )
 
@@ -1583,6 +1585,9 @@ def test_upgrade_closure_alias_and_pyproject_key(
         closure = json.loads(report_path.read_text())["closure"]
         assert closure["requested"] is True
         assert closure["dependencies"] == [str(dependency.resolve())]
+    configured_closure = json.loads(config_report.read_text())["closure"]
+    assert configured_closure["output_dir"] == str(config_output.resolve())
+    assert configured_closure["output_status"] == "written"
 
 
 def test_dependency_source_version_inferred_from_dep_pragma(
@@ -1714,3 +1719,240 @@ def test_include_dependencies_empty_project_reports_requested_closure(
         "archive_status": "skipped",
         "archive_error": None,
     }
+
+
+def test_closure_output_requires_include_dependencies_exit_4(
+    tmp_path: Path, capsys
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n")
+
+    code = main([str(contract), "--closure-output", str(tmp_path / "output")])
+
+    assert code == 4
+    assert "--closure-output requires --include-dependencies" in capsys.readouterr().err
+
+
+def test_check_with_closure_output_exit_4(tmp_path: Path, capsys) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n")
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--include-dependencies",
+            "--closure-output",
+            str(tmp_path / "output"),
+        ]
+    )
+
+    assert code == 4
+    assert "--check cannot be combined with --closure-output" in capsys.readouterr().err
+
+
+def test_write_include_dependencies_with_closure_output_commits_both(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    project.write_text(
+        "# @version 0.3.10\n"
+        "from depkg import mod\n"
+        "\n"
+        "@external\n"
+        "def __init__():\n"
+        "    pass\n"
+    )
+    dependency_original = dependency.read_bytes()
+    output = tmp_path / "output"
+
+    code = main(
+        [
+            str(project),
+            "--write",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-output",
+            str(output),
+        ]
+    )
+
+    assert code == 0
+    assert "#pragma version 0.4.3" in project.read_text()
+    assert "@deploy\ndef __init__" in project.read_text()
+    assert (output / "main.vy").read_bytes() == project.read_bytes()
+    assert "#pragma version 0.4.3" in (
+        output / "depkg" / "mod.vy"
+    ).read_text()
+    assert dependency.read_bytes() == dependency_original
+    assert not (search_path / "main.vy").exists()
+
+
+def test_closure_output_blocked_when_validation_blocks(
+    tmp_path: Path, failing_target_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("untouched")
+    report = tmp_path / "report.json"
+    dependency_original = dependency.read_bytes()
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 2
+    assert list(output.iterdir()) == [marker]
+    assert marker.read_text() == "untouched"
+    assert dependency.read_bytes() == dependency_original
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["output_dir"] == str(output.resolve())
+    assert closure_report["output_status"] == "blocked"
+    assert closure_report["output_error"] is None
+
+
+def test_closure_output_failure_exits_9(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, _dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    output = tmp_path / "not-a-directory"
+    output.write_text("existing file")
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 9
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["output_status"] == "failed"
+    assert closure_report["output_error"] == (
+        "closure output destination is not a directory"
+    )
+    assert output.read_text() == "existing file"
+
+
+def test_report_json_closure_output_fields(
+    tmp_path: Path, passing_compiler, capsys
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    output = tmp_path / "output"
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["output_dir"] == str(output.resolve())
+    assert closure_report["output_status"] == "written"
+    assert closure_report["output_error"] is None
+    assert (output / "depkg" / "mod.vy").read_text() != dependency.read_text()
+    assert (
+        f"closure output: {output.resolve()} (written)"
+        in capsys.readouterr().out
+    )
+
+
+def test_closure_output_blocked_when_plan_build_fails(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Main.vy"
+    contract.write_text(
+        "#pragma version 0.4.3\n"
+        "\n"
+        "interface Token:\n"
+        "    def balanceOf(owner: address) -> uint256: view\n"
+    )
+    (tmp_path / "Token.vyi").write_text("# user-owned interface\n")
+    output = tmp_path / "output"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("untouched")
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--split-interfaces",
+            "--include-dependencies",
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 9
+    assert list(output.iterdir()) == [marker]
+    assert marker.read_text() == "untouched"
+    data = json.loads(report.read_text())
+    assert data["write_status"] == "failed"
+    assert data["closure"]["output_status"] == "blocked"
+    assert data["closure"]["output_error"] is None
+
+
+def test_empty_project_closure_output_is_written_without_directory(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "empty"
+    project.mkdir()
+    output = tmp_path / "output"
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert not output.exists()
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["output_dir"] == str(output.resolve())
+    assert closure_report["output_status"] == "written"
+    assert closure_report["output_error"] is None

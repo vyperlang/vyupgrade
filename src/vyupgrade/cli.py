@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 from typing import TextIO
 
-from . import compiler, engine
+from . import closure, compiler, engine
 from .models import ClosureReport, Config, FileReport, RunReport, ValidationDecision
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
@@ -44,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
         aggressive=args.aggressive or bool(pyproject.get("aggressive", False)),
         include_dependencies=args.include_dependencies
         or bool(pyproject.get("include-dependencies", False)),
+        closure_output=Path(args.closure_output or pyproject["closure-output"])
+        if args.closure_output or pyproject.get("closure-output")
+        else None,
         test_command=args.test_command,
         source_vyper=args.source_vyper,
         target_vyper=args.target_vyper,
@@ -69,14 +72,29 @@ def main(argv: list[str] | None = None) -> int:
     if config.write and config.check:
         print("--write and --check are mutually exclusive", file=sys.stderr)
         return 4
-    if config.write and config.include_dependencies:
+    if config.closure_output and not config.include_dependencies:
+        print("--closure-output requires --include-dependencies", file=sys.stderr)
+        return 4
+    if config.check and config.closure_output:
+        print("--check cannot be combined with --closure-output", file=sys.stderr)
+        return 4
+    if (
+        config.write
+        and config.include_dependencies
+        and config.closure_output is None
+    ):
         print(
-            "--write with --include-dependencies requires a closure destination",
+            "--write with --include-dependencies requires --closure-output",
             file=sys.stderr,
         )
         return 4
 
-    files = discover_files(config.paths)
+    files = discover_files(
+        config.paths,
+        excluded_roots=(config.closure_output,)
+        if config.closure_output is not None
+        else (),
+    )
     human_reporter = None if config.diff else HumanReporter(sys.stdout)
     if human_reporter:
         human_reporter.start(config.source_version, config.target_version)
@@ -160,6 +178,18 @@ def main(argv: list[str] | None = None) -> int:
                         str(path) for path in mismatches
                     )
 
+    if config.include_dependencies and config.closure_output is not None:
+        assert run_report.closure is not None
+        run_report.closure.output_dir = str(config.closure_output.resolve())
+        if (
+            plan_error is not None
+            or not validation_decision.write_allowed
+            or run_report.write_status in {"failed", "rollback-incomplete"}
+        ):
+            run_report.closure.output_status = "blocked"
+        else:
+            _emit_closure_output(config, batch, plan, run_report)
+
     diff_chunks = plan.diff_chunks()
     if config.include_dependencies:
         diff_chunks += _dependency_diff_chunks(batch)
@@ -191,7 +221,10 @@ def main(argv: list[str] | None = None) -> int:
             human_reporter.file(report)
         human_reporter.summary(run_report)
 
-    if run_report.write_status in {"failed", "rollback-incomplete"}:
+    if run_report.write_status in {"failed", "rollback-incomplete"} or (
+        run_report.closure is not None
+        and run_report.closure.output_status == "failed"
+    ):
         if run_report.formatter_status == "failed":
             return 6
         return 9
@@ -217,6 +250,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--diff", action="store_true")
     parser.add_argument("--report-json")
+    parser.add_argument("--closure-output")
     parser.add_argument("--select", default="")
     parser.add_argument("--ignore", default="")
     parser.add_argument("--aggressive", action="store_true")
@@ -304,6 +338,25 @@ def _dependency_diff_chunks(batch: engine.MigrationBatch) -> list[str]:
             )
         )
     return chunks
+
+
+def _emit_closure_output(
+    config: Config,
+    batch: engine.MigrationBatch,
+    plan: MigrationPlan,
+    run_report: RunReport,
+) -> None:
+    assert config.closure_output is not None
+    assert run_report.closure is not None
+    result = closure.write_closure_output(
+        config.closure_output,
+        engine.candidate_sources(batch, plan.candidate_source),
+        config.target_version,
+        config.compiler_search_paths,
+    )
+    run_report.closure.output_dir = str(result.root)
+    run_report.closure.output_status = result.status
+    run_report.closure.output_error = result.error
 
 
 def _validate_or_layout_conflict(
