@@ -612,3 +612,54 @@ def test_target_validation_does_not_normalize_selected_candidate(tmp_path: Path)
 
     assert code == 2
     assert contract.read_text(encoding="utf-8") == original
+
+
+def test_real_compiler_include_dependencies_upgrades_closure(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    project = project_root / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project_root / "depkg").symlink_to(dependency.parent, target_is_directory=True)
+    project_source = (
+        "# @version 0.3.10\n"
+        "from depkg import mod\n"
+        "\n"
+        "@external\n"
+        "def value() -> uint256:\n"
+        "    return 1\n"
+    )
+    dependency_source = (
+        "# @version 0.3.10\n"
+        "VALUE: constant(uint256) = 1\n"
+    )
+    project.write_text(project_source, encoding="utf-8")
+    dependency.write_text(dependency_source, encoding="utf-8")
+    report = tmp_path / "report.json"
+    second_report = tmp_path / "second-report.json"
+    arguments = [
+        str(project),
+        "--include-dependencies",
+        "--compiler-search-paths",
+        str(search_path),
+        "--report-json",
+    ]
+
+    code = main([*arguments, str(report)])
+    second_code = main([*arguments, str(second_report)])
+
+    assert code == 0
+    assert second_code == 0
+    assert project.read_text(encoding="utf-8") == project_source
+    assert dependency.read_text(encoding="utf-8") == dependency_source
+    data = json.loads(report.read_text())
+    second_data = json.loads(second_report.read_text())
+    assert data == second_data
+    files = {Path(file["path"]): file for file in data["files"]}
+    assert files[project.resolve()]["validation"]["target_compile"] == "passed"
+    assert files[dependency.resolve()]["validation"]["target_compile"] == "passed"
+    assert files[dependency.resolve()]["role"] == "dependency"

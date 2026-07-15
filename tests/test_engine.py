@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vyupgrade import engine
+from vyupgrade import compiler, engine
 from vyupgrade.compiler import CompileResult
 from vyupgrade.engine import MigrationRequest, SourceCompileAttempt
 from vyupgrade.models import Config, Diagnostic, Fix, GeneratedFile, RewriteResult
@@ -255,7 +255,10 @@ def test_generated_interface_and_cross_file_sources_share_one_overlay(
         return RewriteResult(source, [], [], generated)
 
     @contextmanager
-    def overlay(sources, target_version, search_paths):
+    def overlay(
+        sources, target_version, search_paths, *, include_dependencies=False
+    ):
+        assert include_dependencies is False
         overlay_sources.update(sources)
         yield overlay_token
 
@@ -396,3 +399,174 @@ def test_interface_validation_is_target_only(
 
     assert batch.files[0].report.source_compile == "skipped"
     assert decision.status == expected
+
+
+def test_prepare_migrations_skips_interface_split_for_dependencies(
+    monkeypatch, tmp_path: Path
+) -> None:
+    path = tmp_path / "dependency.vy"
+    source = (
+        "#pragma version 0.3.10\n"
+        "interface Token:\n"
+        "    def balanceOf(owner: address) -> uint256: view\n"
+    )
+    request = MigrationRequest(
+        path,
+        source,
+        "0.3.10",
+        (SourceCompileAttempt("0.3.10", "0.3.10"),),
+        role="dependency",
+    )
+    monkeypatch.setattr(
+        engine,
+        "compile_source_file",
+        lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
+    )
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+
+    def unexpected_split(*_args):
+        raise AssertionError("dependency interface splitting must not run")
+
+    monkeypatch.setattr(engine, "split_interfaces_to_vyi", unexpected_split)
+
+    batch = engine.prepare_migrations(
+        (request,), _config(tmp_path, split_interfaces=True)
+    )
+
+    assert batch.files[0].report.role == "dependency"
+    assert batch.generated == []
+
+
+def test_validate_migrations_threads_closure_mode(
+    monkeypatch, tmp_path: Path
+) -> None:
+    project_root = tmp_path / "project"
+    project = project_root / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    project_source = "#pragma version 0.4.3\nfrom depkg import mod\n"
+    dependency_source = "#pragma version 0.3.10\nVALUE: constant(uint256) = 1\n"
+    project.write_text(project_source)
+    dependency.write_text(dependency_source)
+    rewritten_dependency = dependency_source.replace("0.3.10", "0.4.3")
+    real_target_overlay = engine.target_overlay
+    observed_flags: list[bool] = []
+    observed_search_paths: dict[bool, tuple[Path, ...]] = {}
+
+    monkeypatch.setattr(
+        engine,
+        "compile_source_file",
+        lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
+    )
+
+    def apply(source, config, path):
+        rewritten = rewritten_dependency if path == dependency else source
+        return RewriteResult(rewritten, [], [])
+
+    @contextmanager
+    def target_overlay(
+        sources,
+        target_version,
+        search_paths,
+        *,
+        include_dependencies=False,
+    ):
+        observed_flags.append(include_dependencies)
+        with real_target_overlay(
+            sources,
+            target_version,
+            search_paths,
+            include_dependencies=include_dependencies,
+        ) as overlay:
+            yield overlay
+
+    def compile_target(path, source, config, overlay):
+        assert overlay is not None
+        observed_search_paths[config.include_dependencies] = (
+            compiler._overlay_search_paths(overlay, config.compiler_search_paths)
+        )
+        if path == dependency:
+            target = overlay.paths[dependency.resolve()]
+            assert target == overlay.root / "depkg" / "mod.vy"
+            assert target.read_text() == rewritten_dependency
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    monkeypatch.setattr(engine, "apply_rules", apply)
+    monkeypatch.setattr(engine, "target_overlay", target_overlay)
+    monkeypatch.setattr(engine, "compile_target_source", compile_target)
+    project_request = MigrationRequest(
+        project,
+        project_source,
+        "0.4.3",
+        (SourceCompileAttempt("0.4.3", "0.4.3"),),
+    )
+    dependency_request = MigrationRequest(
+        dependency,
+        dependency_source,
+        "0.3.10",
+        (SourceCompileAttempt("0.3.10", "0.3.10"),),
+        role="dependency",
+    )
+    closure_config = _config(
+        tmp_path,
+        compiler_search_paths=(search_path,),
+        include_dependencies=True,
+    )
+    default_config = _config(
+        tmp_path,
+        compiler_search_paths=(search_path,),
+    )
+
+    closure_batch = engine.prepare_migrations(
+        (project_request, dependency_request), closure_config
+    )
+    default_batch = engine.prepare_migrations((project_request,), default_config)
+    engine.validate_migrations(closure_batch, closure_config)
+    engine.validate_migrations(default_batch, default_config)
+
+    assert observed_flags == [True, False]
+    assert search_path.resolve() not in observed_search_paths[True]
+    assert search_path.resolve() in observed_search_paths[False]
+
+
+def test_dependency_source_final_newline_retry_handles_read_only_directory(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dependency_directory = tmp_path / "site-packages" / "depkg"
+    dependency_directory.mkdir(parents=True)
+    dependency = dependency_directory / "mod.vy"
+    source = "#pragma version 0.3.10\nVALUE: constant(uint256) = 1"
+    dependency.write_text(source)
+    original_failure = CompileResult(
+        "failed",
+        stderr="ValueError: start (2, 0) precedes previous end",
+    )
+    request = MigrationRequest(
+        dependency,
+        source,
+        "0.3.10",
+        (SourceCompileAttempt("0.3.10", "0.3.10"),),
+        role="dependency",
+    )
+    original_entries = set(dependency_directory.iterdir())
+
+    monkeypatch.setattr(
+        compiler,
+        "_run_compile_with_formats",
+        lambda *_args, **_kwargs: original_failure,
+    )
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+
+    def deny_temporary_file(*_args, **_kwargs):
+        raise OSError("read-only dependency directory")
+
+    monkeypatch.setattr(compiler.tempfile, "NamedTemporaryFile", deny_temporary_file)
+
+    batch = engine.prepare_migrations((request,), _config(tmp_path))
+
+    assert batch.files[0].source_compile is original_failure
+    assert batch.files[0].report.source_compile == "failed"
+    assert set(dependency_directory.iterdir()) == original_entries

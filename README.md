@@ -112,6 +112,7 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--write` — apply changes in place only after the validation decision passes.
 - `--check` — exit non-zero if any file would change; write nothing.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
+- `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
 - `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
 - `--select` / `--ignore` — comma-separated rule codes to include or exclude.
 - `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.
@@ -127,11 +128,11 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
-JSON reports include a top-level `schema_version`. Version `1` preserves the
-existing report envelope and field paths; new fields may be added compatibly.
-Consumers should treat a missing version as the legacy unversioned format and
-require a new schema version before relying on renamed, removed, or
-type-changed fields.
+JSON reports include a top-level `schema_version`. Version `2` adds a per-file
+`role` and a top-level `closure` object; version `1` consumers must not assume
+their absence. Consumers should treat a missing version as the legacy
+unversioned format and require a new schema version before relying on renamed,
+removed, or type-changed fields.
 
 ### Configuration
 

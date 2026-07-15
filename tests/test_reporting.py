@@ -7,6 +7,7 @@ from rich.console import Console
 
 from vyupgrade import __version__
 from vyupgrade.models import (
+    ClosureReport,
     Diagnostic,
     FileReport,
     Fix,
@@ -54,9 +55,30 @@ def test_json_report_declares_additive_schema_version() -> None:
 
     data = report.to_json_obj()
 
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["files"] == []
     assert data["target_version"] == "0.4.3"
+    assert data["closure"] is None
+
+
+def test_closure_summary_reports_upgraded_dependency_count() -> None:
+    report = RunReport(
+        source_version=None,
+        target_version="0.4.3",
+        files=[],
+        closure=ClosureReport(
+            requested=True,
+            dependencies=("/deps/a.vy", "/deps/b.json"),
+        ),
+    )
+    stream = StringIO()
+    console = Console(file=stream, no_color=True, width=120)
+
+    text = render_text(report)
+    render_rich(report, console)
+
+    assert "dependencies: 2 upgraded" in text
+    assert "dependencies: 2 upgraded" in stream.getvalue()
 
 
 def test_render_text_hides_stderr_for_successful_compiles() -> None:
@@ -315,3 +337,29 @@ def test_render_rich_splits_diagnostic_line_styles() -> None:
         "\x1b[32m modernized version pragma\x1b[0m"
         "\x1b[2m (line 2)\x1b[0m"
     ) in stream.getvalue()
+
+
+def test_closure_summary_omits_impossible_write_hint() -> None:
+    report = RunReport(
+        source_version=None,
+        target_version="0.4.3",
+        files=[
+            FileReport(
+                path=Path("/deps/changed.vy"),
+                role="dependency",
+                changed=True,
+            )
+        ],
+        closure=ClosureReport(
+            requested=True,
+            dependencies=("/deps/changed.vy",),
+        ),
+    )
+    stream = StringIO()
+    console = Console(file=stream, no_color=True, width=120)
+
+    text = render_text(report)
+    render_rich(report, console)
+
+    assert "run with --write" not in text
+    assert "run with --write" not in stream.getvalue()

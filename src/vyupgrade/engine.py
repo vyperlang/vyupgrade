@@ -57,6 +57,7 @@ class MigrationRequest:
     source_version: str | None
     source_attempts: tuple[SourceCompileAttempt, ...]
     skip_target_on_vyd016: bool = True
+    role: str = "project"
 
 
 @dataclass
@@ -100,7 +101,9 @@ class MigrationBatch:
         ]
 
 
-def bounded_migration_request(path: Path, original: str, config: Config) -> MigrationRequest:
+def bounded_migration_request(
+    path: Path, original: str, config: Config, *, role: str = "project"
+) -> MigrationRequest:
     """Build the target-bounded source compiler request used by the CLI."""
     source_version = config.source_version or infer_pragma(original)
     context = MigrationContext.from_specs(source_version, config.target_version)
@@ -113,7 +116,7 @@ def bounded_migration_request(path: Path, original: str, config: Config) -> Migr
             source_version, config.target_version, original
         )
         attempts = (SourceCompileAttempt(compiler, source_version, compiler),)
-    return MigrationRequest(path, original, source_version, attempts)
+    return MigrationRequest(path, original, source_version, attempts, role=role)
 
 
 def prepare_migrations(
@@ -141,6 +144,7 @@ def prepare_migrations(
         if (
             config.split_interfaces
             and request.path.suffix == ".vy"
+            and request.role == "project"
             and not MigrationContext.from_specs(
                 source_version, config.target_version
             ).source_newer_than_target()
@@ -153,6 +157,7 @@ def prepare_migrations(
 
         report = FileReport(
             path=request.path,
+            role=request.role,
             changed=request.original != rewrite.source,
             fixes=rewrite.fixes,
             # Validation diagnostics belong to the report, not the rule result.
@@ -209,7 +214,10 @@ def validate_migrations(
     target_sources = candidate_sources(batch, resolve_candidate)
 
     with target_overlay(
-        target_sources, config.target_version, config.compiler_search_paths
+        target_sources,
+        config.target_version,
+        config.compiler_search_paths,
+        include_dependencies=config.include_dependencies,
     ) as overlay:
         for migration in batch.files:
             _reset_target_validation(

@@ -17,7 +17,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,7 @@ class ValidationDecision:
 @dataclass
 class FileReport:
     path: Path
+    role: str = "project"
     changed: bool = False
     fixes: list[Fix] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
@@ -112,6 +113,29 @@ class FileReport:
     final_sha256: str | None = None
     final_matches_candidate: bool | None = None
 
+@dataclass
+class ClosureReport:
+    requested: bool = False
+    dependencies: tuple[str, ...] = ()
+    output_dir: str | None = None
+    output_status: str = "skipped"
+    output_error: str | None = None
+    archive: str | None = None
+    archive_status: str = "skipped"
+    archive_error: str | None = None
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "requested": self.requested,
+            "dependencies": list(self.dependencies),
+            "output_dir": self.output_dir,
+            "output_status": self.output_status,
+            "output_error": self.output_error,
+            "archive": self.archive,
+            "archive_status": self.archive_status,
+            "archive_error": self.archive_error,
+        }
+
 
 @dataclass(frozen=True)
 class Config:
@@ -133,6 +157,7 @@ class Config:
     compiler_search_paths: tuple[Path, ...] = ()
     enable_decimals: bool = False
     split_interfaces: bool = False
+    include_dependencies: bool = False
     format: str = "none"
     allow_unvalidated_source: bool = False
     allow_abi_change: bool = False
@@ -157,6 +182,7 @@ class RunReport:
     test_command: str | None = None
     test_status: str = "skipped"
     test_output: str | None = None
+    closure: ClosureReport | None = None
 
     @property
     def changed_count(self) -> int:
@@ -182,6 +208,7 @@ class RunReport:
             "validation_decision": self.validation_decision.to_json_obj(),
             "files": [
                 {
+                    "role": file.role,
                     "path": str(file.path),
                     "changed": file.changed,
                     "original_sha256": file.original_sha256,
@@ -218,4 +245,5 @@ class RunReport:
             "test_command": self.test_command,
             "test_status": self.test_status,
             "test_output": self.test_output,
+            "closure": self.closure.to_json_obj() if self.closure else None,
         }
