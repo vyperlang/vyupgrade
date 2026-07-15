@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added a public import-closure primitive (resolve_import_closure) and a reusable overlay materializer, single-sourcing the validation dependency traversal.
+
 ## 0.5.1 - 2026-07-10
 
 - Extracted fail-closed storage-layout parsing, canonicalization, AST evidence,
