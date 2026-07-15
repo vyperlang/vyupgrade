@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from vyupgrade.compiler import (
+    ARCHIVE_TARGET_FLOOR,
     CompileResult,
     OverlayLayoutConflictError,
+    TargetOverlay,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
@@ -19,12 +21,14 @@ from vyupgrade.compiler import (
     compile_source_ast,
     compile_source_file,
     compile_target_source,
+    compile_target_archive,
     materialize_target_overlay,
     resolve_import_closure,
     target_overlay,
     unavailable_validation_artifacts,
 )
 from vyupgrade.models import Config
+from vyupgrade.versions import KNOWN_VERSIONS, parse_version
 
 
 TARGET_COMPILER_OUTPUT = '[]\n{}\n{}\n{"ast_type":"Module","body":[]}\n'
@@ -4130,3 +4134,107 @@ def test_compare_artifact_details_reports_full_storage_changes() -> None:
     assert len(storage_diff) == 15
     assert storage_diff[-1] == "changed storage: slot_14 slot 14 uint256 -> 15 uint256"
     assert not any(line.startswith("... ") for line in storage_diff)
+
+
+def test_compile_target_archive_requires_overlay_staging(
+    tmp_path: Path, monkeypatch
+) -> None:
+    entry = tmp_path / "main.vy"
+    entry.write_text("#pragma version 0.4.3\n")
+    overlay = TargetOverlay(tmp_path / "overlay", {}, (), ())
+
+    def unexpected_run(*_args, **_kwargs):
+        pytest.fail("archive compiler must not run without a staged entry")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", unexpected_run)
+
+    result = compile_target_archive(
+        entry,
+        entry.read_text(),
+        Config(paths=(entry,), target_vyper="vyper"),
+        overlay,
+        tmp_path / "out.vyz",
+    )
+
+    assert result.status == "failed"
+    assert result.stderr is not None
+    assert "not staged" in result.stderr
+
+
+def test_compile_target_archive_replaces_existing_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    entry = tmp_path / "main.vy"
+    staged = tmp_path / "overlay" / "main.vy"
+    staged.parent.mkdir()
+    staged.write_text("#pragma version 0.4.3\n")
+    output = tmp_path / "out.vyz"
+    output.write_bytes(b"old archive")
+    overlay = TargetOverlay(
+        staged.parent,
+        {entry.resolve(): staged},
+        (entry.parent.resolve(),),
+        (staged.parent,),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs):
+        calls.append(command)
+        Path(command[command.index("-o") + 1]).write_bytes(b"new archive")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = compile_target_archive(
+        entry,
+        staged.read_text(),
+        Config(paths=(entry,), target_vyper="vyper"),
+        overlay,
+        output,
+    )
+
+    assert result.status == "passed"
+    assert result.artifacts == {"archive": str(output)}
+    assert output.read_bytes() == b"new archive"
+    assert calls[0][-1] == "main.vy"
+    assert calls[0][calls[0].index("-f") + 1] == "archive"
+    assert list(tmp_path.glob(".out.vyz.vyupgrade-*")) == []
+
+
+def test_compile_target_archive_cleans_temporary_output_on_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    entry = tmp_path / "main.vy"
+    staged = tmp_path / "overlay" / "main.vy"
+    staged.parent.mkdir()
+    staged.write_text("#pragma version 0.4.3\n")
+    output = tmp_path / "out.vyz"
+    overlay = TargetOverlay(
+        staged.parent,
+        {entry.resolve(): staged},
+        (entry.parent.resolve(),),
+        (staged.parent,),
+    )
+
+    def fake_run(command: list[str], **_kwargs):
+        Path(command[command.index("-o") + 1]).write_bytes(b"partial")
+        return subprocess.CompletedProcess(command, 1, "", "archive failed")
+
+    monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+
+    result = compile_target_archive(
+        entry,
+        staged.read_text(),
+        Config(paths=(entry,), target_vyper="vyper"),
+        overlay,
+        output,
+    )
+
+    assert result.status == "failed"
+    assert result.stderr == "archive failed"
+    assert not output.exists()
+    assert list(tmp_path.glob(".out.vyz.vyupgrade-*")) == []
+
+
+def test_archive_target_floor_is_known_version() -> None:
+    assert parse_version(ARCHIVE_TARGET_FLOOR) in KNOWN_VERSIONS

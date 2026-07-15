@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from . import compiler
+from .models import Config
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,39 @@ def write_closure_output(
         return ClosureWriteResult(
             "written", resolved, tuple(sorted(set(overlay.paths.values())))
         )
+    except (compiler.OverlayLayoutConflictError, OSError) as exc:
+        return ClosureWriteResult("failed", resolved, (), str(exc))
+
+
+def write_closure_archive(
+    output: Path,
+    entry: Path,
+    sources: Mapping[Path, str],
+    config: Config,
+) -> ClosureWriteResult:
+    resolved = output
+    try:
+        resolved = output.resolve()
+        if entry not in sources:
+            return ClosureWriteResult(
+                "failed",
+                resolved,
+                (),
+                f"archive entry is missing from closure sources: {entry}",
+            )
+        with compiler.target_overlay(
+            sources,
+            config.target_version,
+            config.compiler_search_paths,
+            include_dependencies=True,
+        ) as overlay:
+            assert overlay is not None
+            result = compiler.compile_target_archive(
+                entry, sources[entry], config, overlay, resolved
+            )
+        if result.status == "passed":
+            return ClosureWriteResult("written", resolved, (resolved,))
+        return ClosureWriteResult("failed", resolved, (), result.stderr)
     except (compiler.OverlayLayoutConflictError, OSError) as exc:
         return ClosureWriteResult("failed", resolved, (), str(exc))
 

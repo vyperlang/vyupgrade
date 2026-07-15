@@ -17,6 +17,7 @@ from .models import ClosureReport, Config, FileReport, RunReport, ValidationDeci
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
 from .validation import decide_run_validation, validation_exit_code
+from .versions import MigrationContext
 from .write_plan import MigrationPlan, PlanConflictError, WriteTransactionError
 
 
@@ -46,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
         or bool(pyproject.get("include-dependencies", False)),
         closure_output=Path(args.closure_output or pyproject["closure-output"])
         if args.closure_output or pyproject.get("closure-output")
+        else None,
+        closure_archive=Path(args.closure_archive or pyproject["closure-archive"])
+        if args.closure_archive or pyproject.get("closure-archive")
         else None,
         test_command=args.test_command,
         source_vyper=args.source_vyper,
@@ -78,13 +82,29 @@ def main(argv: list[str] | None = None) -> int:
     if config.check and config.closure_output:
         print("--check cannot be combined with --closure-output", file=sys.stderr)
         return 4
+    if config.closure_archive and not config.include_dependencies:
+        print("--closure-archive requires --include-dependencies", file=sys.stderr)
+        return 4
+    if config.check and config.closure_archive:
+        print("--check cannot be combined with --closure-archive", file=sys.stderr)
+        return 4
     if (
         config.write
         and config.include_dependencies
-        and config.closure_output is None
+        and not (config.closure_output or config.closure_archive)
     ):
         print(
-            "--write with --include-dependencies requires --closure-output",
+            "--write with --include-dependencies requires "
+            "--closure-output or --closure-archive",
+            file=sys.stderr,
+        )
+        return 4
+    if config.closure_archive and not MigrationContext.from_specs(
+        config.source_version, config.target_version
+    ).target_at_least(compiler.ARCHIVE_TARGET_FLOOR):
+        print(
+            f"target {config.target_version} predates Vyper archive output "
+            f"(requires >= {compiler.ARCHIVE_TARGET_FLOOR})",
             file=sys.stderr,
         )
         return 4
@@ -105,6 +125,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         for path in files
     ]
+    archive_entry: Path | None = None
+    if config.closure_archive is not None:
+        try:
+            archive_entry = _archive_entry(requests)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 4
     closure_report = (
         ClosureReport(requested=True) if config.include_dependencies else None
     )
@@ -178,17 +205,31 @@ def main(argv: list[str] | None = None) -> int:
                         str(path) for path in mismatches
                     )
 
-    if config.include_dependencies and config.closure_output is not None:
+    if config.include_dependencies and (
+        config.closure_output is not None or config.closure_archive is not None
+    ):
         assert run_report.closure is not None
-        run_report.closure.output_dir = str(config.closure_output.resolve())
+        if config.closure_output is not None:
+            run_report.closure.output_dir = str(config.closure_output.resolve())
+        if config.closure_archive is not None:
+            run_report.closure.archive = str(config.closure_archive.resolve())
         if (
             plan_error is not None
             or not validation_decision.write_allowed
             or run_report.write_status in {"failed", "rollback-incomplete"}
         ):
-            run_report.closure.output_status = "blocked"
+            if config.closure_output is not None:
+                run_report.closure.output_status = "blocked"
+            if config.closure_archive is not None:
+                run_report.closure.archive_status = "blocked"
         else:
-            _emit_closure_output(config, batch, plan, run_report)
+            if config.closure_output is not None:
+                _emit_closure_output(config, batch, plan, run_report)
+            if config.closure_archive is not None:
+                assert archive_entry is not None
+                _emit_closure_archive(
+                    config, archive_entry, batch, plan, run_report
+                )
 
     diff_chunks = plan.diff_chunks()
     if config.include_dependencies:
@@ -223,7 +264,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if run_report.write_status in {"failed", "rollback-incomplete"} or (
         run_report.closure is not None
-        and run_report.closure.output_status == "failed"
+        and (
+            run_report.closure.output_status == "failed"
+            or run_report.closure.archive_status == "failed"
+        )
     ):
         if run_report.formatter_status == "failed":
             return 6
@@ -251,6 +295,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff", action="store_true")
     parser.add_argument("--report-json")
     parser.add_argument("--closure-output")
+    parser.add_argument("--closure-archive")
     parser.add_argument("--select", default="")
     parser.add_argument("--ignore", default="")
     parser.add_argument("--aggressive", action="store_true")
@@ -298,6 +343,19 @@ def _build_migration_plan(
     except PlanConflictError as exc:
         return reports, plan, str(exc)
     return reports, plan, None
+
+
+def _archive_entry(requests: list[engine.MigrationRequest]) -> Path:
+    entries = [
+        request.path
+        for request in requests
+        if request.role == "project" and request.path.suffix == ".vy"
+    ]
+    if len(entries) != 1:
+        raise ValueError(
+            f"--closure-archive requires exactly one entry contract; got {len(entries)}"
+        )
+    return entries[0]
 
 
 def _dependency_requests(
@@ -357,6 +415,26 @@ def _emit_closure_output(
     run_report.closure.output_dir = str(result.root)
     run_report.closure.output_status = result.status
     run_report.closure.output_error = result.error
+
+
+def _emit_closure_archive(
+    config: Config,
+    entry: Path,
+    batch: engine.MigrationBatch,
+    plan: MigrationPlan,
+    run_report: RunReport,
+) -> None:
+    assert config.closure_archive is not None
+    assert run_report.closure is not None
+    result = closure.write_closure_archive(
+        config.closure_archive,
+        entry,
+        engine.candidate_sources(batch, plan.candidate_source),
+        config,
+    )
+    run_report.closure.archive = str(result.root)
+    run_report.closure.archive_status = result.status
+    run_report.closure.archive_error = result.error
 
 
 def _validate_or_layout_conflict(

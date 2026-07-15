@@ -1956,3 +1956,305 @@ def test_empty_project_closure_output_is_written_without_directory(
     assert closure_report["output_dir"] == str(output.resolve())
     assert closure_report["output_status"] == "written"
     assert closure_report["output_error"] is None
+
+
+def test_closure_archive_requires_include_dependencies_exit_4(
+    tmp_path: Path, capsys
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n")
+
+    code = main([str(contract), "--closure-archive", str(tmp_path / "out.vyz")])
+
+    assert code == 4
+    assert (
+        "--closure-archive requires --include-dependencies"
+        in capsys.readouterr().err
+    )
+
+
+def test_check_with_closure_archive_exit_4(tmp_path: Path, capsys) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\n")
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--include-dependencies",
+            "--closure-archive",
+            str(tmp_path / "out.vyz"),
+        ]
+    )
+
+    assert code == 4
+    assert (
+        "--check cannot be combined with --closure-archive"
+        in capsys.readouterr().err
+    )
+
+
+def test_closure_archive_target_below_floor_exits_4_before_compiling(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.3.10\n")
+    compile_calls = 0
+
+    def unexpected_compile(*_args, **_kwargs):
+        nonlocal compile_calls
+        compile_calls += 1
+        return CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    monkeypatch.setattr(engine, "compile_source_file", unexpected_compile)
+    monkeypatch.setattr(engine, "compile_target_source", unexpected_compile)
+
+    code = main(
+        [
+            str(contract),
+            "--target-version",
+            "0.3.10",
+            "--include-dependencies",
+            "--closure-archive",
+            str(tmp_path / "out.vyz"),
+        ]
+    )
+
+    assert code == 4
+    assert compile_calls == 0
+    assert (
+        "target 0.3.10 predates Vyper archive output (requires >= 0.4.0)"
+        in capsys.readouterr().err
+    )
+
+
+def test_closure_archive_requires_single_entry_exit_4(
+    tmp_path: Path, capsys
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "first.vy").write_text("#pragma version 0.4.3\n")
+    (project / "second.vy").write_text("#pragma version 0.4.3\n")
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--closure-archive",
+            str(tmp_path / "out.vyz"),
+        ]
+    )
+
+    assert code == 4
+    assert (
+        "--closure-archive requires exactly one entry contract; got 2"
+        in capsys.readouterr().err
+    )
+
+
+def test_closure_archive_failure_exits_9(
+    tmp_path: Path, passing_compiler, monkeypatch
+) -> None:
+    project, _dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    output = tmp_path / "out.vyz"
+    report = tmp_path / "report.json"
+
+    def fail_archive(
+        _output: Path,
+        _entry: Path,
+        _sources: dict[Path, str],
+        _config: Config,
+    ) -> cli.closure.ClosureWriteResult:
+        return cli.closure.ClosureWriteResult(
+            "failed", output.resolve(), (), "archive failed"
+        )
+
+    monkeypatch.setattr(cli.closure, "write_closure_archive", fail_archive)
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-archive",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 9
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["archive"] == str(output.resolve())
+    assert closure_report["archive_status"] == "failed"
+    assert closure_report["archive_error"] == "archive failed"
+
+
+def test_report_json_closure_archive_fields(
+    tmp_path: Path, passing_compiler, monkeypatch, capsys
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    output = tmp_path / "out.vyz"
+    report = tmp_path / "report.json"
+
+    def write_archive(
+        archive: Path,
+        entry: Path,
+        sources: dict[Path, str],
+        _config: Config,
+    ) -> cli.closure.ClosureWriteResult:
+        assert entry == project.resolve()
+        assert dependency.resolve() in sources
+        archive.write_bytes(b"archive")
+        return cli.closure.ClosureWriteResult(
+            "written", archive.resolve(), (archive.resolve(),)
+        )
+
+    monkeypatch.setattr(cli.closure, "write_closure_archive", write_archive)
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-archive",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["archive"] == str(output.resolve())
+    assert closure_report["archive_status"] == "written"
+    assert closure_report["archive_error"] is None
+    assert (
+        f"closure archive: {output.resolve()} (written)"
+        in capsys.readouterr().out
+    )
+
+
+def test_closure_output_and_archive_combine(
+    tmp_path: Path, passing_compiler, monkeypatch
+) -> None:
+    project, _dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    output = tmp_path / "output"
+    archive = tmp_path / "out.vyz"
+    report = tmp_path / "report.json"
+
+    def write_archive(
+        archive_path: Path,
+        _entry: Path,
+        _sources: dict[Path, str],
+        _config: Config,
+    ) -> cli.closure.ClosureWriteResult:
+        archive_path.write_bytes(b"archive")
+        return cli.closure.ClosureWriteResult(
+            "written", archive_path.resolve(), (archive_path.resolve(),)
+        )
+
+    monkeypatch.setattr(cli.closure, "write_closure_archive", write_archive)
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-output",
+            str(output),
+            "--closure-archive",
+            str(archive),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert (output / "main.vy").is_file()
+    assert archive.read_bytes() == b"archive"
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["output_status"] == "written"
+    assert closure_report["archive_status"] == "written"
+
+
+def test_closure_archive_pyproject_key(
+    tmp_path: Path, passing_compiler, monkeypatch
+) -> None:
+    project, _dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    archive = tmp_path / "configured.vyz"
+    report = tmp_path / "configured.json"
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.vyupgrade]\n"
+        f'paths = ["{project}"]\n'
+        f'compiler-search-paths = ["{search_path}"]\n'
+        "include-dependencies = true\n"
+        f'closure-archive = "{archive}"\n'
+        f'report-json = "{report}"\n'
+    )
+
+    def write_archive(
+        output: Path,
+        _entry: Path,
+        _sources: dict[Path, str],
+        _config: Config,
+    ) -> cli.closure.ClosureWriteResult:
+        output.write_bytes(b"archive")
+        return cli.closure.ClosureWriteResult(
+            "written", output.resolve(), (output.resolve(),)
+        )
+
+    monkeypatch.setattr(cli.closure, "write_closure_archive", write_archive)
+
+    code = main(["--config", str(pyproject)])
+
+    assert code == 0
+    assert archive.read_bytes() == b"archive"
+    assert json.loads(report.read_text())["closure"]["archive_status"] == "written"
+
+
+def test_closure_archive_blocked_when_validation_blocks(
+    tmp_path: Path, failing_target_compiler, monkeypatch
+) -> None:
+    project, _dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    archive = tmp_path / "blocked.vyz"
+    report = tmp_path / "blocked.json"
+
+    def unexpected_write(*_args, **_kwargs):
+        pytest.fail("blocked validation must not emit an archive")
+
+    monkeypatch.setattr(cli.closure, "write_closure_archive", unexpected_write)
+
+    code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--closure-archive",
+            str(archive),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 2
+    assert not archive.exists()
+    closure_report = json.loads(report.read_text())["closure"]
+    assert closure_report["archive"] == str(archive.resolve())
+    assert closure_report["archive_status"] == "blocked"
+    assert closure_report["archive_error"] is None

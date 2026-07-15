@@ -6,6 +6,7 @@
 - Added opt-in closure-mode overlay materialization: the full import closure (including external search-path dependencies) can be materialized import-root-relative for dependency-closure upgrades.
 - Added opt-in `--include-dependencies` closure upgrading: the full import closure (including installed search-path dependencies) is rewritten and cross-validated in a closure-mode target overlay; JSON schema v2 adds file roles and a closure block; in-place dependency writes are structurally impossible.
 - Added `--closure-output DIR`: materializes the validated closure — including installed search-path dependencies — as a standalone import-root-relative tree, gated on the validation decision, with a structural guarantee against in-place writes.
+- Added `--closure-archive OUT.vyz`: compiles the validated closure — including upgraded search-path dependencies — to a self-contained Vyper archive with the real target compiler, gated on archive-capable targets (>= 0.4.0).
 
 ## 0.5.1 - 2026-07-10
 

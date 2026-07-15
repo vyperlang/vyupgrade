@@ -12,6 +12,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
+from uuid import uuid4
 
 from uv import find_uv_bin
 
@@ -30,6 +31,7 @@ FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 TARGET_FORMATS = (*FORMATS, "ast")
 COMPILE_TIMEOUT_SECONDS = 120
+ARCHIVE_TARGET_FLOOR = "0.4.0"
 COMMON_IMPORT_DEPENDENCIES = {
     "snekmate": "snekmate",
 }
@@ -356,6 +358,84 @@ def _compile_target_interface(
         interface_path.unlink(missing_ok=True)
         if harness_path is not None:
             harness_path.unlink(missing_ok=True)
+
+
+def compile_target_archive(
+    path: Path,
+    source: str,
+    config: Config,
+    overlay: TargetOverlay,
+    output: Path,
+) -> CompileResult:
+    staged = overlay.paths.get(path.resolve())
+    if staged is None:
+        return CompileResult(
+            "failed", stderr=f"archive entry was not staged in target overlay: {path}"
+        )
+
+    command, suppress_warnings = _prepare_command(
+        config.target_vyper, config.target_version, config.target_python
+    )
+    compile_config = _target_compile_config(source, config)
+    compile_config = replace(
+        compile_config,
+        compiler_search_paths=_overlay_search_paths(
+            overlay, compile_config.compiler_search_paths
+        ),
+    )
+    tmp_out = output.with_name(
+        f".{output.name}.vyupgrade-{os.getpid()}-{uuid4().hex}"
+    )
+    full = [
+        *_with_project_import_dependencies(command, staged),
+        "-f",
+        "archive",
+        "-o",
+        str(tmp_out),
+        *_compiler_search_path_args(command, staged, compile_config, ()),
+    ]
+    if compile_config.enable_decimals:
+        full.append("--enable-decimals")
+    if suppress_warnings:
+        full.extend(["-W", "none"])
+    full.append(str(staged.relative_to(overlay.root)))
+
+    try:
+        try:
+            proc = subprocess.run(
+                full,
+                cwd=overlay.root,
+                capture_output=True,
+                text=True,
+                timeout=COMPILE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return CompileResult(
+                "failed",
+                stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
+                command=full,
+            )
+        if proc.returncode != 0:
+            return CompileResult(
+                "failed",
+                stderr=proc.stderr.strip() or proc.stdout.strip(),
+                command=full,
+            )
+        if not tmp_out.is_file():
+            return CompileResult(
+                "failed",
+                stderr="target compiler did not produce archive output",
+                command=full,
+            )
+        os.replace(tmp_out, output)
+        return CompileResult(
+            "passed",
+            artifacts={"archive": str(output)},
+            stderr=proc.stderr.strip() or None,
+            command=full,
+        )
+    finally:
+        tmp_out.unlink(missing_ok=True)
 
 
 def resolve_import_closure(
@@ -1520,16 +1600,12 @@ def _run_compile_with_formats(
     unavailable_formats: tuple[str, ...] = (),
     optional_formats: frozenset[str] = frozenset(),
 ) -> CompileResult:
-    full = [*_with_project_import_dependencies(command, path), "-f", ",".join(formats)]
-    if _supports_search_paths(command):
-        for search_path in config.compiler_search_paths:
-            full.extend(["-p", str(search_path)])
-        project_root = _nearest_project_root(path.parent)
-        if project_root is not None:
-            full.extend(["-p", str(project_root)])
-        for search_path in extra_paths:
-            full.extend(["-p", str(search_path)])
-        full.extend(["-p", str(path.parent)])
+    full = [
+        *_with_project_import_dependencies(command, path),
+        "-f",
+        ",".join(formats),
+        *_compiler_search_path_args(command, path, config, extra_paths),
+    ]
     if config.enable_decimals:
         full.append("--enable-decimals")
     if suppress_warnings:
@@ -1641,6 +1717,31 @@ def _run_compile_with_formats(
         command=full,
         unavailable_formats=unavailable_formats,
     )
+
+
+def _compiler_search_path_args(
+    command: list[str],
+    path: Path,
+    config: Config,
+    extra_paths: tuple[Path, ...],
+) -> list[str]:
+    if not _supports_search_paths(command):
+        return []
+    paths = [
+        *config.compiler_search_paths,
+        *(
+            (project_root,)
+            if (project_root := _nearest_project_root(path.parent)) is not None
+            else ()
+        ),
+        *extra_paths,
+        path.parent,
+    ]
+    return [
+        argument
+        for search_path in paths
+        for argument in ("-p", str(search_path))
+    ]
 
 
 def _unsupported_output_format(stderr: str, formats: tuple[str, ...]) -> str | None:

@@ -159,6 +159,7 @@ class Config:
     split_interfaces: bool = False
     include_dependencies: bool = False
     closure_output: Path | None = None
+    closure_archive: Path | None = None
     format: str = "none"
     allow_unvalidated_source: bool = False
     allow_abi_change: bool = False

@@ -176,6 +176,11 @@ def _render_text_summary(report: RunReport) -> str:
                 "closure output: "
                 f"{report.closure.output_dir} ({report.closure.output_status})"
             )
+        if report.closure.archive_status != "skipped":
+            lines.append(
+                "closure archive: "
+                f"{report.closure.archive} ({report.closure.archive_status})"
+            )
     waiver_flags = sorted(
         {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
     )
@@ -235,6 +240,14 @@ def _render_summary(console: Console, report: RunReport) -> None:
                     "closure output",
                     f"{report.closure.output_dir} ({report.closure.output_status})",
                     _status_style(report.closure.output_status),
+                )
+            )
+        if report.closure.archive_status != "skipped":
+            console.print(
+                _label_value(
+                    "closure archive",
+                    f"{report.closure.archive} ({report.closure.archive_status})",
+                    _status_style(report.closure.archive_status),
                 )
             )
     waiver_flags = sorted(
