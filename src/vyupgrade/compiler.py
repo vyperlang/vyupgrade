@@ -91,6 +91,7 @@ class ImportClosure:
 class _ResolvedValidationImport:
     path: Path
     root: Path
+    relative_path: Path
 
 
 def unavailable_validation_artifacts(result: CompileResult) -> list[str]:
@@ -495,10 +496,10 @@ def _materialize_closure_sources(
     placed: dict[Path, Path] = {}
     paths: dict[Path, Path] = {}
     search_paths: set[Path] = set()
-    for path, source, import_root, is_override in _walk_validation_closure(
+    for path, source, relative_path, is_override in _walk_validation_closure(
         source_roots, import_roots, common_root, overrides
     ):
-        target = target_root / path.relative_to(import_root)
+        target = target_root / relative_path
         if is_override:
             if _claim_overlay_destination(placed, target, path, source):
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -643,61 +644,84 @@ def _walk_validation_closure(
             path, source, common_root
         )
         for source_root in _containing_import_roots(path, source_roots):
+            relative_path = path.relative_to(source_root)
             incoming_overrides.update(
                 imported.path
                 for imported in _validation_import_sources(
-                    path, import_source, source_root, import_roots
+                    path,
+                    import_source,
+                    source_root,
+                    import_roots,
+                    relative_path,
                 )
                 if imported.path in override_paths
             )
 
     entry_paths = override_paths - incoming_overrides
-    queue = [
-        (
-            path,
-            overrides[path],
-            _containing_import_roots(path, source_roots)[0],
-            True,
+    queue: list[tuple[Path, str, Path, Path, bool]] = []
+    for path in sorted(entry_paths):
+        source_root = _containing_import_roots(path, source_roots)[0]
+        queue.append(
+            (
+                path,
+                overrides[path],
+                source_root,
+                path.relative_to(source_root),
+                True,
+            )
         )
-        for path in sorted(entry_paths)
-    ]
     layouts: dict[Path, Path] = {}
     processed: set[Path] = set()
     while queue or override_paths - processed:
         if not queue:
             path = min(override_paths - processed)
+            source_root = _containing_import_roots(path, source_roots)[0]
             queue.append(
                 (
                     path,
                     overrides[path],
-                    _containing_import_roots(path, source_roots)[0],
+                    source_root,
+                    path.relative_to(source_root),
                     True,
                 )
             )
-        current, current_source, current_root, is_override = queue.pop(0)
-        existing_root = layouts.get(current)
-        if existing_root is not None and existing_root != current_root:
+        (
+            current,
+            current_source,
+            current_root,
+            current_relative,
+            is_override,
+        ) = queue.pop(0)
+        existing_relative = layouts.get(current)
+        if (
+            existing_relative is not None
+            and existing_relative != current_relative
+        ):
             raise OverlayLayoutConflictError(
-                f"closure member {current} resolves relative to both "
-                f"{existing_root} and {current_root}"
+                f"closure member {current} maps to both "
+                f"{existing_relative} and {current_relative}"
             )
-        layouts[current] = current_root
+        layouts[current] = current_relative
         if current in processed:
             continue
         processed.add(current)
-        yield current, current_source, current_root, is_override
+        yield current, current_source, current_relative, is_override
         import_source = _standard_json_package_dependency_source(
             current, current_source, common_root
         )
         for imported in _validation_import_sources(
-            current, import_source, current_root, import_roots
+            current,
+            import_source,
+            current_root,
+            import_roots,
+            current_relative,
         ):
             if imported.path in processed:
-                existing_root = layouts[imported.path]
-                if existing_root != imported.root:
+                existing_relative = layouts[imported.path]
+                if existing_relative != imported.relative_path:
                     raise OverlayLayoutConflictError(
-                        f"closure member {imported.path} resolves relative to both "
-                        f"{existing_root} and {imported.root}"
+                        f"closure member {imported.path} maps to both "
+                        f"{existing_relative} and {imported.relative_path}"
                     )
                 continue
             source = overrides.get(imported.path)
@@ -707,7 +731,13 @@ def _walk_validation_closure(
                 except (OSError, UnicodeDecodeError):
                     continue
             queue.append(
-                (imported.path, source, imported.root, imported.path in override_paths)
+                (
+                    imported.path,
+                    source,
+                    imported.root,
+                    imported.relative_path,
+                    imported.path in override_paths,
+                )
             )
 
 
@@ -875,7 +905,11 @@ def _local_sibling_import_source(source_path: Path, source: str) -> str:
 
 
 def _validation_import_sources(
-    path: Path, source: str, source_root: Path, import_roots: tuple[Path, ...]
+    path: Path,
+    source: str,
+    source_root: Path,
+    import_roots: tuple[Path, ...],
+    relative_path: Path | None = None,
 ) -> tuple[_ResolvedValidationImport, ...]:
     imports: list[_ResolvedValidationImport] = []
     mask = code_mask(source)
@@ -894,7 +928,12 @@ def _validation_import_sources(
         if import_match:
             imports.extend(
                 _resolve_validation_import(
-                    path, source_root, import_match.group(1), (), import_roots
+                    path,
+                    source_root,
+                    import_match.group(1),
+                    (),
+                    import_roots,
+                    relative_path,
                 )
             )
             continue
@@ -906,7 +945,12 @@ def _validation_import_sources(
             names = tuple(_imported_module_names(from_match.group(2)))
             imports.extend(
                 _resolve_validation_import(
-                    path, source_root, from_match.group(1), names, import_roots
+                    path,
+                    source_root,
+                    from_match.group(1),
+                    names,
+                    import_roots,
+                    relative_path,
                 )
             )
     return tuple(dict.fromkeys(imports))
@@ -928,29 +972,42 @@ def _resolve_validation_import(
     module: str,
     names: tuple[str, ...],
     import_roots: tuple[Path, ...],
+    relative_path: Path | None,
 ) -> tuple[_ResolvedValidationImport, ...]:
-    bases, module_parts = _validation_import_bases(path, source_root, module, import_roots)
-    candidates: list[tuple[Path, Path]] = []
-    for base, import_root in bases:
+    bases, module_parts = _validation_import_bases(
+        path, source_root, module, import_roots, relative_path
+    )
+    candidates: list[tuple[Path, Path, Path]] = []
+    for base, import_root, relative_base in bases:
         module_path = base.joinpath(*module_parts) if module_parts else base
+        relative_module = (
+            relative_base.joinpath(*module_parts)
+            if module_parts
+            else relative_base
+        )
         if names:
             for name in names:
                 candidates.extend(
-                    (candidate, import_root)
-                    for candidate in _validation_module_candidates(module_path / name)
+                    _validation_module_candidate_layouts(
+                        module_path / name,
+                        relative_module / name,
+                        import_root,
+                    )
                 )
             candidates.extend(
-                (candidate, import_root)
-                for candidate in _validation_module_candidates(module_path)
+                _validation_module_candidate_layouts(
+                    module_path, relative_module, import_root
+                )
             )
         else:
             candidates.extend(
-                (candidate, import_root)
-                for candidate in _validation_module_candidates(module_path)
+                _validation_module_candidate_layouts(
+                    module_path, relative_module, import_root
+                )
             )
-    resolved: dict[Path, Path] = {}
+    resolved: dict[Path, tuple[Path, Path]] = {}
     roots = tuple(root.resolve() for root in (source_root, *import_roots))
-    for candidate, import_root in candidates:
+    for candidate, import_root, candidate_relative in candidates:
         try:
             resolved_candidate = candidate.resolve()
             if not any(_is_relative_to(resolved_candidate, root) for root in roots):
@@ -958,33 +1015,45 @@ def _resolve_validation_import(
         except (OSError, ValueError):
             continue
         if resolved_candidate.exists() and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
-            resolved.setdefault(resolved_candidate, import_root)
+            resolved.setdefault(
+                resolved_candidate, (import_root, candidate_relative)
+            )
     return tuple(
-        _ResolvedValidationImport(path, import_root)
-        for path, import_root in resolved.items()
+        _ResolvedValidationImport(path, import_root, candidate_relative)
+        for path, (import_root, candidate_relative) in resolved.items()
     )
 
 
 def _validation_import_bases(
-    path: Path, source_root: Path, module: str, import_roots: tuple[Path, ...]
-) -> tuple[tuple[tuple[Path, Path], ...], tuple[str, ...]]:
+    path: Path,
+    source_root: Path,
+    module: str,
+    import_roots: tuple[Path, ...],
+    relative_path: Path | None,
+) -> tuple[tuple[tuple[Path, Path, Path], ...], tuple[str, ...]]:
+    relative_parent = relative_path.parent if relative_path is not None else Path()
     if not module.startswith("."):
         bases = (
-            (path.parent, source_root),
-            (source_root, source_root),
-            *((root, root) for root in import_roots),
+            (path.parent, source_root, relative_parent),
+            (source_root, source_root, Path()),
+            *((root, root, Path()) for root in import_roots),
         )
-        unique_bases: dict[Path, Path] = {}
-        for base, root in bases:
-            unique_bases.setdefault(base, root)
-        return tuple(unique_bases.items()), tuple(
+        unique_bases: dict[Path, tuple[Path, Path]] = {}
+        for base, root, relative_base in bases:
+            unique_bases.setdefault(base, (root, relative_base))
+        return tuple(
+            (base, root, relative_base)
+            for base, (root, relative_base) in unique_bases.items()
+        ), tuple(
             part for part in module.split(".") if part
         )
     level = len(module) - len(module.lstrip("."))
     base = path.parent
+    relative_base = relative_parent
     for _ in range(max(level - 1, 0)):
         base = base.parent
-    return ((base, source_root),), tuple(
+        relative_base = relative_base.parent
+    return ((base, source_root, relative_base),), tuple(
         part for part in module[level:].split(".") if part
     )
 
@@ -1003,6 +1072,21 @@ def _validation_module_candidates(path: Path) -> tuple[Path, ...]:
     if alias is not None:
         paths.append(path.with_name(alias))
     return tuple(candidate.with_suffix(suffix) for candidate in paths for suffix in sorted(VALIDATION_SOURCE_SUFFIXES))
+
+
+def _validation_module_candidate_layouts(
+    path: Path, relative_path: Path, import_root: Path
+) -> tuple[tuple[Path, Path, Path], ...]:
+    return tuple(
+        (
+            candidate,
+            import_root,
+            relative_path.with_name(candidate.name)
+            if relative_path.name
+            else Path(candidate.name),
+        )
+        for candidate in _validation_module_candidates(path)
+    )
 
 
 def _project_config_paths(
