@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "vyupgrade"
-version = "0.5.1"
+version = "0.6.0"
 description = "Compiler-backed tool for upgrading Vyper contracts."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,10 +23,10 @@ classifiers = [
 dependencies = ["packaging>=24.0", "rich>=13.0.0", "uv>=0.8.0"]
 
 [project.urls]
-Homepage = "https://github.com/banteg/vyupgrade"
-Repository = "https://github.com/banteg/vyupgrade"
-Issues = "https://github.com/banteg/vyupgrade/issues"
-Changelog = "https://github.com/banteg/vyupgrade/blob/master/CHANGELOG.md"
+Homepage = "https://github.com/vyperlang/vyupgrade"
+Repository = "https://github.com/vyperlang/vyupgrade"
+Issues = "https://github.com/vyperlang/vyupgrade/issues"
+Changelog = "https://github.com/vyperlang/vyupgrade/blob/master/CHANGELOG.md"
 
 [project.scripts]
 vyupgrade = "vyupgrade.cli:main"
