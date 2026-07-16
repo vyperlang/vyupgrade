@@ -171,25 +171,34 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         allow_unsupported_formats=True,
     )
     if _should_retry_source_with_final_newline(path, result):
-        return _compile_source_file_with_final_newline(command, path, config, suppress_warnings)
+        return _compile_source_file_with_final_newline(
+            command, path, config, suppress_warnings, result
+        )
     return result
 
 
 def _compile_source_file_with_final_newline(
-    command: list[str], path: Path, config: Config, suppress_warnings: bool
+    command: list[str],
+    path: Path,
+    config: Config,
+    suppress_warnings: bool,
+    original_result: CompileResult,
 ) -> CompileResult:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return CompileResult("failed", stderr="could not read source for final-newline retry")
-    tmp = tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        prefix=f".{path.stem}.vyupgrade.source.",
-        suffix=path.suffix,
-        dir=path.parent,
-        delete=False,
-    )
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix=f".{path.stem}.vyupgrade.source.",
+            suffix=path.suffix,
+            dir=path.parent,
+            delete=False,
+        )
+    except OSError:
+        return original_result
     tmp_path = Path(tmp.name)
     try:
         with tmp:

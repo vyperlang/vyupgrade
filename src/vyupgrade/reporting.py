@@ -169,12 +169,18 @@ def _render_text_summary(report: RunReport) -> str:
         f"left {report.diagnostic_count} review diagnostics",
         f"write validation: {report.validation_decision.status}",
     ]
+    if report.closure is not None:
+        lines.append(f"dependencies: {len(report.closure.dependencies)} upgraded")
     waiver_flags = sorted(
         {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
     )
     if waiver_flags:
         lines.append(f"validation waivers: {', '.join(waiver_flags)}")
-    if not report.write_requested and report.changed_count:
+    if (
+        not report.write_requested
+        and report.changed_count
+        and report.closure is None
+    ):
         lines.append("run with --write to apply these changes")
     if report.write_status != "skipped":
         lines.append(f"write transaction: {report.write_status}")
@@ -210,12 +216,24 @@ def _render_summary(console: Console, report: RunReport) -> None:
             _status_style(report.validation_decision.status),
         )
     )
+    if report.closure is not None:
+        console.print(
+            _label_value(
+                "dependencies",
+                f"{len(report.closure.dependencies)} upgraded",
+                _count_style(len(report.closure.dependencies)),
+            )
+        )
     waiver_flags = sorted(
         {issue.waiver for issue in report.validation_decision.waivers if issue.waiver}
     )
     if waiver_flags:
         console.print(_label_value("validation waivers", ", ".join(waiver_flags), "vy.warning"))
-    if not report.write_requested and report.changed_count:
+    if (
+        not report.write_requested
+        and report.changed_count
+        and report.closure is None
+    ):
         console.print(Text("run with --write to apply these changes", style="vy.muted"))
     if report.write_status != "skipped":
         console.print(

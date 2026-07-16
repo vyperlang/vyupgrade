@@ -1404,3 +1404,352 @@ def f() -> uint256:
     assert file_report["diagnostics"][0]["severity"] == "error"
     assert file_report["validation"]["source_compile"] == "skipped"
     assert file_report["validation"]["target_compile"] == "skipped"
+
+
+def _write_dependency_cli_fixture(
+    tmp_path: Path,
+    *,
+    dependency_source: str = "# @version 0.3.10\nVALUE: constant(uint256) = 1\n",
+    include_json: bool = False,
+) -> tuple[Path, Path, Path, Path | None]:
+    project_root = tmp_path / "project"
+    project = project_root / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    imported = "mod, IMod" if include_json else "mod"
+    project.write_text(
+        f"#pragma version 0.4.3\nfrom depkg import {imported}\n",
+        encoding="utf-8",
+    )
+    dependency.write_text(dependency_source, encoding="utf-8")
+    json_dependency = dependency.with_name("IMod.json") if include_json else None
+    if json_dependency is not None:
+        json_dependency.write_text("[]\n", encoding="utf-8")
+    return project, dependency, search_path, json_dependency
+
+
+def test_include_dependencies_reports_dependency_roles(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    closure_report = tmp_path / "closure.json"
+    project_report = tmp_path / "project.json"
+
+    closure_code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--report-json",
+            str(closure_report),
+        ]
+    )
+    project_code = main(
+        [
+            str(project),
+            "--compiler-search-paths",
+            str(search_path),
+            "--report-json",
+            str(project_report),
+        ]
+    )
+
+    assert closure_code == 0
+    assert project_code == 0
+    closure_files = {
+        Path(file["path"]): file for file in json.loads(closure_report.read_text())["files"]
+    }
+    assert closure_files[project.resolve()]["role"] == "project"
+    assert closure_files[dependency.resolve()]["role"] == "dependency"
+    project_files = json.loads(project_report.read_text())["files"]
+    assert [Path(file["path"]) for file in project_files] == [project.resolve()]
+    assert project_files[0]["role"] == "project"
+
+
+def test_include_dependencies_write_without_destination_exits_4(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    project_original = project.read_bytes()
+    dependency_original = dependency.read_bytes()
+
+    code = main(
+        [
+            str(project),
+            "--write",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+        ]
+    )
+
+    assert code == 4
+    assert project.read_bytes() == project_original
+    assert dependency.read_bytes() == dependency_original
+
+
+def test_include_dependencies_never_plans_dependency_writes(
+    tmp_path: Path, passing_compiler, capsys
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    project_original = project.read_bytes()
+    dependency_original = dependency.read_bytes()
+    config = Config(
+        paths=(project,),
+        compiler_search_paths=(search_path,),
+        include_dependencies=True,
+    )
+    project_request = engine.bounded_migration_request(
+        project, project.read_text(), config
+    )
+    dependency_requests, _closure = cli._dependency_requests([project_request], config)
+    batch = engine.prepare_migrations([project_request, *dependency_requests], config)
+
+    _reports, plan, plan_error = cli._build_migration_plan(batch)
+    diff_code = main(
+        [
+            str(project),
+            "--diff",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+        ]
+    )
+    write_code = main(
+        [
+            str(project),
+            "--write",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+        ]
+    )
+
+    assert plan_error is None
+    assert [entry.path for entry in plan.entries] == [project.resolve()]
+    assert diff_code == 0
+    assert f"--- {dependency.resolve()}" in capsys.readouterr().out
+    assert write_code == 4
+    assert project.read_bytes() == project_original
+    assert dependency.read_bytes() == dependency_original
+
+
+def test_include_dependencies_check_exits_1_on_dep_only_change(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, _dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+
+    code = main(
+        [
+            str(project),
+            "--check",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+        ]
+    )
+
+    assert code == 1
+
+
+def test_include_dependencies_diff_covers_dependencies(
+    tmp_path: Path, passing_compiler, capsys
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+
+    code = main(
+        [
+            str(project),
+            "--diff",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+        ]
+    )
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert f"--- {dependency.resolve()}" in output
+    assert f"+++ {dependency.resolve()}" in output
+
+
+def test_upgrade_closure_alias_and_pyproject_key(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    alias_report = tmp_path / "alias.json"
+    config_report = tmp_path / "config.json"
+    config_path = tmp_path / "pyproject.toml"
+    config_path.write_text(
+        "[tool.vyupgrade]\n"
+        f'paths = ["{project}"]\n'
+        f'compiler-search-paths = ["{search_path}"]\n'
+        "include-dependencies = true\n"
+        f'report-json = "{config_report}"\n'
+    )
+
+    alias_code = main(
+        [
+            str(project),
+            "--upgrade-closure",
+            "--compiler-search-paths",
+            str(search_path),
+            "--report-json",
+            str(alias_report),
+        ]
+    )
+    config_code = main(["--config", str(config_path)])
+
+    assert alias_code == 0
+    assert config_code == 0
+    for report_path in (alias_report, config_report):
+        closure = json.loads(report_path.read_text())["closure"]
+        assert closure["requested"] is True
+        assert closure["dependencies"] == [str(dependency.resolve())]
+
+
+def test_dependency_source_version_inferred_from_dep_pragma(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project, dependency, search_path, _json_dependency = (
+        _write_dependency_cli_fixture(tmp_path)
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(project),
+            "--source-version",
+            "0.2.16",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    files = {Path(file["path"]): file for file in json.loads(report.read_text())["files"]}
+    assert files[dependency.resolve()]["validation"]["source_version"] == "0.3.10"
+
+
+def test_overlay_layout_conflict_exits_4(
+    tmp_path: Path, passing_compiler, capsys
+) -> None:
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first = first_root / "pkg" / "util.vy"
+    second = second_root / "pkg" / "util.vy"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    (first_root / "pyproject.toml").write_text("[project]\nname='first'\n")
+    (second_root / "pyproject.toml").write_text("[project]\nname='second'\n")
+    first.write_text("#pragma version 0.4.3\nVALUE: constant(uint256) = 1\n")
+    second.write_text("#pragma version 0.4.3\nVALUE: constant(uint256) = 2\n")
+
+    code = main([str(first), str(second), "--include-dependencies"])
+
+    assert code == 4
+    stderr = capsys.readouterr().err
+    assert str(first.resolve()) in stderr
+    assert str(second.resolve()) in stderr
+
+
+def test_report_json_schema_v2(tmp_path: Path, passing_compiler) -> None:
+    project, dependency, search_path, json_dependency = (
+        _write_dependency_cli_fixture(tmp_path, include_json=True)
+    )
+    assert json_dependency is not None
+    project_report = tmp_path / "project.json"
+    closure_report = tmp_path / "closure.json"
+
+    project_code = main(
+        [
+            str(project),
+            "--compiler-search-paths",
+            str(search_path),
+            "--report-json",
+            str(project_report),
+        ]
+    )
+    closure_code = main(
+        [
+            str(project),
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--report-json",
+            str(closure_report),
+        ]
+    )
+
+    assert project_code == 0
+    assert closure_code == 0
+    project_data = json.loads(project_report.read_text())
+    closure_data = json.loads(closure_report.read_text())
+    assert project_data["schema_version"] == 2
+    assert project_data["closure"] is None
+    assert all(file["role"] == "project" for file in project_data["files"])
+    assert closure_data["schema_version"] == 2
+    assert closure_data["closure"] == {
+        "requested": True,
+        "dependencies": sorted(
+            [str(dependency.resolve()), str(json_dependency.resolve())]
+        ),
+        "output_dir": None,
+        "output_status": "skipped",
+        "output_error": None,
+        "archive": None,
+        "archive_status": "skipped",
+        "archive_error": None,
+    }
+    assert {file["role"] for file in closure_data["files"]} == {
+        "project",
+        "dependency",
+    }
+
+
+def test_include_dependencies_empty_project_reports_requested_closure(
+    tmp_path: Path,
+) -> None:
+    empty_project = tmp_path / "empty"
+    empty_project.mkdir()
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(empty_project),
+            "--include-dependencies",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    assert json.loads(report.read_text())["closure"] == {
+        "requested": True,
+        "dependencies": [],
+        "output_dir": None,
+        "output_status": "skipped",
+        "output_error": None,
+        "archive": None,
+        "archive_status": "skipped",
+        "archive_error": None,
+    }

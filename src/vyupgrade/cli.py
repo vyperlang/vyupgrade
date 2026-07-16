@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
+from dataclasses import replace
 import shlex
 import subprocess
 import sys
@@ -10,8 +12,8 @@ import tomllib
 from pathlib import Path
 from typing import TextIO
 
-from . import engine
-from .models import Config, FileReport, RunReport
+from . import compiler, engine
+from .models import ClosureReport, Config, FileReport, RunReport, ValidationDecision
 from .project import discover_files
 from .reporting import HumanReporter, write_json_report
 from .validation import decide_run_validation, validation_exit_code
@@ -40,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         select=_split_rules(args.select),
         ignore=_split_rules(args.ignore),
         aggressive=args.aggressive or bool(pyproject.get("aggressive", False)),
+        include_dependencies=args.include_dependencies
+        or bool(pyproject.get("include-dependencies", False)),
         test_command=args.test_command,
         source_vyper=args.source_vyper,
         target_vyper=args.target_vyper,
@@ -65,6 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     if config.write and config.check:
         print("--write and --check are mutually exclusive", file=sys.stderr)
         return 4
+    if config.write and config.include_dependencies:
+        print(
+            "--write with --include-dependencies requires a closure destination",
+            file=sys.stderr,
+        )
+        return 4
 
     files = discover_files(config.paths)
     human_reporter = None if config.diff else HumanReporter(sys.stdout)
@@ -77,12 +87,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         for path in files
     ]
+    closure_report = (
+        ClosureReport(requested=True) if config.include_dependencies else None
+    )
+    if closure_report is not None and requests:
+        dependency_requests, closure = _dependency_requests(requests, config)
+        requests += dependency_requests
+        closure_report.dependencies = tuple(
+            str(path) for path in sorted(closure.dependencies)
+        )
     batch = engine.prepare_migrations(requests, config)
     reports, plan, plan_error = _build_migration_plan(batch)
     if plan_error is None:
-        validation_decision = engine.validate_migrations(
+        validation_decision = _validate_or_layout_conflict(
             batch, config, plan.candidate_source
         )
+        if validation_decision is None:
+            return 4
     else:
         validation_decision = decide_run_validation((), config)
 
@@ -93,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         write_requested=config.write,
         validation_decision=validation_decision,
         test_command=config.test_command,
+        closure=closure_report,
     )
     if plan_error is not None:
         run_report.write_status = "failed"
@@ -102,9 +124,11 @@ def main(argv: list[str] | None = None) -> int:
         if config.format == "mamushi" and plan.writes:
             _run_mamushi(plan, run_report)
             if run_report.formatter_status == "passed":
-                validation_decision = engine.validate_migrations(
+                validation_decision = _validate_or_layout_conflict(
                     batch, config, plan.candidate_source
                 )
+                if validation_decision is None:
+                    return 4
                 run_report.validation_decision = validation_decision
                 if not validation_decision.write_allowed:
                     run_report.write_status = "blocked"
@@ -137,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
 
     diff_chunks = plan.diff_chunks()
+    if config.include_dependencies:
+        diff_chunks += _dependency_diff_chunks(batch)
     if config.diff and diff_chunks:
         _write_diff(diff_chunks, sys.stdout)
 
@@ -194,6 +220,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--select", default="")
     parser.add_argument("--ignore", default="")
     parser.add_argument("--aggressive", action="store_true")
+    parser.add_argument(
+        "--include-dependencies", "--upgrade-closure", action="store_true"
+    )
     parser.add_argument("--test-command")
     parser.add_argument("--source-vyper")
     parser.add_argument("--target-vyper")
@@ -218,6 +247,8 @@ def _build_migration_plan(
     plan = MigrationPlan()
     try:
         for migration in batch.files:
+            if migration.request.role == "dependency":
+                continue
             plan.add_source(
                 migration.path,
                 migration.original,
@@ -233,6 +264,58 @@ def _build_migration_plan(
     except PlanConflictError as exc:
         return reports, plan, str(exc)
     return reports, plan, None
+
+
+def _dependency_requests(
+    requests: list[engine.MigrationRequest], config: Config
+) -> tuple[list[engine.MigrationRequest], compiler.ImportClosure]:
+    closure = compiler.resolve_import_closure(
+        {request.path: request.original for request in requests},
+        config.compiler_search_paths,
+    )
+    dependency_config = replace(config, source_version=None)
+    dependencies = [
+        engine.bounded_migration_request(
+            path,
+            path.read_text(encoding="utf-8"),
+            dependency_config,
+            role="dependency",
+        )
+        for path in closure.dependencies
+        if path.suffix in {".vy", ".vyi"}
+    ]
+    return dependencies, closure
+
+
+def _dependency_diff_chunks(batch: engine.MigrationBatch) -> list[str]:
+    chunks: list[str] = []
+    for migration in batch.files:
+        if (
+            migration.request.role != "dependency"
+            or migration.original == migration.rewrite.source
+        ):
+            continue
+        chunks.extend(
+            difflib.unified_diff(
+                migration.original.splitlines(keepends=True),
+                migration.rewrite.source.splitlines(keepends=True),
+                fromfile=str(migration.path),
+                tofile=str(migration.path),
+            )
+        )
+    return chunks
+
+
+def _validate_or_layout_conflict(
+    batch: engine.MigrationBatch,
+    config: Config,
+    candidate_source: engine.CandidateSource,
+) -> ValidationDecision | None:
+    try:
+        return engine.validate_migrations(batch, config, candidate_source)
+    except compiler.OverlayLayoutConflictError as exc:
+        print(str(exc), file=sys.stderr)
+        return None
 
 
 def _write_diff(diff_chunks: list[str], stream: TextIO) -> None:
