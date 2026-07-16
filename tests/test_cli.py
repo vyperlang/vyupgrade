@@ -1866,6 +1866,58 @@ def test_closure_output_blocked_when_validation_blocks(
     assert closure_report["output_error"] is None
 
 
+@pytest.mark.parametrize(
+    ("source", "target_version", "diagnostic"),
+    [
+        (
+            "# pragma version >=0.5.0a1,<0.6.0\n",
+            "0.4.3",
+            "VYD016",
+        ),
+        ("# pragma version 0.5.0\n", "0.5.0a3", "VYD018"),
+    ],
+)
+@pytest.mark.parametrize("ignored", [False, True])
+def test_closure_output_blocks_skipped_hard_boundary_sources(
+    tmp_path: Path,
+    source: str,
+    target_version: str,
+    diagnostic: str,
+    ignored: bool,
+) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text(source)
+    output = tmp_path / "output"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("untouched")
+    report = tmp_path / "report.json"
+    args = [
+        str(contract),
+        "--target-version",
+        target_version,
+        "--include-dependencies",
+        "--closure-output",
+        str(output),
+        "--report-json",
+        str(report),
+    ]
+    if ignored:
+        args.extend(("--ignore", diagnostic))
+
+    code = main(args)
+
+    assert code == (9 if ignored else 5)
+    assert list(output.iterdir()) == [marker]
+    assert marker.read_text() == "untouched"
+    data = json.loads(report.read_text())
+    assert data["validation_decision"]["status"] == "not-required"
+    assert data["closure"]["output_status"] == "blocked"
+    assert [item["rule"] for item in data["files"][0]["diagnostics"]] == (
+        [] if ignored else [diagnostic]
+    )
+
+
 def test_closure_output_failure_exits_9(
     tmp_path: Path, passing_compiler
 ) -> None:
