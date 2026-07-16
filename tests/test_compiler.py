@@ -1256,6 +1256,36 @@ def test_closure_overlay_preserves_root_that_resolved_nested_dependency(
     assert not (root / "dep.vy").exists()
 
 
+def test_closure_overlay_preserves_symlinked_import_path(tmp_path) -> None:
+    project = tmp_path / "project"
+    contract = project / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project / "alias").symlink_to(dependency.parent, target_is_directory=True)
+    source = "#pragma version 0.4.3\nfrom alias import mod\n"
+    dependency_source = "#pragma version 0.4.3\nVALUE: constant(uint256) = 1\n"
+    contract.write_text(source)
+    dependency.write_text(dependency_source)
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        {contract: source},
+        "0.4.3",
+        root,
+        (search_path,),
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    target = root / "alias" / "mod.vy"
+    assert overlay.paths[dependency.resolve()] == target
+    assert target.read_text() == dependency_source
+    assert not (root / "depkg" / "mod.vy").exists()
+
+
 def test_closure_overlay_paths_equal_resolved_closure(tmp_path) -> None:
     _contract, _dependency, sources, search_paths = _write_external_import_fixture(
         tmp_path
