@@ -993,6 +993,31 @@ def test_resolve_import_closure_lists_transitive_dependencies(tmp_path) -> None:
     assert closure.common_root == tmp_path / "project"
 
 
+@pytest.mark.parametrize(
+    "documentation",
+    [
+        '"""\nimport ghost\n"""\n',
+        'EXAMPLE: constant(String[32]) = """\nimport ghost\n"""\n',
+    ],
+)
+def test_resolve_import_closure_ignores_imports_in_strings(
+    tmp_path: Path, documentation: str
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "main.vy"
+    dependency = project / "real.vy"
+    ghost = project / "ghost.vy"
+    project.mkdir()
+    source = f"# @version 0.3.10\n{documentation}from . import real\n"
+    contract.write_text(source, encoding="utf-8")
+    dependency.write_text("# @version 0.3.10\n", encoding="utf-8")
+    ghost.write_text("not valid Vyper\n", encoding="utf-8")
+
+    closure = resolve_import_closure({contract: source}, (project,))
+
+    assert closure.dependencies == (dependency.resolve(),)
+
+
 def test_resolve_import_closure_matches_overlay_dependency_copies(tmp_path) -> None:
     _contract, sources, search_paths, _dependencies = _write_import_closure_fixture(
         tmp_path

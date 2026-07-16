@@ -16,6 +16,7 @@ from pathlib import Path
 from uv import find_uv_bin
 
 from .models import Config
+from .source import code_mask
 from .storage_layout import compare_storage_layouts, parse_storage_layout
 from .versions import (
     VyperVersion,
@@ -767,7 +768,12 @@ def _validation_import_sources(
     path: Path, source: str, source_root: Path, import_roots: tuple[Path, ...]
 ) -> tuple[Path, ...]:
     imports: list[Path] = []
-    for line in source.splitlines():
+    mask = code_mask(source)
+    code_source = "".join(
+        char if is_code or char in "\r\n" else " "
+        for char, is_code in zip(source, mask, strict=True)
+    )
+    for line in code_source.splitlines():
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
