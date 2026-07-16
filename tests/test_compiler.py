@@ -1226,6 +1226,36 @@ def test_closure_overlay_places_external_candidate_bytes(tmp_path) -> None:
     assert overlay.paths[dependency.resolve()] == target
 
 
+def test_closure_overlay_preserves_root_that_resolved_nested_dependency(
+    tmp_path,
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "main.vy"
+    nested_search_path = project / "contracts"
+    dependency = nested_search_path / "dep.vy"
+    dependency.parent.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='project'\n")
+    source = "#pragma version 0.4.3\nfrom contracts import dep\n"
+    dependency_source = "#pragma version 0.4.3\nVALUE: constant(uint256) = 1\n"
+    contract.write_text(source)
+    dependency.write_text(dependency_source)
+    root = tmp_path / "overlay"
+
+    overlay = materialize_target_overlay(
+        {contract: source},
+        "0.4.3",
+        root,
+        (project, nested_search_path),
+        include_dependencies=True,
+    )
+
+    assert overlay is not None
+    target = root / "contracts" / "dep.vy"
+    assert overlay.paths[dependency.resolve()] == target
+    assert target.read_text() == dependency_source
+    assert not (root / "dep.vy").exists()
+
+
 def test_closure_overlay_paths_equal_resolved_closure(tmp_path) -> None:
     _contract, _dependency, sources, search_paths = _write_external_import_fixture(
         tmp_path
