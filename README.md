@@ -114,6 +114,7 @@ Poetry caret requirements, are skipped; use `--compiler-search-paths`,
 - `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
 - `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
 - `--closure-output DIR` — write the validated upgraded closure (project + dependencies, laid out import-root-relative so `vyper -p DIR` resolves every import) into DIR; requires `--include-dependencies`; overwrites files inside DIR, never deletes extras, never modifies dependency sources in place.
+- `--closure-archive OUT.vyz` — emit the validated upgraded closure (dependencies bundled) as a single Vyper archive via the target compiler; requires `--include-dependencies`, a target >= 0.4.0, and exactly one entry contract.
 - `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
 - `--select` / `--ignore` — comma-separated rule codes to include or exclude.
 - `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.

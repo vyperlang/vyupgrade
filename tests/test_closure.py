@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from vyupgrade import compiler
-from vyupgrade.closure import write_closure_output
+from vyupgrade.closure import write_closure_archive, write_closure_output
+from vyupgrade.models import Config
 
 
 def _write_closure_fixture(
@@ -272,3 +273,164 @@ def test_write_closure_output_deduplicates_identical_destinations(
 
     assert result.status == "written"
     assert result.files == (output / "pkg" / "util.vy",)
+
+
+@pytest.mark.parametrize(
+    ("compile_result", "expected_status", "expected_error"),
+    [
+        (compiler.CompileResult("passed"), "written", None),
+        (compiler.CompileResult("failed", stderr="archive failed"), "failed", "archive failed"),
+    ],
+)
+def test_write_closure_archive_passes_through_compile_result(
+    tmp_path: Path,
+    monkeypatch,
+    compile_result: compiler.CompileResult,
+    expected_status: str,
+    expected_error: str | None,
+) -> None:
+    sources, search_paths, (entry, _dependency, _interface) = (
+        _write_closure_fixture(tmp_path)
+    )
+    output = tmp_path / "out.vyz"
+    captured: list[tuple[Path, str, Path]] = []
+
+    def fake_compile_target_archive(
+        path: Path,
+        source: str,
+        _config: Config,
+        _overlay: compiler.TargetOverlay,
+        archive: Path,
+    ) -> compiler.CompileResult:
+        captured.append((path, source, archive))
+        return compile_result
+
+    monkeypatch.setattr(
+        compiler, "compile_target_archive", fake_compile_target_archive
+    )
+
+    result = write_closure_archive(
+        output,
+        entry,
+        sources,
+        Config(
+            paths=(entry,),
+            target_version="0.4.3",
+            compiler_search_paths=search_paths,
+        ),
+    )
+
+    assert result.status == expected_status
+    assert result.error == expected_error
+    assert result.files == ((output.resolve(),) if expected_status == "written" else ())
+    assert captured == [(entry, sources[entry], output.resolve())]
+
+
+def test_write_closure_archive_missing_entry_fails(tmp_path: Path) -> None:
+    sources, search_paths, (entry, _dependency, _interface) = (
+        _write_closure_fixture(tmp_path)
+    )
+    missing = entry.with_name("missing.vy")
+    output = tmp_path / "out.vyz"
+
+    result = write_closure_archive(
+        output,
+        missing,
+        sources,
+        Config(
+            paths=(entry,),
+            target_version="0.4.3",
+            compiler_search_paths=search_paths,
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.files == ()
+    assert result.error is not None
+    assert str(missing) in result.error
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("destination", ["entry", "dependency-symlink"])
+def test_write_closure_archive_rejects_source_destinations(
+    tmp_path: Path, monkeypatch, destination: str
+) -> None:
+    sources, search_paths, (entry, dependency, interface) = (
+        _write_closure_fixture(tmp_path)
+    )
+    if destination == "entry":
+        output = entry
+    else:
+        output = tmp_path / "out.vyz"
+        output.symlink_to(dependency)
+    original_bytes = {
+        path: path.read_bytes() for path in (entry, dependency, interface)
+    }
+
+    def unexpected_compile(*_args, **_kwargs):
+        pytest.fail("source destination must be rejected before archive compilation")
+
+    monkeypatch.setattr(compiler, "compile_target_archive", unexpected_compile)
+
+    result = write_closure_archive(
+        output,
+        entry,
+        sources,
+        Config(
+            paths=(entry,),
+            target_version="0.4.3",
+            compiler_search_paths=search_paths,
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.files == ()
+    assert result.root == output.resolve()
+    assert result.error == (
+        f"refusing to overwrite closure source with archive: {output.resolve()}"
+    )
+    assert {path: path.read_bytes() for path in original_bytes} == original_bytes
+    if destination == "dependency-symlink":
+        assert output.is_symlink()
+
+
+def test_write_closure_archive_uses_closure_mode_overlay(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sources, search_paths, (entry, dependency, _interface) = (
+        _write_closure_fixture(tmp_path)
+    )
+    captured_relative_paths: dict[Path, Path] = {}
+
+    def fake_compile_target_archive(
+        _path: Path,
+        _source: str,
+        _config: Config,
+        overlay: compiler.TargetOverlay,
+        _output: Path,
+    ) -> compiler.CompileResult:
+        captured_relative_paths.update(
+            {
+                source_path: staged.relative_to(overlay.root)
+                for source_path, staged in overlay.paths.items()
+            }
+        )
+        return compiler.CompileResult("passed")
+
+    monkeypatch.setattr(
+        compiler, "compile_target_archive", fake_compile_target_archive
+    )
+
+    result = write_closure_archive(
+        tmp_path / "out.vyz",
+        entry,
+        sources,
+        Config(
+            paths=(entry,),
+            target_version="0.4.3",
+            compiler_search_paths=search_paths,
+        ),
+    )
+
+    assert result.status == "written"
+    assert captured_relative_paths[dependency.resolve()] == Path("depkg/util.vy")

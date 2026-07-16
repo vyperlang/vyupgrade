@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
+from uv import find_uv_bin
 
 from vyupgrade.cli import main
 from vyupgrade.compiler import (
@@ -733,3 +736,120 @@ def test_real_compiler_closure_output_tree_compiles_standalone(
     assert dependency.read_text(encoding="utf-8") == dependency_source
     assert (output / "depkg" / "mod.vy").is_file()
     assert _tree_sha256(output) == first_hash
+
+
+def test_real_compiler_closure_archive_round_trips(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project = project_root / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project_root / "depkg").symlink_to(
+        dependency.parent, target_is_directory=True
+    )
+    project_source = (
+        "# @version 0.3.10\n"
+        "from depkg import mod\n"
+        "\n"
+        "@external\n"
+        "def value() -> uint256:\n"
+        "    return 1\n"
+    )
+    dependency_source = (
+        "# @version 0.3.10\n"
+        "VALUE: constant(uint256) = 1\n"
+    )
+    project.write_text(project_source, encoding="utf-8")
+    dependency.write_text(dependency_source, encoding="utf-8")
+    archive = tmp_path / "out.vyz"
+    foreign_cwd = tmp_path / "foreign"
+    foreign_cwd.mkdir()
+    arguments = [
+        str(project),
+        "--include-dependencies",
+        "--compiler-search-paths",
+        str(search_path),
+        "--closure-archive",
+        str(archive),
+    ]
+    before = {
+        project: project.read_bytes(),
+        dependency: dependency.read_bytes(),
+    }
+
+    code = main(arguments)
+    archive_compile = subprocess.run(
+        [
+            find_uv_bin(),
+            "run",
+            "--no-project",
+            "--with",
+            "vyper==0.4.3",
+            "vyper",
+            "-f",
+            "abi",
+            str(archive),
+        ],
+        cwd=foreign_cwd,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    second_code = main(arguments)
+
+    assert code == 0
+    assert second_code == 0
+    assert zipfile.is_zipfile(archive)
+    assert archive_compile.returncode == 0, archive_compile.stderr
+    assert json.loads(archive_compile.stdout) == [
+        {
+            "stateMutability": "nonpayable",
+            "type": "function",
+            "name": "value",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "uint256"}],
+        }
+    ]
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_real_compiler_archive_floor_0_4_0(tmp_path: Path, capsys) -> None:
+    contract = tmp_path / "floor.vy"
+    contract_source = (
+        "#pragma version 0.4.0\n"
+        "\n"
+        "@external\n"
+        "def value() -> uint256:\n"
+        "    return 1\n"
+    )
+    contract.write_text(contract_source, encoding="utf-8")
+    archive = tmp_path / "floor.vyz"
+
+    code = main(
+        [
+            str(contract),
+            "--target-version",
+            "0.4.0",
+            "--include-dependencies",
+            "--closure-archive",
+            str(archive),
+        ]
+    )
+    below_floor_code = main(
+        [
+            str(contract),
+            "--target-version",
+            "0.3.10",
+            "--include-dependencies",
+            "--closure-archive",
+            str(tmp_path / "below-floor.vyz"),
+        ]
+    )
+
+    assert code == 0
+    assert zipfile.is_zipfile(archive)
+    assert below_floor_code == 4
+    assert "requires >= 0.4.0" in capsys.readouterr().err
+    assert contract.read_text(encoding="utf-8") == contract_source
