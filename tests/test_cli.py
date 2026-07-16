@@ -1342,6 +1342,45 @@ def test_validation_diagnostics_use_resolved_source_compiler_for_evm_default(
     assert not [diagnostic for diagnostic in report.diagnostics if diagnostic.rule == "VYD009"]
 
 
+def test_unsupported_source_version_skips_compile_and_reports_error(tmp_path: Path) -> None:
+    contract = tmp_path / "unsupported.vy"
+    contract.write_text(
+        """# pragma version 0.5.0
+
+@external
+def f() -> uint256:
+    return 1
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--target-version",
+            "0.5.0a3",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 5
+    file_report = json.loads(report.read_text())["files"][0]
+    assert file_report["changed"] is False
+    assert file_report["diagnostics"] == [
+        {
+            "rule": "VYD018",
+            "line": 1,
+            "message": "source version 0.5.0 matches no Vyper compiler supported by this vyupgrade release",
+            "severity": "error",
+        }
+    ]
+    assert file_report["validation"]["source_compile"] == "skipped"
+    assert file_report["validation"]["target_compile"] == "skipped"
+
+
 def test_source_newer_than_target_skips_compile_and_reports_error(tmp_path: Path) -> None:
     contract = tmp_path / "newer.vy"
     contract.write_text(
@@ -1825,6 +1864,58 @@ def test_closure_output_blocked_when_validation_blocks(
     assert closure_report["output_dir"] == str(output.resolve())
     assert closure_report["output_status"] == "blocked"
     assert closure_report["output_error"] is None
+
+
+@pytest.mark.parametrize(
+    ("source", "target_version", "diagnostic"),
+    [
+        (
+            "# pragma version >=0.5.0a1,<0.6.0\n",
+            "0.4.3",
+            "VYD016",
+        ),
+        ("# pragma version 0.5.0\n", "0.5.0a3", "VYD018"),
+    ],
+)
+@pytest.mark.parametrize("ignored", [False, True])
+def test_closure_output_blocks_skipped_hard_boundary_sources(
+    tmp_path: Path,
+    source: str,
+    target_version: str,
+    diagnostic: str,
+    ignored: bool,
+) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text(source)
+    output = tmp_path / "output"
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("untouched")
+    report = tmp_path / "report.json"
+    args = [
+        str(contract),
+        "--target-version",
+        target_version,
+        "--include-dependencies",
+        "--closure-output",
+        str(output),
+        "--report-json",
+        str(report),
+    ]
+    if ignored:
+        args.extend(("--ignore", diagnostic))
+
+    code = main(args)
+
+    assert code == (9 if ignored else 5)
+    assert list(output.iterdir()) == [marker]
+    assert marker.read_text() == "untouched"
+    data = json.loads(report.read_text())
+    assert data["validation_decision"]["status"] == "not-required"
+    assert data["closure"]["output_status"] == "blocked"
+    assert [item["rule"] for item in data["files"][0]["diagnostics"]] == (
+        [] if ignored else [diagnostic]
+    )
 
 
 def test_closure_output_failure_exits_9(

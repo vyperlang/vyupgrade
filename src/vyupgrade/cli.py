@@ -216,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         if (
             plan_error is not None
             or not validation_decision.write_allowed
+            or not _closure_files_validated(reports)
             or run_report.write_status in {"failed", "rollback-incomplete"}
         ):
             if config.closure_output is not None:
@@ -282,6 +283,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if any(diag.severity == "error" for file in reports for diag in file.diagnostics):
         return 5
+    if (
+        run_report.closure is not None
+        and run_report.closure.output_status == "blocked"
+    ):
+        return 9
     return 0
 
 
@@ -435,6 +441,13 @@ def _emit_closure_archive(
     run_report.closure.archive = str(result.root)
     run_report.closure.archive_status = result.status
     run_report.closure.archive_error = result.error
+
+
+def _closure_files_validated(reports: list[FileReport]) -> bool:
+    return all(
+        report.validation_decision.status in {"passed", "waived"}
+        for report in reports
+    )
 
 
 def _validate_or_layout_conflict(
