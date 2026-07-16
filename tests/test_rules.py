@@ -247,3 +247,24 @@ def f() -> uint256:
     assert result.fixes == []
     assert [(diag.rule, diag.severity) for diag in result.diagnostics] == [("VYD016", "error")]
     assert "newer than target 0.4.3" in result.diagnostics[0].message
+
+
+def test_unsupported_source_version_is_distinct_error_diagnostic(config) -> None:
+    source = """# pragma version 0.4.4
+
+@external
+def f() -> uint256:
+    return 1
+"""
+
+    result = apply_rules(
+        source,
+        config(target_version="0.5.0a3", ignore=frozenset({"VYD016"})),
+    )
+
+    assert result.source == source
+    assert result.fixes == []
+    assert [(diag.rule, diag.severity) for diag in result.diagnostics] == [
+        ("VYD018", "error")
+    ]
+    assert "matches no Vyper compiler" in result.diagnostics[0].message
