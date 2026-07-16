@@ -123,10 +123,12 @@ two otherwise identical legacy layouts that both omit it remain comparable,
 while their occupied span beyond the compiler-reported start slot is not
 independently provable.
 
-JSON reports use the existing top-level envelope with `schema_version: 1`.
-Within schema 1, fields may be added but existing fields are not renamed,
-removed, or type-changed. A missing version identifies the legacy unversioned
-format; incompatible changes require a new schema version.
+JSON reports use the existing top-level envelope with `schema_version: 2`.
+Schema 2 adds per-file roles and the top-level closure report while preserving
+the schema 1 fields. Within a schema version, fields may be added but existing
+fields are not renamed, removed, or type-changed. A missing version identifies
+the legacy unversioned format; incompatible changes require a new schema
+version.
 
 ## Rule model
 
@@ -296,4 +298,4 @@ Before tagging:
    ```
 
 The PyPI trusted publisher should be configured for repository
-`banteg/vyupgrade`, workflow `publish.yml`, and environment `pypi`.
+`vyperlang/vyupgrade`, workflow `publish.yml`, and environment `pypi`.

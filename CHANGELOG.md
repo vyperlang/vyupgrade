@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-07-16
 
 - Reject source version specifications that match no compiler supported by the
   current release instead of attempting an unvalidated target migration.
