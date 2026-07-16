@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reject source version specifications that match no compiler supported by the
+  current release instead of attempting an unvalidated target migration.
+- Made `sqrt`/`isqrt` math imports module-docstring-safe and collision-free by
+  reusing existing builtin imports or choosing a deterministic fresh alias.
 - Added a public import-closure primitive (resolve_import_closure) and a reusable overlay materializer, single-sourcing the validation dependency traversal.
 - Added opt-in closure-mode overlay materialization: the full import closure (including external search-path dependencies) can be materialized import-root-relative for dependency-closure upgrades.
 - Added opt-in `--include-dependencies` closure upgrading: the full import closure (including installed search-path dependencies) is rewritten and cross-validated in a closure-mode target overlay; JSON schema v2 adds file roles and a closure block; in-place dependency writes are structurally impossible.

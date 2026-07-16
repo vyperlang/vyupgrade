@@ -20,6 +20,7 @@ from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
+    code_identifiers,
     code_mask,
     find_matching,
     line_number,
@@ -122,6 +123,15 @@ def _math_builtin(
     if _name_is_user_defined(facts, name) or _name_is_imported(source, name):
         return source, [], []
     mask = rule_context.code_mask
+    math_binding = _absolute_math_import_binding(source)
+    import_line: str | None = None
+    if math_binding is None:
+        math_binding = _fresh_math_binding(source)
+        import_line = (
+            "import math\n"
+            if math_binding == "math"
+            else f"import math as {math_binding}\n"
+        )
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     for match in re.finditer(rf"(?<!\.)\b{re.escape(name)}\s*\(", source):
@@ -130,7 +140,7 @@ def _math_builtin(
             continue
         if not span_is_code(mask, match.start(), match.end()):
             continue
-        after = f"math.{name}"
+        after = f"{math_binding}.{name}"
         edits.append(TextEdit(match.start(), match.start() + len(name), after))
         fixes.append(
             Fix(
@@ -142,10 +152,36 @@ def _math_builtin(
             )
         )
     next_source = apply_edits(source, edits)
-    if edits and not re.search(r"^\s*import\s+math\s*$", next_source, re.MULTILINE):
-        next_source = _insert_import(next_source, "import math\n")
-        fixes.append(Fix(rule, 1, "added math import", "", "import math"))
+    if edits and import_line is not None:
+        next_source = _insert_import(next_source, import_line)
+        fixes.append(Fix(rule, 1, "added math import", "", import_line.strip()))
     return next_source, fixes, []
+
+
+def _absolute_math_import_binding(source: str) -> str | None:
+    mask = code_mask(source)
+    pattern = re.compile(
+        r"^[ \t]*import[ \t]+math"
+        r"(?:[ \t]+as[ \t]+(?P<alias>[A-Za-z_][A-Za-z0-9_]*))?"
+        r"[ \t]*(?:#[^\n]*)?$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(source):
+        if _line_match_starts_outside_string(source, mask, match.start()):
+            return match.group("alias") or "math"
+    return None
+
+
+def _fresh_math_binding(source: str) -> str:
+    identifiers = code_identifiers(source)
+    if "math" not in identifiers:
+        return "math"
+    binding = "builtin_math"
+    suffix = 2
+    while binding in identifiers:
+        binding = f"builtin_math_{suffix}"
+        suffix += 1
+    return binding
 
 
 def _bitwise(

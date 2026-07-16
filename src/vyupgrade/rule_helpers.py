@@ -114,20 +114,44 @@ def is_keyword_argument_name(source: str, start: int, end: int) -> bool:
 
 def insert_import(source: str, line: str) -> str:
     lines = source.splitlines(keepends=True)
-    insert_at = 0
-    while insert_at < len(lines) and (
-        lines[insert_at].startswith("#pragma")
-        or lines[insert_at].startswith("# @version")
-        or lines[insert_at].strip() == ""
-        or lines[insert_at].startswith('"""')
-    ):
-        insert_at += 1
+    insert_at = _import_prelude_end(source, lines)
     while insert_at < len(lines) and lines[insert_at].startswith("import "):
         insert_at += 1
     while insert_at < len(lines) and lines[insert_at].startswith("from "):
         insert_at += 1
     lines.insert(insert_at, line)
     return "".join(lines)
+
+
+def _import_prelude_end(source: str, lines: list[str]) -> int:
+    offsets: list[int] = []
+    offset = 0
+    for current in lines:
+        offsets.append(offset)
+        offset += len(current)
+
+    insert_at = 0
+    while insert_at < len(lines):
+        stripped = lines[insert_at].strip()
+        if stripped and not stripped.startswith("#"):
+            break
+        insert_at += 1
+
+    if insert_at < len(lines):
+        line = lines[insert_at]
+        leading = len(line) - len(line.lstrip())
+        start = offsets[insert_at] + leading
+        if source.startswith(('"""', "'''"), start):
+            mask = code_mask(source)
+            end = start + 3
+            while end < len(source) and not mask[end]:
+                end += 1
+            while insert_at < len(lines) and offsets[insert_at] <= end:
+                insert_at += 1
+            while insert_at < len(lines) and not lines[insert_at].strip():
+                insert_at += 1
+
+    return insert_at
 
 
 def remove_constructor_decorators(
