@@ -2143,6 +2143,41 @@ def test_closure_archive_requires_single_entry_exit_4(
     )
 
 
+def test_closure_archive_rejects_entry_destination_without_mutation(
+    tmp_path: Path, passing_compiler, monkeypatch
+) -> None:
+    contract = tmp_path / "main.vy"
+    original = b"#pragma version 0.4.3\n"
+    contract.write_bytes(original)
+    report = tmp_path / "report.json"
+
+    def unexpected_compile(*_args, **_kwargs):
+        pytest.fail("entry destination must be rejected before archive compilation")
+
+    monkeypatch.setattr(
+        cli.closure.compiler, "compile_target_archive", unexpected_compile
+    )
+
+    code = main(
+        [
+            str(contract),
+            "--include-dependencies",
+            "--closure-archive",
+            str(contract),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 9
+    assert contract.read_bytes() == original
+    archive_report = json.loads(report.read_text())["closure"]
+    assert archive_report["archive_status"] == "failed"
+    assert archive_report["archive_error"] == (
+        f"refusing to overwrite closure source with archive: {contract.resolve()}"
+    )
+
+
 def test_closure_archive_failure_exits_9(
     tmp_path: Path, passing_compiler, monkeypatch
 ) -> None:

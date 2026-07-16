@@ -89,6 +89,16 @@ def write_closure_archive(
                 (),
                 f"archive entry is missing from closure sources: {entry}",
             )
+        members = compiler.resolve_import_closure(
+            sources, config.compiler_search_paths
+        ).files
+        if resolved in members:
+            return ClosureWriteResult(
+                "failed",
+                resolved,
+                (),
+                f"refusing to overwrite closure source with archive: {resolved}",
+            )
         with compiler.target_overlay(
             sources,
             config.target_version,

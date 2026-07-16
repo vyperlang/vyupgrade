@@ -285,7 +285,10 @@ def main(argv: list[str] | None = None) -> int:
         return 5
     if (
         run_report.closure is not None
-        and run_report.closure.output_status == "blocked"
+        and (
+            run_report.closure.output_status == "blocked"
+            or run_report.closure.archive_status == "blocked"
+        )
     ):
         return 9
     return 0

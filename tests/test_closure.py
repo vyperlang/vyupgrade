@@ -351,6 +351,49 @@ def test_write_closure_archive_missing_entry_fails(tmp_path: Path) -> None:
     assert not output.exists()
 
 
+@pytest.mark.parametrize("destination", ["entry", "dependency-symlink"])
+def test_write_closure_archive_rejects_source_destinations(
+    tmp_path: Path, monkeypatch, destination: str
+) -> None:
+    sources, search_paths, (entry, dependency, interface) = (
+        _write_closure_fixture(tmp_path)
+    )
+    if destination == "entry":
+        output = entry
+    else:
+        output = tmp_path / "out.vyz"
+        output.symlink_to(dependency)
+    original_bytes = {
+        path: path.read_bytes() for path in (entry, dependency, interface)
+    }
+
+    def unexpected_compile(*_args, **_kwargs):
+        pytest.fail("source destination must be rejected before archive compilation")
+
+    monkeypatch.setattr(compiler, "compile_target_archive", unexpected_compile)
+
+    result = write_closure_archive(
+        output,
+        entry,
+        sources,
+        Config(
+            paths=(entry,),
+            target_version="0.4.3",
+            compiler_search_paths=search_paths,
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.files == ()
+    assert result.root == output.resolve()
+    assert result.error == (
+        f"refusing to overwrite closure source with archive: {output.resolve()}"
+    )
+    assert {path: path.read_bytes() for path in original_bytes} == original_bytes
+    if destination == "dependency-symlink":
+        assert output.is_symlink()
+
+
 def test_write_closure_archive_uses_closure_mode_overlay(
     tmp_path: Path, monkeypatch
 ) -> None:
