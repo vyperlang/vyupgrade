@@ -16,6 +16,7 @@ from pathlib import Path
 from uv import find_uv_bin
 
 from .models import Config
+from .source import code_mask
 from .storage_layout import compare_storage_layouts, parse_storage_layout
 from .versions import (
     VyperVersion,
@@ -70,6 +71,17 @@ class TargetOverlay:
     paths: Mapping[Path, Path]
     source_roots: tuple[Path, ...]
     search_paths: tuple[Path, ...]
+
+@dataclass(frozen=True)
+class ImportClosure:
+    roots: tuple[Path, ...]
+    dependencies: tuple[Path, ...]
+    source_roots: tuple[Path, ...]
+    common_root: Path
+
+    @property
+    def files(self) -> tuple[Path, ...]:
+        return self.roots + self.dependencies
 
 
 def unavailable_validation_artifacts(result: CompileResult) -> list[str]:
@@ -335,6 +347,36 @@ def _compile_target_interface(
             harness_path.unlink(missing_ok=True)
 
 
+def resolve_import_closure(
+    sources: Mapping[Path, str],
+    search_paths: tuple[Path, ...] = (),
+) -> ImportClosure:
+    """Resolve the full transitive closure, including external search-path files.
+
+    Overlay materialization copies only closure members under ``common_root``;
+    external configured-search-path dependencies remain available in place.
+    """
+    resolved_sources = {path.resolve(): source for path, source in sources.items()}
+    if not resolved_sources:
+        raise ValueError("resolve_import_closure requires at least one source")
+    source_roots, import_roots, common_root = _overlay_roots(
+        resolved_sources, search_paths
+    )
+    dependencies = [
+        path
+        for source_root in source_roots
+        for path, _source in _walk_validation_sources(
+            source_root, import_roots, common_root, resolved_sources
+        )
+    ]
+    return ImportClosure(
+        roots=tuple(sorted(resolved_sources)),
+        dependencies=tuple(sorted(dict.fromkeys(dependencies))),
+        source_roots=source_roots,
+        common_root=common_root,
+    )
+
+
 @contextmanager
 def target_overlay(
     sources: Mapping[Path, str],
@@ -345,6 +387,66 @@ def target_overlay(
     if not resolved_sources:
         yield None
         return
+    with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
+        overlay = materialize_target_overlay(
+            resolved_sources, target_version, Path(tmp), search_paths
+        )
+        assert overlay is not None
+        yield overlay
+
+
+def materialize_target_overlay(
+    sources: Mapping[Path, str],
+    target_version: str,
+    root: Path,
+    search_paths: tuple[Path, ...] = (),
+) -> TargetOverlay | None:
+    resolved_sources = {path.resolve(): source for path, source in sources.items()}
+    if not resolved_sources:
+        return None
+    roots, import_roots, common = _overlay_roots(resolved_sources, search_paths)
+    paths: dict[Path, Path] = {}
+    overlay_search_paths: set[Path] = set()
+    for source_root in roots:
+        overlay_search_paths.update(
+            _copy_validation_sources(
+                source_root,
+                import_roots,
+                common,
+                root,
+                target_version,
+                resolved_sources,
+            )
+        )
+    overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
+    for path, source in resolved_sources.items():
+        try:
+            relative = path.relative_to(common)
+        except ValueError:
+            continue
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+        paths[path] = target
+        overlay_search_paths.add(target.parent)
+    _copy_project_configs(common, root)
+    return TargetOverlay(
+        root=root,
+        paths=paths,
+        source_roots=roots,
+        search_paths=tuple(
+            sorted(
+                (path for path in overlay_search_paths if path != root),
+                key=lambda path: str(path),
+            )
+        ),
+    )
+
+
+def _overlay_roots(
+    resolved_sources: Mapping[Path, str],
+    search_paths: tuple[Path, ...],
+) -> tuple[tuple[Path, ...], tuple[Path, ...], Path]:
     roots = tuple(
         dict.fromkeys(
             root
@@ -356,45 +458,7 @@ def target_overlay(
         dict.fromkeys((*roots, *(search_path.resolve() for search_path in search_paths)))
     )
     common = Path(os.path.commonpath([str(root) for root in roots]))
-    with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
-        root = Path(tmp)
-        paths: dict[Path, Path] = {}
-        overlay_search_paths: set[Path] = set()
-        for source_root in roots:
-            overlay_search_paths.update(
-                _copy_validation_sources(
-                    source_root,
-                    import_roots,
-                    common,
-                    root,
-                    target_version,
-                    resolved_sources,
-                )
-            )
-        overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
-        for path, source in resolved_sources.items():
-            try:
-                relative = path.relative_to(common)
-            except ValueError:
-                continue
-            target = root / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(source, encoding="utf-8")
-            paths[path] = target
-            overlay_search_paths.add(target.parent)
-        _copy_project_configs(common, root)
-        yield TargetOverlay(
-            root=root,
-            paths=paths,
-            source_roots=tuple(roots),
-            search_paths=tuple(
-                sorted(
-                    (path for path in overlay_search_paths if path != root),
-                    key=lambda path: str(path),
-                )
-            ),
-        )
-
+    return roots, import_roots, common
 
 def _overlay_configured_search_paths(
     search_paths: tuple[Path, ...], common_root: Path, target_root: Path
@@ -454,15 +518,12 @@ def _validation_roots(path: Path, search_paths: tuple[Path, ...]) -> tuple[Path,
     return (_nearest_project_root(path.parent) or path.parent,)
 
 
-def _copy_validation_sources(
+def _walk_validation_sources(
     source_root: Path,
     import_roots: tuple[Path, ...],
     common_root: Path,
-    target_root: Path,
-    target_version: str,
     overrides: Mapping[Path, str],
-) -> set[Path]:
-    search_paths: set[Path] = set()
+) -> Iterator[tuple[Path, str]]:
     override_paths = set(overrides)
     queue: list[tuple[Path, str]] = []
     for path, source in overrides.items():
@@ -495,14 +556,29 @@ def _copy_validation_sources(
             queue.append((resolved, source))
             if resolved in override_paths:
                 continue
-            _copy_validation_source(
-                resolved,
-                source,
-                common_root,
-                target_root,
-                target_version,
-                search_paths,
-            )
+            yield resolved, source
+
+
+def _copy_validation_sources(
+    source_root: Path,
+    import_roots: tuple[Path, ...],
+    common_root: Path,
+    target_root: Path,
+    target_version: str,
+    overrides: Mapping[Path, str],
+) -> set[Path]:
+    search_paths: set[Path] = set()
+    for resolved, source in _walk_validation_sources(
+        source_root, import_roots, common_root, overrides
+    ):
+        _copy_validation_source(
+            resolved,
+            source,
+            common_root,
+            target_root,
+            target_version,
+            search_paths,
+        )
     return search_paths
 
 
@@ -588,7 +664,12 @@ def _validation_import_sources(
     path: Path, source: str, source_root: Path, import_roots: tuple[Path, ...]
 ) -> tuple[Path, ...]:
     imports: list[Path] = []
-    for line in source.splitlines():
+    mask = code_mask(source)
+    code_source = "".join(
+        char if is_code or char in "\r\n" else " "
+        for char, is_code in zip(source, mask, strict=True)
+    )
+    for line in code_source.splitlines():
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
@@ -684,7 +765,14 @@ def _validation_module_candidates(path: Path) -> tuple[Path, ...]:
 
 
 def _copy_project_configs(source_root: Path, target_root: Path) -> None:
-    for pyproject in source_root.rglob("pyproject.toml"):
+    resolved_target = target_root.resolve()
+    for pyproject in list(source_root.rglob("pyproject.toml")):
+        resolved_pyproject = pyproject.resolve()
+        if (
+            resolved_pyproject == resolved_target
+            or resolved_target in resolved_pyproject.parents
+        ):
+            continue
         if any(part in {".git", ".venv", "venv", "node_modules"} for part in pyproject.parts):
             continue
         try:

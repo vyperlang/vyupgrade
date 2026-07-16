@@ -206,7 +206,7 @@ def validate_migrations(
 ) -> ValidationDecision:
     """Validate one coherent candidate overlay and return its typed decision."""
     resolve_candidate = candidate_source or _unchanged_candidate
-    target_sources = _candidate_sources(batch, resolve_candidate)
+    target_sources = candidate_sources(batch, resolve_candidate)
 
     with target_overlay(
         target_sources, config.target_version, config.compiler_search_paths
@@ -296,7 +296,7 @@ def _unchanged_candidate(_path: Path, source: str) -> str:
     return source
 
 
-def _candidate_sources(
+def candidate_sources(
     batch: MigrationBatch, resolve_candidate: CandidateSource
 ) -> dict[Path, str]:
     candidates = [
