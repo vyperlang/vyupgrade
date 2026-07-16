@@ -70,8 +70,14 @@ class MigrationContext:
             return True
         return self.source_floor < introduced
 
+    def source_spec_unsupported(self) -> bool:
+        return self.source_spec is not None and not known_versions_satisfying(self.source_spec)
+
     def source_newer_than_target(self) -> bool:
         return self.source_floor is not None and self.source_floor > self.target_version
+
+    def source_can_migrate_to_target(self) -> bool:
+        return not self.source_spec_unsupported() and not self.source_newer_than_target()
 
 
 def infer_pragma(source: str) -> str | None:

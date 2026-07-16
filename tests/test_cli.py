@@ -1342,6 +1342,45 @@ def test_validation_diagnostics_use_resolved_source_compiler_for_evm_default(
     assert not [diagnostic for diagnostic in report.diagnostics if diagnostic.rule == "VYD009"]
 
 
+def test_unsupported_source_version_skips_compile_and_reports_error(tmp_path: Path) -> None:
+    contract = tmp_path / "unsupported.vy"
+    contract.write_text(
+        """# pragma version 0.5.0
+
+@external
+def f() -> uint256:
+    return 1
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--target-version",
+            "0.5.0a3",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 5
+    file_report = json.loads(report.read_text())["files"][0]
+    assert file_report["changed"] is False
+    assert file_report["diagnostics"] == [
+        {
+            "rule": "VYD018",
+            "line": 1,
+            "message": "source version 0.5.0 matches no Vyper compiler supported by this vyupgrade release",
+            "severity": "error",
+        }
+    ]
+    assert file_report["validation"]["source_compile"] == "skipped"
+    assert file_report["validation"]["target_compile"] == "skipped"
+
+
 def test_source_newer_than_target_skips_compile_and_reports_error(tmp_path: Path) -> None:
     contract = tmp_path / "newer.vy"
     contract.write_text(
