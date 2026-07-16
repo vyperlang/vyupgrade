@@ -1380,9 +1380,9 @@ def _smoke_one(item: dict[str, Any], target_version: str) -> dict[str, Any]:
             original,
             source_version,
             _source_compile_attempts(item, source_version),
-            # Preserve the corpus smoke's historical attempt to compile a
-            # target even when the source is newer than that target.
-            skip_target_on_vyd016=False,
+            # Preserve the corpus smoke's historical target compile attempt
+            # even when the source-version boundary blocks normal migration.
+            skip_target_on_blocked_source=False,
         )
         batch = engine.prepare_migrations((request,), config)
         migration = batch.files[0]

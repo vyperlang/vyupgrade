@@ -56,7 +56,7 @@ class MigrationRequest:
     original: str
     source_version: str | None
     source_attempts: tuple[SourceCompileAttempt, ...]
-    skip_target_on_vyd016: bool = True
+    skip_target_on_blocked_source: bool = True
     role: str = "project"
 
 
@@ -107,7 +107,7 @@ def bounded_migration_request(
     """Build the target-bounded source compiler request used by the CLI."""
     source_version = config.source_version or infer_pragma(original)
     context = MigrationContext.from_specs(source_version, config.target_version)
-    if context.source_newer_than_target():
+    if not context.source_can_migrate_to_target():
         attempts: tuple[SourceCompileAttempt, ...] = ()
     elif config.source_vyper:
         attempts = (SourceCompileAttempt(source_version, source_version),)
@@ -145,9 +145,9 @@ def prepare_migrations(
             config.split_interfaces
             and request.path.suffix == ".vy"
             and request.role == "project"
-            and not MigrationContext.from_specs(
+            and MigrationContext.from_specs(
                 source_version, config.target_version
-            ).source_newer_than_target()
+            ).source_can_migrate_to_target()
             and _rule_enabled("VY120", source_version, config)
         ):
             split = split_interfaces_to_vyi(rewrite.source, request.path)
@@ -224,12 +224,12 @@ def validate_migrations(
                 migration.report, migration.validation_diagnostics
             )
             migration.target_compile = None
+            source_context = MigrationContext.from_specs(
+                migration.request.source_version, config.target_version
+            )
             if (
-                migration.request.skip_target_on_vyd016
-                and any(
-                    diagnostic.rule == "VYD016"
-                    for diagnostic in migration.report.diagnostics
-                )
+                migration.request.skip_target_on_blocked_source
+                and not source_context.source_can_migrate_to_target()
             ):
                 continue
             target_compile = compile_target_source(

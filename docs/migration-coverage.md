@@ -579,3 +579,5 @@ modern Python interpreter.
 - `VYD009`: target compiler default EVM version differs from source-era default.
 - `VYD016`: source version resolves to a compiler newer than the requested
   target.
+- `VYD018`: source version matches no compiler supported by this `vyupgrade`
+  release.
