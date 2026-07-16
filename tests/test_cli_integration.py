@@ -579,6 +579,60 @@ def f(x: uint256) -> uint256:
     assert any(fix["rule"] == "VY101" for fix in file["fixes"])
 
 
+def test_alpha_isqrt_rewrite_avoids_existing_math_binding(tmp_path: Path) -> None:
+    dependency = tmp_path / "dep_math.vy"
+    dependency.write_text(
+        """# pragma version 0.4.1
+
+@internal
+@pure
+def _identity(x: uint256) -> uint256:
+    return x
+""",
+        encoding="utf-8",
+    )
+    contract = tmp_path / "Repro.vy"
+    contract.write_text(
+        '''# pragma version 0.4.1
+"""
+@title Minimal VY101 import collision
+"""
+
+from . import dep_math as math
+
+@external
+@pure
+def sqrt_plus_zero(x: uint256) -> uint256:
+    return isqrt(x) + math._identity(0)
+''',
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--check",
+            "--target-version",
+            "0.5.0a3",
+            "--compiler-search-paths",
+            str(tmp_path),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 1
+    file = json.loads(report.read_text())["files"][0]
+    assert file["validation"]["target_compile"] == "passed"
+    assert file["validation"]["decision"]["status"] == "passed"
+    assert any(
+        fix["after"] == "builtin_math.isqrt"
+        for fix in file["fixes"]
+        if fix["rule"] == "VY101"
+    )
+
+
 def test_standalone_interface_receives_target_validation(tmp_path: Path) -> None:
     interface = tmp_path / "IToken.vyi"
     interface.write_text(

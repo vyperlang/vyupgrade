@@ -17,6 +17,88 @@ def f(x: uint256) -> uint256:
     assert any(fix.rule == "VY101" for fix in result.fixes)
 
 
+def test_isqrt_math_import_follows_module_docstring(config) -> None:
+    source = '''#pragma version 0.4.3
+"""
+@title Example
+import math
+"""
+
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x)
+'''
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert (
+        result.source
+        == '''#pragma version 0.5.0a1
+"""
+@title Example
+import math
+"""
+
+import math
+@external
+def f(x: uint256) -> uint256:
+    return math.isqrt(x)
+'''
+    )
+
+
+def test_isqrt_uses_fresh_math_alias_when_math_is_already_bound(config) -> None:
+    source = '''#pragma version 0.4.3
+"""
+@title Example
+"""
+
+from . import dep_math as math
+
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x) + math._identity(0)
+'''
+
+    first = apply_rules(source, config(target_version="0.5.0a1"))
+    second = apply_rules(first.source, config(target_version="0.5.0a1"))
+
+    assert "import math as builtin_math\n" in first.source
+    assert "return builtin_math.isqrt(x) + math._identity(0)" in first.source
+    assert first.source == second.source
+
+
+def test_isqrt_reuses_existing_aliased_builtin_math_import(config) -> None:
+    source = """#pragma version 0.4.3
+import math as target_math
+
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x)
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert result.source.count("import math as target_math") == 1
+    assert "return target_math.isqrt(x)" in result.source
+
+
+def test_isqrt_math_alias_suffix_is_deterministic(config) -> None:
+    source = """#pragma version 0.4.3
+from . import dep_math as math
+builtin_math: constant(uint256) = 1
+
+@external
+def f(x: uint256) -> uint256:
+    return isqrt(x) + math._identity(builtin_math)
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a1"))
+
+    assert "import math as builtin_math_2\n" in result.source
+    assert "return builtin_math_2.isqrt(x) + math._identity(builtin_math)" in result.source
+
+
 def test_isqrt_does_not_rewrite_before_0_5_alpha_target(config) -> None:
     source = """#pragma version 0.4.3
 @external

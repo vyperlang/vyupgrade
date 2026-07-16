@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import Fix, GeneratedFile
+from .rule_helpers import insert_import
 from .source import TextEdit, apply_edits, code_mask, find_matching, line_number, span_is_code
 
 
@@ -112,20 +113,9 @@ def _existing_imports(source: str) -> set[str]:
 
 
 def _insert_imports(source: str, imports: list[str]) -> str:
-    lines = source.splitlines(keepends=True)
-    insert_at = 0
-    while insert_at < len(lines) and (
-        lines[insert_at].startswith("#pragma")
-        or lines[insert_at].startswith("# @version")
-        or lines[insert_at].strip() == ""
-    ):
-        insert_at += 1
-    while insert_at < len(lines) and (
-        lines[insert_at].startswith("import ") or lines[insert_at].startswith("from ")
-    ):
-        insert_at += 1
-    lines[insert_at:insert_at] = imports
-    return "".join(lines)
+    for line in imports:
+        source = insert_import(source, line)
+    return source
 
 
 def _interface_body_to_vyi(body: str) -> str:

@@ -91,6 +91,30 @@ def factoryAddress() -> address(Factory):
     assert "staticcall IERC20(self.token).balanceOf(self)" in result.source
 
 
+def test_legacy_interface_import_follows_module_docstring(config) -> None:
+    source = '''# @version 0.1.0b4
+"""
+@title Legacy token
+"""
+
+token: address(ERC20)
+'''
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert (
+        result.source
+        == '''#pragma version 0.4.3
+"""
+@title Legacy token
+"""
+
+from ethereum.ercs import IERC20
+token: address
+'''
+    )
+
+
 def test_legacy_interface_value_calls_rewrite_interface_payable(config) -> None:
     source = """# @version 0.1.0b4
 contract Exchange():
