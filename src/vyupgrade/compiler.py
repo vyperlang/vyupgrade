@@ -55,6 +55,9 @@ VALIDATION_MODULE_ALIASES = {
     "create2": "create2_address",
 }
 
+class OverlayLayoutConflictError(ValueError):
+    """Two closure members with different content map to one overlay path."""
+
 
 @dataclass
 class CompileResult:
@@ -82,6 +85,13 @@ class ImportClosure:
     @property
     def files(self) -> tuple[Path, ...]:
         return self.roots + self.dependencies
+
+
+@dataclass(frozen=True)
+class _ResolvedValidationImport:
+    path: Path
+    root: Path
+    relative_path: Path
 
 
 def unavailable_validation_artifacts(result: CompileResult) -> list[str]:
@@ -353,8 +363,8 @@ def resolve_import_closure(
 ) -> ImportClosure:
     """Resolve the full transitive closure, including external search-path files.
 
-    Overlay materialization copies only closure members under ``common_root``;
-    external configured-search-path dependencies remain available in place.
+    Default overlay materialization copies only closure members under
+    ``common_root``; closure mode materializes external dependencies too.
     """
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
@@ -364,10 +374,10 @@ def resolve_import_closure(
     )
     dependencies = [
         path
-        for source_root in source_roots
-        for path, _source in _walk_validation_sources(
-            source_root, import_roots, common_root, resolved_sources
+        for path, _source, _import_root, is_override in _walk_validation_closure(
+            source_roots, import_roots, common_root, resolved_sources
         )
+        if not is_override
     ]
     return ImportClosure(
         roots=tuple(sorted(resolved_sources)),
@@ -382,6 +392,8 @@ def target_overlay(
     sources: Mapping[Path, str],
     target_version: str,
     search_paths: tuple[Path, ...] = (),
+    *,
+    include_dependencies: bool = False,
 ) -> Iterator[TargetOverlay | None]:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
@@ -389,7 +401,11 @@ def target_overlay(
         return
     with tempfile.TemporaryDirectory(prefix="vyupgrade-target-") as tmp:
         overlay = materialize_target_overlay(
-            resolved_sources, target_version, Path(tmp), search_paths
+            resolved_sources,
+            target_version,
+            Path(tmp),
+            search_paths,
+            include_dependencies=include_dependencies,
         )
         assert overlay is not None
         yield overlay
@@ -400,40 +416,66 @@ def materialize_target_overlay(
     target_version: str,
     root: Path,
     search_paths: tuple[Path, ...] = (),
+    *,
+    include_dependencies: bool = False,
 ) -> TargetOverlay | None:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
         return None
     roots, import_roots, common = _overlay_roots(resolved_sources, search_paths)
-    paths: dict[Path, Path] = {}
-    overlay_search_paths: set[Path] = set()
-    for source_root in roots:
-        overlay_search_paths.update(
-            _copy_validation_sources(
+    if include_dependencies:
+        paths, overlay_search_paths = _materialize_closure_sources(
+            roots,
+            import_roots,
+            common,
+            root,
+            target_version,
+            resolved_sources,
+        )
+    else:
+        destination = _overlay_destination_resolver(common, root)
+        paths: dict[Path, Path] = {}
+        overlay_search_paths: set[Path] = set()
+        for source_root in roots:
+            copied_search_paths, _copied = _copy_validation_sources(
                 source_root,
                 import_roots,
                 common,
                 root,
                 target_version,
                 resolved_sources,
+                destination,
+                None,
             )
+            overlay_search_paths.update(copied_search_paths)
+        overlay_search_paths.update(
+            _overlay_configured_search_paths(search_paths, common, root)
         )
-    overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
-    for path, source in resolved_sources.items():
-        try:
-            relative = path.relative_to(common)
-        except ValueError:
-            continue
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source, encoding="utf-8")
-        paths[path] = target
-        overlay_search_paths.add(target.parent)
-    _copy_project_configs(common, root)
+        for path, source in resolved_sources.items():
+            target = destination(path)
+            if target is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source, encoding="utf-8")
+            paths[path] = target
+            overlay_search_paths.add(target.parent)
+    if include_dependencies:
+        configured_search_paths = tuple(
+            search_path.resolve() for search_path in search_paths
+        )
+        for source_root in roots:
+            if source_root not in configured_search_paths:
+                _copy_project_configs(
+                    source_root,
+                    root,
+                    excluded_roots=configured_search_paths,
+                )
+    else:
+        _copy_project_configs(common, root)
     return TargetOverlay(
         root=root,
         paths=paths,
-        source_roots=roots,
+        source_roots=import_roots if include_dependencies else roots,
         search_paths=tuple(
             sorted(
                 (path for path in overlay_search_paths if path != root),
@@ -441,6 +483,45 @@ def materialize_target_overlay(
             )
         ),
     )
+
+
+def _materialize_closure_sources(
+    source_roots: tuple[Path, ...],
+    import_roots: tuple[Path, ...],
+    common_root: Path,
+    target_root: Path,
+    target_version: str,
+    overrides: Mapping[Path, str],
+) -> tuple[dict[Path, Path], set[Path]]:
+    placed: dict[Path, Path] = {}
+    paths: dict[Path, Path] = {}
+    search_paths: set[Path] = set()
+    for path, source, relative_path, is_override in _walk_validation_closure(
+        source_roots, import_roots, common_root, overrides
+    ):
+        target = target_root / relative_path
+        if is_override:
+            if _claim_overlay_destination(placed, target, path, source):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(source, encoding="utf-8")
+            search_paths.add(target.parent)
+            if path.name == "create2_address.vy":
+                alias = target.with_name("create2.vy")
+                alias_source = _target_validation_create2_alias_source(source)
+                if _claim_overlay_destination(placed, alias, path, alias_source):
+                    alias.write_text(alias_source, encoding="utf-8")
+        else:
+            _copy_validation_source(
+                path,
+                source,
+                target,
+                common_root,
+                target_version,
+                search_paths,
+                placed,
+            )
+        paths[path] = target
+    return paths, search_paths
 
 
 def _overlay_roots(
@@ -459,6 +540,38 @@ def _overlay_roots(
     )
     common = Path(os.path.commonpath([str(root) for root in roots]))
     return roots, import_roots, common
+
+
+def _overlay_destination_resolver(
+    common_root: Path,
+    target_root: Path,
+) -> Callable[[Path], Path | None]:
+    def destination(path: Path) -> Path | None:
+        try:
+            return target_root / path.relative_to(common_root)
+        except ValueError:
+            return None
+
+    return destination
+
+
+def _claim_overlay_destination(
+    placed: dict[Path, Path],
+    target: Path,
+    source_path: Path,
+    content: str,
+) -> bool:
+    existing_source = placed.get(target)
+    if existing_source is None:
+        placed[target] = source_path
+        return True
+    if existing_source == source_path:
+        return True
+    if target.read_bytes() == content.encode("utf-8"):
+        return False
+    raise OverlayLayoutConflictError(
+        f"overlay destination {target} maps both {existing_source} and {source_path}"
+    )
 
 def _overlay_configured_search_paths(
     search_paths: tuple[Path, ...], common_root: Path, target_root: Path
@@ -518,6 +631,124 @@ def _validation_roots(path: Path, search_paths: tuple[Path, ...]) -> tuple[Path,
     return (_nearest_project_root(path.parent) or path.parent,)
 
 
+def _walk_validation_closure(
+    source_roots: tuple[Path, ...],
+    import_roots: tuple[Path, ...],
+    common_root: Path,
+    overrides: Mapping[Path, str],
+) -> Iterator[tuple[Path, str, Path, bool]]:
+    override_paths = set(overrides)
+    incoming_overrides: set[Path] = set()
+    for path, source in overrides.items():
+        import_source = _standard_json_package_dependency_source(
+            path, source, common_root
+        )
+        for source_root in _containing_import_roots(path, source_roots):
+            relative_path = path.relative_to(source_root)
+            incoming_overrides.update(
+                imported.path
+                for imported in _validation_import_sources(
+                    path,
+                    import_source,
+                    source_root,
+                    import_roots,
+                    relative_path,
+                )
+                if imported.path in override_paths
+            )
+
+    entry_paths = override_paths - incoming_overrides
+    queue: list[tuple[Path, str, Path, Path, bool]] = []
+    for path in sorted(entry_paths):
+        source_root = _containing_import_roots(path, source_roots)[0]
+        queue.append(
+            (
+                path,
+                overrides[path],
+                source_root,
+                path.relative_to(source_root),
+                True,
+            )
+        )
+    layouts: dict[Path, Path] = {}
+    processed: set[Path] = set()
+    while queue or override_paths - processed:
+        if not queue:
+            path = min(override_paths - processed)
+            source_root = _containing_import_roots(path, source_roots)[0]
+            queue.append(
+                (
+                    path,
+                    overrides[path],
+                    source_root,
+                    path.relative_to(source_root),
+                    True,
+                )
+            )
+        (
+            current,
+            current_source,
+            current_root,
+            current_relative,
+            is_override,
+        ) = queue.pop(0)
+        existing_relative = layouts.get(current)
+        if (
+            existing_relative is not None
+            and existing_relative != current_relative
+        ):
+            raise OverlayLayoutConflictError(
+                f"closure member {current} maps to both "
+                f"{existing_relative} and {current_relative}"
+            )
+        layouts[current] = current_relative
+        if current in processed:
+            continue
+        processed.add(current)
+        yield current, current_source, current_relative, is_override
+        import_source = _standard_json_package_dependency_source(
+            current, current_source, common_root
+        )
+        for imported in _validation_import_sources(
+            current,
+            import_source,
+            current_root,
+            import_roots,
+            current_relative,
+        ):
+            if imported.path in processed:
+                existing_relative = layouts[imported.path]
+                if existing_relative != imported.relative_path:
+                    raise OverlayLayoutConflictError(
+                        f"closure member {imported.path} maps to both "
+                        f"{existing_relative} and {imported.relative_path}"
+                    )
+                continue
+            source = overrides.get(imported.path)
+            if source is None:
+                try:
+                    source = imported.path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+            queue.append(
+                (
+                    imported.path,
+                    source,
+                    imported.root,
+                    imported.relative_path,
+                    imported.path in override_paths,
+                )
+            )
+
+
+def _containing_import_roots(
+    path: Path, import_roots: tuple[Path, ...]
+) -> tuple[Path, ...]:
+    roots = tuple(root for root in import_roots if _is_relative_to(path, root))
+    assert roots, f"closure member is outside import roots: {path}"
+    return tuple(sorted(roots, key=lambda root: len(root.parts)))
+
+
 def _walk_validation_sources(
     source_root: Path,
     import_roots: tuple[Path, ...],
@@ -542,9 +773,10 @@ def _walk_validation_sources(
         current_source = _standard_json_package_dependency_source(
             current, current_source, common_root
         )
-        for resolved in _validation_import_sources(
+        for imported in _validation_import_sources(
             current, current_source, source_root, import_roots
         ):
+            resolved = imported.path
             if resolved in processed:
                 continue
             source = overrides.get(resolved)
@@ -566,62 +798,74 @@ def _copy_validation_sources(
     target_root: Path,
     target_version: str,
     overrides: Mapping[Path, str],
-) -> set[Path]:
+    destination: Callable[[Path], Path | None],
+    placed: dict[Path, Path] | None,
+) -> tuple[set[Path], dict[Path, Path]]:
     search_paths: set[Path] = set()
+    copied: dict[Path, Path] = {}
     for resolved, source in _walk_validation_sources(
         source_root, import_roots, common_root, overrides
     ):
+        target = destination(resolved)
+        if target is None:
+            continue
         _copy_validation_source(
             resolved,
             source,
+            target,
             common_root,
-            target_root,
             target_version,
             search_paths,
+            placed,
         )
-    return search_paths
+        if resolved.suffix in VALIDATION_SOURCE_SUFFIXES:
+            copied[resolved] = target
+    return search_paths, copied
 
 
 def _copy_validation_source(
     source_path: Path,
     source: str,
+    target: Path,
     common_root: Path,
-    target_root: Path,
     target_version: str,
     search_paths: set[Path],
+    placed: dict[Path, Path] | None,
 ) -> None:
     if source_path.suffix not in VALIDATION_SOURCE_SUFFIXES:
         return
-    try:
-        relative = source_path.relative_to(common_root)
-    except ValueError:
-        return
-    target = target_root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     if source_path.suffix == ".json":
-        target.write_text(source, encoding="utf-8")
+        if placed is None or _claim_overlay_destination(
+            placed, target, source_path, source
+        ):
+            target.write_text(source, encoding="utf-8")
         search_paths.add(target.parent)
         return
-    source = _standard_json_package_dependency_source(source_path, source, common_root)
-    target.write_text(
-        _target_validation_source(
-            source,
-            target_version,
-            is_interface=source_path.suffix == ".vyi",
-        ),
-        encoding="utf-8",
+    source = _standard_json_package_dependency_source(
+        source_path, source, common_root
     )
+    content = _target_validation_source(
+        source,
+        target_version,
+        is_interface=source_path.suffix == ".vyi",
+    )
+    if placed is None or _claim_overlay_destination(
+        placed, target, source_path, content
+    ):
+        target.write_text(content, encoding="utf-8")
     search_paths.add(target.parent)
     if source_path.name == "create2_address.vy":
         alias = target.with_name("create2.vy")
-        alias.write_text(
-            _target_validation_source(
-                _target_validation_create2_alias_source(source),
-                target_version,
-                is_interface=False,
-            ),
-            encoding="utf-8",
+        alias_content = _target_validation_source(
+            _target_validation_create2_alias_source(source),
+            target_version,
+            is_interface=False,
         )
+        if placed is None or _claim_overlay_destination(
+            placed, alias, source_path, alias_content
+        ):
+            alias.write_text(alias_content, encoding="utf-8")
 
 
 def _standard_json_package_dependency_source(source_path: Path, source: str, common_root: Path) -> str:
@@ -661,9 +905,13 @@ def _local_sibling_import_source(source_path: Path, source: str) -> str:
 
 
 def _validation_import_sources(
-    path: Path, source: str, source_root: Path, import_roots: tuple[Path, ...]
-) -> tuple[Path, ...]:
-    imports: list[Path] = []
+    path: Path,
+    source: str,
+    source_root: Path,
+    import_roots: tuple[Path, ...],
+    relative_path: Path | None = None,
+) -> tuple[_ResolvedValidationImport, ...]:
+    imports: list[_ResolvedValidationImport] = []
     mask = code_mask(source)
     code_source = "".join(
         char if is_code or char in "\r\n" else " "
@@ -680,7 +928,12 @@ def _validation_import_sources(
         if import_match:
             imports.extend(
                 _resolve_validation_import(
-                    path, source_root, import_match.group(1), (), import_roots
+                    path,
+                    source_root,
+                    import_match.group(1),
+                    (),
+                    import_roots,
+                    relative_path,
                 )
             )
             continue
@@ -692,7 +945,12 @@ def _validation_import_sources(
             names = tuple(_imported_module_names(from_match.group(2)))
             imports.extend(
                 _resolve_validation_import(
-                    path, source_root, from_match.group(1), names, import_roots
+                    path,
+                    source_root,
+                    from_match.group(1),
+                    names,
+                    import_roots,
+                    relative_path,
                 )
             )
     return tuple(dict.fromkeys(imports))
@@ -709,21 +967,47 @@ def _imported_module_names(imports: str) -> Iterator[str]:
 
 
 def _resolve_validation_import(
-    path: Path, source_root: Path, module: str, names: tuple[str, ...], import_roots: tuple[Path, ...]
-) -> tuple[Path, ...]:
-    bases, module_parts = _validation_import_bases(path, source_root, module, import_roots)
-    candidates: list[Path] = []
-    for base in bases:
+    path: Path,
+    source_root: Path,
+    module: str,
+    names: tuple[str, ...],
+    import_roots: tuple[Path, ...],
+    relative_path: Path | None,
+) -> tuple[_ResolvedValidationImport, ...]:
+    bases, module_parts = _validation_import_bases(
+        path, source_root, module, import_roots, relative_path
+    )
+    candidates: list[tuple[Path, Path, Path]] = []
+    for base, import_root, relative_base in bases:
         module_path = base.joinpath(*module_parts) if module_parts else base
+        relative_module = (
+            relative_base.joinpath(*module_parts)
+            if module_parts
+            else relative_base
+        )
         if names:
             for name in names:
-                candidates.extend(_validation_module_candidates(module_path / name))
-            candidates.extend(_validation_module_candidates(module_path))
+                candidates.extend(
+                    _validation_module_candidate_layouts(
+                        module_path / name,
+                        relative_module / name,
+                        import_root,
+                    )
+                )
+            candidates.extend(
+                _validation_module_candidate_layouts(
+                    module_path, relative_module, import_root
+                )
+            )
         else:
-            candidates.extend(_validation_module_candidates(module_path))
-    resolved: list[Path] = []
+            candidates.extend(
+                _validation_module_candidate_layouts(
+                    module_path, relative_module, import_root
+                )
+            )
+    resolved: dict[Path, tuple[Path, Path]] = {}
     roots = tuple(root.resolve() for root in (source_root, *import_roots))
-    for candidate in candidates:
+    for candidate, import_root, candidate_relative in candidates:
         try:
             resolved_candidate = candidate.resolve()
             if not any(_is_relative_to(resolved_candidate, root) for root in roots):
@@ -731,21 +1015,47 @@ def _resolve_validation_import(
         except (OSError, ValueError):
             continue
         if resolved_candidate.exists() and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
-            resolved.append(resolved_candidate)
-    return tuple(dict.fromkeys(resolved))
+            resolved.setdefault(
+                resolved_candidate, (import_root, candidate_relative)
+            )
+    return tuple(
+        _ResolvedValidationImport(path, import_root, candidate_relative)
+        for path, (import_root, candidate_relative) in resolved.items()
+    )
 
 
 def _validation_import_bases(
-    path: Path, source_root: Path, module: str, import_roots: tuple[Path, ...]
-) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+    path: Path,
+    source_root: Path,
+    module: str,
+    import_roots: tuple[Path, ...],
+    relative_path: Path | None,
+) -> tuple[tuple[tuple[Path, Path, Path], ...], tuple[str, ...]]:
+    relative_parent = relative_path.parent if relative_path is not None else Path()
     if not module.startswith("."):
-        bases = (path.parent, source_root, *import_roots)
-        return tuple(dict.fromkeys(bases)), tuple(part for part in module.split(".") if part)
+        bases = (
+            (path.parent, source_root, relative_parent),
+            (source_root, source_root, Path()),
+            *((root, root, Path()) for root in import_roots),
+        )
+        unique_bases: dict[Path, tuple[Path, Path]] = {}
+        for base, root, relative_base in bases:
+            unique_bases.setdefault(base, (root, relative_base))
+        return tuple(
+            (base, root, relative_base)
+            for base, (root, relative_base) in unique_bases.items()
+        ), tuple(
+            part for part in module.split(".") if part
+        )
     level = len(module) - len(module.lstrip("."))
     base = path.parent
+    relative_base = relative_parent
     for _ in range(max(level - 1, 0)):
         base = base.parent
-    return (base,), tuple(part for part in module[level:].split(".") if part)
+        relative_base = relative_base.parent
+    return ((base, source_root, relative_base),), tuple(
+        part for part in module[level:].split(".") if part
+    )
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -764,16 +1074,64 @@ def _validation_module_candidates(path: Path) -> tuple[Path, ...]:
     return tuple(candidate.with_suffix(suffix) for candidate in paths for suffix in sorted(VALIDATION_SOURCE_SUFFIXES))
 
 
-def _copy_project_configs(source_root: Path, target_root: Path) -> None:
+def _validation_module_candidate_layouts(
+    path: Path, relative_path: Path, import_root: Path
+) -> tuple[tuple[Path, Path, Path], ...]:
+    return tuple(
+        (
+            candidate,
+            import_root,
+            relative_path.with_name(candidate.name)
+            if relative_path.name
+            else Path(candidate.name),
+        )
+        for candidate in _validation_module_candidates(path)
+    )
+
+
+def _project_config_paths(
+    source_root: Path,
+    excluded_roots: tuple[Path, ...],
+) -> Iterator[Path]:
+    if not excluded_roots:
+        yield from source_root.rglob("pyproject.toml")
+        return
+    for directory, directories, files in os.walk(source_root):
+        current = Path(directory)
+        directories[:] = [
+            name
+            for name in directories
+            if not any(
+                _is_relative_to((current / name).resolve(), excluded_root)
+                for excluded_root in excluded_roots
+            )
+        ]
+        if "pyproject.toml" in files:
+            yield current / "pyproject.toml"
+
+
+def _copy_project_configs(
+    source_root: Path,
+    target_root: Path,
+    *,
+    excluded_roots: tuple[Path, ...] = (),
+) -> None:
     resolved_target = target_root.resolve()
-    for pyproject in list(source_root.rglob("pyproject.toml")):
+    for pyproject in _project_config_paths(source_root, excluded_roots):
         resolved_pyproject = pyproject.resolve()
         if (
             resolved_pyproject == resolved_target
             or resolved_target in resolved_pyproject.parents
+            or any(
+                _is_relative_to(resolved_pyproject, excluded_root)
+                for excluded_root in excluded_roots
+            )
         ):
             continue
-        if any(part in {".git", ".venv", "venv", "node_modules"} for part in pyproject.parts):
+        if any(
+            part in {".git", ".venv", "venv", "node_modules"}
+            for part in pyproject.parts
+        ):
             continue
         try:
             relative = pyproject.relative_to(source_root)
