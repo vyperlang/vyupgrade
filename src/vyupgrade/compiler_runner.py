@@ -15,9 +15,6 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from packaging.specifiers import InvalidSpecifier, SpecifierSet
-from packaging.version import InvalidVersion, Version
-
 
 _VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*)?\b")
 
@@ -27,7 +24,7 @@ class _CompilerTimedOut(Exception):
 
 
 def main() -> None:
-    result_path, timeout, managed_value, coherence_spec, *command = sys.argv[1:]
+    result_path, timeout, managed_value, coherence, *command = sys.argv[1:]
     destination = Path(result_path)
     managed = managed_value == "managed"
     _write_result(destination, {"state": "started"})
@@ -60,16 +57,14 @@ def main() -> None:
         "compiler_identity": compiler_identity,
         "resolved_packages": packages,
     }
-    if coherence_spec and not _version_satisfies(resolved_compiler, coherence_spec):
+    coherence_error = _compiler_coherence_error(resolved_compiler, coherence)
+    if coherence_error is not None:
         _write_result(
             destination,
             _failure_payload(
                 origin="environment",
                 completion_status="not-started",
-                error=(
-                    f"resolved project compiler {resolved_compiler} conflicts with "
-                    f"source declaration {coherence_spec}"
-                ),
+                error=coherence_error,
                 **evidence,
             ),
         )
@@ -287,16 +282,26 @@ def _file_identity(path: Path) -> dict[str, str]:
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
-def _version_satisfies(version: str, declaration: str) -> bool:
-    normalized = declaration.strip()
-    if re.fullmatch(r"\d+\.\d+\.\d+(?:[A-Za-z]+\d+)?", normalized):
-        normalized = f"=={normalized}"
-    elif normalized.startswith("^"):
-        normalized = f"~={normalized[1:]}"
+def _compiler_coherence_error(version: str, raw_evidence: str) -> str | None:
+    if not raw_evidence:
+        return None
     try:
-        return SpecifierSet(normalized).contains(Version(version), prereleases=True)
-    except (InvalidSpecifier, InvalidVersion):
-        return False
+        evidence = json.loads(raw_evidence)
+    except json.JSONDecodeError:
+        return "compiler coherence evidence is malformed"
+    if not isinstance(evidence, dict):
+        return "compiler coherence evidence is malformed"
+    declaration = evidence.get("declaration")
+    versions = evidence.get("versions")
+    if (
+        not isinstance(declaration, str)
+        or not isinstance(versions, list)
+        or not all(isinstance(candidate, str) for candidate in versions)
+    ):
+        return "compiler coherence evidence is malformed"
+    if version in versions:
+        return None
+    return f"resolved project compiler {version} conflicts with source declaration {declaration}"
 
 
 def _failure_payload(

@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 from uv import find_uv_bin
 
 from .models import (
@@ -38,6 +41,7 @@ from .versions import (
     VyperVersion,
     compiler_version_for_spec,
     infer_pragma,
+    known_versions_satisfying,
     legacy_prerelease_version,
     parse_version,
 )
@@ -2006,6 +2010,19 @@ def _command_vyper_version(command: list[str]) -> str | None:
     return None
 
 
+def _compiler_coherence(source_spec: str | None) -> str:
+    versions = (
+        [str(version) for version in known_versions_satisfying(source_spec)]
+        if source_spec is not None
+        else []
+    )
+    return json.dumps(
+        {"declaration": source_spec, "versions": versions},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _run_compiler_process(
     command: list[str],
     path: Path,
@@ -2013,13 +2030,12 @@ def _run_compiler_process(
     project_compiler: bool,
     cwd: Path | None = None,
 ) -> _CompilerProcess:
+    pyproject = _nearest_pyproject(path.parent)
+    project_declares_vyper = project_compiler and _project_declares_vyper(pyproject)
+    source_spec = infer_pragma(path.read_text(encoding="utf-8"))
     authority = _compiler_authority(command, path, project_compiler=project_compiler)
     declarations = _compiler_declarations(command, path, project_compiler=project_compiler)
-    coherence_spec = (
-        infer_pragma(path.read_text(encoding="utf-8"))
-        if project_compiler and _project_declares_vyper(_nearest_pyproject(path.parent))
-        else None
-    )
+    coherence = _compiler_coherence(source_spec) if project_declares_vyper else ""
     with _declared_project_environment(
         command,
         path,
@@ -2035,7 +2051,7 @@ def _run_compiler_process(
             managed_compiler=managed_compiler,
             compiler_authority=authority,
             compiler_declarations=declarations,
-            coherence_spec=coherence_spec,
+            coherence_spec=coherence,
             cwd=cwd,
         )
 
@@ -2278,7 +2294,12 @@ def _compiler_authority(
     pyproject = _nearest_pyproject(path.parent)
     if project_compiler and _project_declares_vyper(pyproject):
         assert pyproject is not None
-        return "project-lock" if (pyproject.parent / "uv.lock").is_file() else "project-manifest"
+        workspace_manifest = _owning_uv_workspace(pyproject)
+        return (
+            "project-lock"
+            if (workspace_manifest.parent / "uv.lock").is_file()
+            else "project-manifest"
+        )
     if not _is_uv_run_command(command):
         return "explicit-executable"
     if not project_compiler:
@@ -2318,18 +2339,59 @@ def _compiler_declarations(
 
 
 def _project_vyper_specs(pyproject: Path) -> tuple[str, ...]:
-    data = _project_data(pyproject)
-    specs = [
+    return tuple(
         dependency
-        for dependency in _project_dependency_specs(data)
+        for dependency in _project_dependency_specs(_project_data(pyproject))
         if _dependency_name(dependency) == "vyper"
-    ]
+    )
+
+
+def _owning_uv_workspace(pyproject: Path) -> Path:
+    selected_root = pyproject.parent.resolve()
+    for root in (selected_root, *selected_root.parents):
+        workspace_manifest = root / "pyproject.toml"
+        workspace = _uv_workspace(_project_data(workspace_manifest))
+        if workspace is None:
+            continue
+        if root == selected_root or selected_root in _uv_workspace_member_roots(root, workspace):
+            return workspace_manifest
+    return pyproject
+
+
+def _uv_workspace(data: dict[str, object]) -> dict[str, object] | None:
     tool = data.get("tool")
-    poetry = tool.get("poetry") if isinstance(tool, dict) else None
-    dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
-    if isinstance(dependencies, dict) and "vyper" in dependencies:
-        specs.append(f"vyper {json.dumps(dependencies['vyper'], sort_keys=True)}")
-    return tuple(specs)
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    workspace = uv.get("workspace") if isinstance(uv, dict) else None
+    return workspace if isinstance(workspace, dict) else None
+
+
+def _uv_workspace_member_roots(
+    root: Path,
+    workspace: dict[str, object],
+) -> tuple[Path, ...]:
+    members = _workspace_glob_roots(root, workspace.get("members"))
+    excluded = set(_workspace_glob_roots(root, workspace.get("exclude")))
+    return tuple(
+        member
+        for member in members
+        if member not in excluded and (member / "pyproject.toml").is_file()
+    )
+
+
+def _workspace_glob_roots(root: Path, value: object) -> tuple[Path, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        sorted(
+            {
+                candidate.resolve()
+                for pattern in value
+                if isinstance(pattern, str)
+                for candidate in root.glob(pattern)
+                if candidate.is_dir()
+            }
+        )
+    )
 
 
 @contextmanager
@@ -2344,24 +2406,33 @@ def _declared_project_environment(
         yield command, DependencyContext(mode="isolated")
         return
 
-    root = pyproject.parent.resolve()
+    workspace_manifest = _owning_uv_workspace(pyproject)
+    root = workspace_manifest.parent.resolve()
+    selected_root = pyproject.parent.resolve()
     lockfile = root / "uv.lock"
-    data = _project_data(pyproject)
-    project = data.get("project")
+    selected_data = _project_data(pyproject)
+    root_data = _project_data(workspace_manifest)
+    project = selected_data.get("project")
     python_constraint = project.get("requires-python") if isinstance(project, dict) else None
+    workspace = _uv_workspace(root_data)
+    workspace_members = _uv_workspace_member_roots(root, workspace) if workspace is not None else ()
     context = DependencyContext(
         mode="project",
         project_root=str(root),
-        manifest=_content_identity(pyproject),
+        manifest=_content_identity(workspace_manifest),
         lockfile=_content_identity(lockfile) if lockfile.is_file() else None,
         python_constraint=python_constraint if isinstance(python_constraint, str) else None,
-        declared_sources=_declared_local_source_identities(pyproject, data),
+        declared_sources=_declared_local_source_identities(
+            workspace_manifest,
+            root_data,
+            workspace_members,
+        ),
     )
     if lockfile.is_file():
         yield (
             _project_environment_command(
                 command,
-                root,
+                selected_root,
                 pyproject,
                 project_compiler=project_compiler,
                 frozen=True,
@@ -2373,10 +2444,11 @@ def _declared_project_environment(
     with tempfile.TemporaryDirectory(prefix="vyupgrade-project-") as raw_directory:
         temporary_root = Path(raw_directory)
         _mirror_project_root(root, temporary_root)
+        temporary_project = temporary_root / selected_root.relative_to(root)
         yield (
             _project_environment_command(
                 command,
-                temporary_root,
+                temporary_project,
                 pyproject,
                 project_compiler=project_compiler,
                 frozen=False,
@@ -2413,9 +2485,42 @@ def _project_environment_command(
     options = _project_uv_options(
         command[2:command_index],
         remove_vyper=project_compiler and project_declares_vyper,
-        remove_python=not project_compiler or project_declares_vyper,
+        remove_python=_use_project_interpreter(
+            command,
+            pyproject,
+            project_compiler=project_compiler,
+            project_declares_vyper=project_declares_vyper,
+        ),
     )
     return [*environment, *options, *command[command_index:]]
+
+
+def _use_project_interpreter(
+    command: Sequence[str],
+    pyproject: Path,
+    *,
+    project_compiler: bool,
+    project_declares_vyper: bool,
+) -> bool:
+    if not project_compiler or project_declares_vyper:
+        return True
+    project = _project_data(pyproject).get("project")
+    constraint = project.get("requires-python") if isinstance(project, dict) else None
+    requested = _uv_option_value(command, "--python")
+    if not isinstance(constraint, str) or requested is None:
+        return False
+    try:
+        return not SpecifierSet(constraint).contains(Version(requested), prereleases=True)
+    except (InvalidSpecifier, InvalidVersion):
+        return True
+
+
+def _uv_option_value(command: Sequence[str], option: str) -> str | None:
+    try:
+        index = command.index(option)
+    except ValueError:
+        return None
+    return command[index + 1] if index + 1 < len(command) else None
 
 
 def _project_data(pyproject: Path) -> dict[str, object]:
@@ -2428,6 +2533,7 @@ def _project_data(pyproject: Path) -> dict[str, object]:
 def _declared_local_source_identities(
     pyproject: Path,
     data: dict[str, object],
+    workspace_members: tuple[Path, ...] = (),
 ) -> tuple[ContentIdentity, ...]:
     tool = data.get("tool")
     uv = tool.get("uv") if isinstance(tool, dict) else None
@@ -2435,14 +2541,40 @@ def _declared_local_source_identities(
     if not isinstance(sources, dict):
         return ()
     identities: list[ContentIdentity] = []
-    for source in sources.values():
-        path_value = source.get("path") if isinstance(source, dict) else None
-        if not isinstance(path_value, str):
+    for name, source in sources.items():
+        if not isinstance(source, dict):
             continue
-        path = (pyproject.parent / path_value).resolve()
-        if path.exists():
+        path_value = source.get("path")
+        path = (
+            (pyproject.parent / path_value).resolve()
+            if isinstance(path_value, str)
+            else _workspace_source_path(name, source, workspace_members)
+        )
+        if path is not None and path.exists():
             identities.append(_tree_identity(path))
     return tuple(sorted(identities, key=lambda identity: identity.path))
+
+
+def _workspace_source_path(
+    name: object,
+    source: dict[str, object],
+    workspace_members: tuple[Path, ...],
+) -> Path | None:
+    if not isinstance(name, str) or source.get("workspace") is not True:
+        return None
+    normalized_name = _normalized_dependency_name(name)
+    matching = [
+        member
+        for member in workspace_members
+        if _project_name(member / "pyproject.toml") == normalized_name
+    ]
+    return matching[0] if len(matching) == 1 else None
+
+
+def _project_name(pyproject: Path) -> str | None:
+    project = _project_data(pyproject).get("project")
+    name = project.get("name") if isinstance(project, dict) else None
+    return _normalized_dependency_name(name) if isinstance(name, str) else None
 
 
 def _tree_identity(path: Path) -> ContentIdentity:
@@ -2461,14 +2593,28 @@ def _tree_identity(path: Path) -> ContentIdentity:
 
 
 def _mirror_project_root(source: Path, target: Path) -> None:
+    for config in _project_config_paths(source, ()):
+        relative = config.relative_to(source)
+        if config.name == "uv.lock" or any(
+            part in OVERLAY_EXCLUDED_PARTS for part in relative.parts
+        ):
+            continue
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(config, destination)
+    _mirror_project_entries(source, target)
+
+
+def _mirror_project_entries(source: Path, target: Path) -> None:
     for child in source.iterdir():
-        if child.name in {".venv", "uv.lock"}:
+        if child.name == "uv.lock" or child.name in OVERLAY_EXCLUDED_PARTS:
             continue
         destination = target / child.name
-        if child.name in {"pyproject.toml", "uv.toml"}:
-            shutil.copyfile(child, destination)
-        else:
-            destination.symlink_to(child, target_is_directory=child.is_dir())
+        if destination.exists():
+            if child.is_dir():
+                _mirror_project_entries(child, destination)
+            continue
+        destination.symlink_to(child, target_is_directory=child.is_dir())
 
 
 def _project_uv_options(
@@ -2527,60 +2673,53 @@ def _is_uv_run_command(command: Sequence[str]) -> bool:
 
 
 def _project_declares_vyper(pyproject: Path | None) -> bool:
-    if pyproject is None:
-        return False
-    data = _project_data(pyproject)
-    if any(_dependency_name(spec) == "vyper" for spec in _project_dependency_specs(data)):
-        return True
-    return "vyper" in _poetry_dependency_names(data)
+    return pyproject is not None and bool(_project_vyper_specs(pyproject))
 
 
 def _project_dependency_specs(data: dict[str, object]) -> Iterator[str]:
     project = data.get("project")
     if isinstance(project, dict):
-        yield from _string_dependencies(project.get("dependencies"))
+        yield from _active_string_dependencies(project.get("dependencies"))
         optional = project.get("optional-dependencies")
         if isinstance(optional, dict):
-            for dependencies in optional.values():
-                yield from _string_dependencies(dependencies)
+            for extra, dependencies in optional.items():
+                yield from _active_string_dependencies(
+                    dependencies,
+                    extra=extra if isinstance(extra, str) else None,
+                )
     groups = data.get("dependency-groups")
     if isinstance(groups, dict):
         for dependencies in groups.values():
-            yield from _string_dependencies(dependencies)
+            yield from _active_string_dependencies(dependencies)
     tool = data.get("tool")
     uv = tool.get("uv") if isinstance(tool, dict) else None
     if isinstance(uv, dict):
-        yield from _string_dependencies(uv.get("dev-dependencies"))
+        yield from _active_string_dependencies(uv.get("dev-dependencies"))
 
 
-def _string_dependencies(value: object) -> Iterator[str]:
-    if isinstance(value, list):
-        yield from (dependency for dependency in value if isinstance(dependency, str))
-
-
-def _poetry_dependency_names(data: dict[str, object]) -> set[str]:
-    tool = data.get("tool")
-    poetry = tool.get("poetry") if isinstance(tool, dict) else None
-    if not isinstance(poetry, dict):
-        return set()
-    names = _normalized_dependency_keys(poetry.get("dependencies"))
-    groups = poetry.get("group")
-    if isinstance(groups, dict):
-        for group in groups.values():
-            if isinstance(group, dict):
-                names.update(_normalized_dependency_keys(group.get("dependencies")))
-    return names
-
-
-def _normalized_dependency_keys(value: object) -> set[str]:
-    if not isinstance(value, dict):
-        return set()
-    return {_normalized_dependency_name(name) for name in value if name != "python"}
+def _active_string_dependencies(
+    value: object,
+    *,
+    extra: str | None = None,
+) -> Iterator[str]:
+    if not isinstance(value, list):
+        return
+    for dependency in value:
+        if not isinstance(dependency, str):
+            continue
+        try:
+            requirement = Requirement(dependency)
+        except InvalidRequirement:
+            continue
+        if requirement.marker is None or requirement.marker.evaluate({"extra": extra or ""}):
+            yield dependency
 
 
 def _dependency_name(dependency: str) -> str | None:
-    match = re.match(r"\s*([A-Za-z0-9_.-]+)", dependency)
-    return _normalized_dependency_name(match.group(1)) if match else None
+    try:
+        return _normalized_dependency_name(Requirement(dependency).name)
+    except InvalidRequirement:
+        return None
 
 
 def _normalized_dependency_name(name: str) -> str:

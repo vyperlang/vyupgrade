@@ -479,7 +479,9 @@ dependencies = ["vyper==0.4.1"]
         )
 
 
-def test_declared_project_environment_keeps_managed_compiler_interpreter(tmp_path) -> None:
+def test_declared_project_environment_uses_project_interpreter_for_compiler_overlay(
+    tmp_path,
+) -> None:
     project = tmp_path / "project"
     contract = project / "contract.vy"
     project.mkdir()
@@ -488,6 +490,7 @@ def test_declared_project_environment_keeps_managed_compiler_interpreter(tmp_pat
         """[project]
 name = "compiler-overlay"
 version = "0.1.0"
+requires-python = ">=3.13"
 dependencies = ["requests==2.32.4"]
 """,
         encoding="utf-8",
@@ -507,10 +510,7 @@ dependencies = ["requests==2.32.4"]
         prepared,
         _context,
     ):
-        assert prepared[prepared.index("--python") : prepared.index("--python") + 2] == [
-            "--python",
-            "3.11",
-        ]
+        assert "--python" not in prepared
         assert prepared[prepared.index("--with") : prepared.index("--with") + 2] == [
             "--with",
             "vyper==0.3.10",

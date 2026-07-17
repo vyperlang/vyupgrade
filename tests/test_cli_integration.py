@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import signal
 import shutil
 import subprocess
 import zipfile
+import sys
 from pathlib import Path
 
 import pytest
@@ -1051,6 +1053,216 @@ def decimals() -> uint8:
     assert attestation["exit_status"] == {"code": 0, "signal": None}
     assert attestation["failure_origin"] is None
     assert attestation["compiler_output"] is None
+
+
+def test_real_uv_workspace_member_uses_root_lock_and_workspace_sources(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    app = workspace / "packages" / "app"
+    helper = workspace / "packages" / "helper"
+    helper_package = helper / "src" / "vyupgrade_pr33_helper"
+    app.mkdir(parents=True)
+    helper_package.mkdir(parents=True)
+    (workspace / "pyproject.toml").write_text(
+        """[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+vyupgrade-pr33-helper = { workspace = true }
+""",
+        encoding="utf-8",
+    )
+    (app / "pyproject.toml").write_text(
+        """[project]
+name = "workspace-app"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.1", "vyupgrade-pr33-helper"]
+""",
+        encoding="utf-8",
+    )
+    (helper / "pyproject.toml").write_text(
+        """[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vyupgrade-pr33-helper"
+version = "0.1.0"
+""",
+        encoding="utf-8",
+    )
+    (helper_package / "__init__.py").write_text("", encoding="utf-8")
+    contract = app / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\nvalue: public(uint256)\n", encoding="utf-8")
+    subprocess.run(
+        [find_uv_bin(), "lock", "--project", str(app)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.1",
+    )
+
+    assert result.status == "passed"
+    assert result.compiler_authority == "project-lock"
+    assert result.dependency_context is not None
+    assert result.dependency_context.project_root == str(workspace.resolve())
+    assert result.dependency_context.manifest is not None
+    assert result.dependency_context.manifest.path == str((workspace / "pyproject.toml").resolve())
+    assert result.dependency_context.lockfile is not None
+    assert result.dependency_context.lockfile.path == str((workspace / "uv.lock").resolve())
+    assert {source.path for source in result.dependency_context.declared_sources} == {
+        str(helper.resolve())
+    }
+    assert "vyupgrade-pr33-helper" in {
+        package.name.lower() for package in result.dependency_context.resolved_packages
+    }
+
+
+def test_real_compiler_overlay_uses_project_interpreter(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "python-constraint"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.3\nvalue: public(uint256)\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.3",
+    )
+
+    assert result.status == "passed"
+    assert result.compiler_authority == "source-exact"
+    assert result.resolved_compiler == "0.4.3"
+    assert result.dependency_context is not None
+    assert result.dependency_context.python_constraint == ">=3.13"
+
+
+@pytest.mark.parametrize(
+    "ignored_declaration",
+    [
+        """dependencies = ["vyper==0.4.1; sys_platform == 'win32'"]""",
+        """dependencies = []
+
+[tool.poetry.dependencies]
+python = ">=3.11"
+vyper = "0.4.1"
+""",
+    ],
+    ids=["inactive-marker", "poetry-only"],
+)
+def test_real_compiler_overlay_ignores_inactive_uv_and_poetry_declarations(
+    tmp_path: Path,
+    ignored_declaration: str,
+) -> None:
+    if "sys_platform" in ignored_declaration and sys.platform == "win32":
+        pytest.skip("the reviewer's marker is active on Windows")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        f"""[project]
+name = "inactive-authority"
+version = "0.1.0"
+requires-python = ">=3.11"
+{ignored_declaration}
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.3\nvalue: public(uint256)\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.3",
+    )
+
+    assert result.status == "passed"
+    assert result.compiler_authority == "source-exact"
+    assert result.resolved_compiler == "0.4.3"
+    assert {declaration.kind for declaration in result.compiler_declarations} == {"source-pragma"}
+
+
+def test_compiler_runner_writes_evidence_without_site_packages(tmp_path: Path) -> None:
+    site = tmp_path / "site"
+    package = site / "vyper"
+    cli = package / "cli"
+    dist_info = site / "vyper-0.4.3.dist-info"
+    bin_dir = tmp_path / "bin"
+    cli.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    bin_dir.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "exceptions.py").write_text(
+        "class VyperException(Exception):\n    pass\n",
+        encoding="utf-8",
+    )
+    (cli / "__init__.py").write_text("", encoding="utf-8")
+    (cli / "vyper_compile.py").write_text(
+        """def _parse_args(_arguments):
+    print("[]")
+    print("{}")
+    print("{}")
+    print('{"ast_type": "Module", "body": []}')
+""",
+        encoding="utf-8",
+    )
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: vyper\nVersion: 0.4.3\n",
+        encoding="utf-8",
+    )
+    (dist_info / "RECORD").write_text("vyper-0.4.3.dist-info/METADATA,,\n", encoding="utf-8")
+    executable = bin_dir / "vyper"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    result_path = tmp_path / "result.json"
+    runner = Path(__file__).parents[1] / "src" / "vyupgrade" / "compiler_runner.py"
+    coherence = json.dumps({"declaration": "0.4.3", "versions": ["0.4.3"]})
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            str(runner),
+            str(result_path),
+            "5",
+            "managed",
+            coherence,
+            "vyper",
+            "-f",
+            "abi,method_identifiers,layout,ast",
+            "contract.vy",
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "PYTHONPATH": str(site),
+        },
+    )
+
+    assert process.returncode == 0, process.stderr
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["state"] == "complete"
+    assert payload["compiler_started"] is True
+    assert payload["failure_origin"] is None
+    assert payload["resolved_compiler"] == "0.4.3"
 
 
 def test_real_ranged_pragma_prefers_declared_project_compiler(tmp_path: Path) -> None:
