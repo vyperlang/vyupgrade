@@ -2221,9 +2221,11 @@ def _project_environment_command(
         return [*environment, *command]
 
     command_index = _uv_run_command_index(command)
+    project_declares_vyper = _project_declares_vyper(pyproject)
     options = _project_uv_options(
         command[2:command_index],
-        remove_vyper=project_compiler and _project_declares_vyper(pyproject),
+        remove_vyper=project_compiler and project_declares_vyper,
+        remove_python=not project_compiler or project_declares_vyper,
     )
     return [*environment, *options, *command[command_index:]]
 
@@ -2239,7 +2241,9 @@ def _mirror_project_root(source: Path, target: Path) -> None:
             destination.symlink_to(child, target_is_directory=child.is_dir())
 
 
-def _project_uv_options(options: Sequence[str], *, remove_vyper: bool) -> list[str]:
+def _project_uv_options(
+    options: Sequence[str], *, remove_vyper: bool, remove_python: bool
+) -> list[str]:
     kept: list[str] = []
     index = 0
     while index < len(options):
@@ -2247,7 +2251,7 @@ def _project_uv_options(options: Sequence[str], *, remove_vyper: bool) -> list[s
         if option == "--no-project":
             index += 1
             continue
-        if remove_vyper and option == "--python":
+        if remove_python and option == "--python":
             index += 2
             continue
         if (
