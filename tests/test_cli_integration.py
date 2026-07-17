@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import signal
 import shutil
 import subprocess
 import zipfile
@@ -1279,6 +1280,85 @@ time.sleep(5)
     assert result.resolved_compiler == "0.4.1"
     assert result.compiler_started is True
     assert result.failure_origin == "timeout"
+
+
+def test_real_signaled_compiler_is_compiler_internal_origin(tmp_path: Path) -> None:
+    executable = _write_test_compiler(
+        tmp_path,
+        """import os
+import signal
+
+os.kill(os.getpid(), signal.SIGTERM)
+""",
+    )
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3", source_vyper=str(executable)),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is True
+    assert result.failure_origin == "compiler-internal"
+    assert result.completion_status == "signaled"
+    assert result.exit_status.code == -signal.SIGTERM
+    assert result.exit_status.signal == signal.SIGTERM
+
+
+def test_real_source_nonrejection_has_one_attested_attempt(tmp_path: Path) -> None:
+    attempt_log = tmp_path / "attempts.log"
+    executable = _write_test_compiler(
+        tmp_path,
+        f"""with open({str(attempt_log)!r}, "a", encoding="utf-8") as log:
+    log.write("compile\\n")
+print("ValueError: Unsupported format type 'ast'", file=sys.stderr)
+raise SystemExit(7)
+""",
+    )
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    assert (
+        main(
+            [
+                str(contract),
+                "--target-version",
+                "0.4.3",
+                "--source-vyper",
+                str(executable),
+                "--report-json",
+                str(report),
+            ]
+        )
+        != 0
+    )
+
+    assert attempt_log.read_text(encoding="utf-8").splitlines() == ["compile"]
+    attestation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"][
+        "source_attestation"
+    ]
+    source_identity = {
+        "path": str(contract.resolve()),
+        "sha256": hashlib.sha256(contract.read_bytes()).hexdigest(),
+    }
+    assert attestation["failure_origin"] == "adapter"
+    assert attestation["completion_status"] == "completed"
+    assert attestation["exit_status"] == {"code": 7, "signal": None}
+    assert attestation["validated_source_set"] == [source_identity]
+    assert attestation["attempt_sequence"] == [
+        {
+            "sequence": 1,
+            "source": source_identity,
+            "compiler_started": True,
+            "completion_status": "completed",
+            "exit_status": {"code": 7, "signal": None},
+            "failure_origin": "adapter",
+        }
+    ]
 
 
 def test_real_invalid_compiler_output_is_adapter_origin(tmp_path: Path) -> None:

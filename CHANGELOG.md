@@ -2,10 +2,14 @@
 
 ## Unreleased
 
-- Made source validation use the complete declared project environment and
-  attest compiler resolution, dependency context, process start, typed failure
-  origin, and compiler-only output in JSON report schema v3. Removed
-  import-name dependency guessing and retry behavior.
+- Made source validation use the nearest declared project environment and
+  removed source-validation import guessing and retry behavior.
+- Replaced JSON report schema v3 with v4, which records producer identity and
+  distinct source and target attestations: the declared snapshot and compiler
+  declarations, compiler authority and executable/artifact identity, manifest,
+  lock, resolved packages and sources, process completion and exit status,
+  validated sources, exact compile attempt, typed failure origin, and compiler
+  output on failure.
 
 ## 0.6.0 - 2026-07-16
 

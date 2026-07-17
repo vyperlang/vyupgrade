@@ -133,13 +133,16 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
-JSON reports include a top-level `schema_version`. Version `3` adds per-file
-source-validation evidence: `declared_spec`, `resolved_compiler`,
-`dependency_context`, `compiler_started`, `failure_origin`, and
-`compiler_output`. Version `2` added a per-file `role` and a top-level `closure`
-object. Consumers should treat a missing version as the legacy unversioned
-format and require a new schema version before relying on renamed, removed, or
-type-changed fields.
+JSON reports include a top-level `schema_version`. Version `4` provides producer
+identity plus separate source and target validation attestations. Each
+attestation records the declared source snapshot and compiler declarations,
+compiler authority and identity, dependency context, process completion and
+exit status, validated sources, the exact compile attempt, typed failure origin,
+and compiler output when validation fails. Version `2` added a per-file `role`
+and a top-level `closure` object; version `3` first introduced source-validation
+evidence and is superseded by version `4`. Consumers should treat a missing
+version as the legacy unversioned format and require a new schema version before
+relying on renamed, removed, or type-changed fields.
 
 ### Configuration
 
