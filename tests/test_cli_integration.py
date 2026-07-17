@@ -690,7 +690,9 @@ def test_real_compiler_include_dependencies_upgrades_closure(
     dependency = search_path / "depkg" / "mod.vy"
     dependency.parent.mkdir(parents=True)
     project_root.mkdir()
-    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname='project'\nversion='0.1.0'\n"
+    )
     (project_root / "depkg").symlink_to(dependency.parent, target_is_directory=True)
     project_source = (
         "# @version 0.3.10\n"
@@ -741,7 +743,9 @@ def test_real_compiler_closure_output_tree_compiles_standalone(
     dependency = search_path / "depkg" / "mod.vy"
     dependency.parent.mkdir(parents=True)
     project_root.mkdir()
-    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname='project'\nversion='0.1.0'\n"
+    )
     (project_root / "depkg").symlink_to(
         dependency.parent, target_is_directory=True
     )
@@ -799,7 +803,9 @@ def test_real_compiler_closure_archive_round_trips(tmp_path: Path) -> None:
     dependency = search_path / "depkg" / "mod.vy"
     dependency.parent.mkdir(parents=True)
     project_root.mkdir()
-    (project_root / "pyproject.toml").write_text("[project]\nname='project'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname='project'\nversion='0.1.0'\n"
+    )
     (project_root / "depkg").symlink_to(
         dependency.parent, target_is_directory=True
     )
@@ -907,3 +913,305 @@ def test_real_compiler_archive_floor_0_4_0(tmp_path: Path, capsys) -> None:
     assert below_floor_code == 4
     assert "requires >= 0.4.0" in capsys.readouterr().err
     assert contract.read_text(encoding="utf-8") == contract_source
+
+
+def test_real_twocrypto_source_reports_declared_environment(tmp_path: Path) -> None:
+    project = tmp_path / "twocrypto-ng"
+    contract = project / "contracts" / "main" / "lp_token.vy"
+    contract.parent.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "twocrypto-ng"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "vyper==0.4.1",
+    "snekmate==0.1.1",
+]
+""",
+        encoding="utf-8",
+    )
+    contract.write_text(
+        """# pragma version 0.4.1
+
+from ethereum.ercs import IERC20
+from ethereum.ercs import IERC20Detailed
+
+implements: IERC20
+implements: IERC20Detailed
+
+from snekmate.auth import ownable
+initializes: ownable
+
+from snekmate.tokens import erc20
+initializes: erc20[ownable := ownable]
+exports: (
+    erc20.transfer,
+    erc20.transferFrom,
+    erc20.approve,
+    erc20.balanceOf,
+    erc20.allowance,
+    erc20.totalSupply,
+)
+
+DECIMALS: constant(uint8) = 18
+symbol: public(String[32])
+name: public(String[64])
+
+@deploy
+def __init__(name: String[64], symbol: String[32]):
+    ownable.__init__()
+    erc20.__init__("", "", DECIMALS, "", "")
+    self.name = name
+    self.symbol = symbol
+
+@view
+@external
+def decimals() -> uint8:
+    return DECIMALS
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "twocrypto-report.json"
+
+    assert (
+        main(
+            [
+                "--target-version",
+                "0.4.1",
+                "--report-json",
+                str(report),
+                str(contract),
+            ]
+        )
+        == 0
+    )
+
+    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
+    assert validation["declared_spec"] == "0.4.1"
+    assert validation["resolved_compiler"] == "0.4.1"
+    assert validation["dependency_context"] == {
+        "mode": "project",
+        "project_root": str(project.resolve()),
+        "manifest": str((project / "pyproject.toml").resolve()),
+        "lockfile": None,
+    }
+    assert validation["compiler_started"] is True
+    assert validation["failure_origin"] is None
+    assert validation["compiler_output"] is None
+
+
+def test_real_ranged_pragma_prefers_declared_project_compiler(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "range-pin"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.1"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text(
+        """# pragma version >=0.4.0
+
+value: public(uint256)
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "range-report.json"
+
+    assert (
+        main(
+            [
+                "--target-version",
+                "0.4.3",
+                "--report-json",
+                str(report),
+                str(contract),
+            ]
+        )
+        == 0
+    )
+
+    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
+    assert validation["declared_spec"] == ">=0.4.0"
+    assert validation["resolved_compiler"] == "0.4.1"
+    assert validation["source_compiler"] == "0.4.1"
+    assert validation["compiler_started"] is True
+    assert validation["failure_origin"] is None
+
+
+def test_real_declared_dependency_rejection_is_compiler_origin(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    dependency = project / "dependency"
+    package = dependency / "declared_dependency"
+    package.mkdir(parents=True)
+    (dependency / "pyproject.toml").write_text(
+        """[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "declared-dependency"
+version = "0.1.0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["declared_dependency"]
+""",
+        encoding="utf-8",
+    )
+    (package / "broken.vy").write_text(
+        """# pragma version 0.4.1
+VALUE: constant(uint256) = "not a uint"
+""",
+        encoding="utf-8",
+    )
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "dependency-rejection"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.1", "declared-dependency"]
+
+[tool.uv.sources]
+declared-dependency = { path = "dependency" }
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text(
+        """# pragma version 0.4.1
+from declared_dependency import broken
+""",
+        encoding="utf-8",
+    )
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.resolved_compiler == "0.4.1"
+    assert result.compiler_started is True
+    assert result.failure_origin == "compiler"
+    assert result.compiler_output is not None
+    assert "declared_dependency" in result.compiler_output.stderr
+
+
+def test_real_uv_resolution_failure_is_environment_origin(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "broken-environment"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.1", "missing-local-dependency"]
+
+[tool.uv.sources]
+missing-local-dependency = { path = "does-not-exist" }
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is False
+    assert result.failure_origin == "environment"
+    assert result.compiler_output is None
+
+
+def test_real_missing_compiler_is_launch_origin(tmp_path: Path) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(
+            paths=(contract,),
+            target_version="0.4.3",
+            source_vyper=str(tmp_path / "missing-vyper"),
+        ),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is False
+    assert result.failure_origin == "launch"
+    assert result.compiler_output is None
+
+
+def test_real_compiler_timeout_is_timeout_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vyupgrade import compiler
+
+    executable = _write_test_compiler(
+        tmp_path,
+        """import time
+time.sleep(5)
+""",
+    )
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+    monkeypatch.setattr(compiler, "COMPILE_TIMEOUT_SECONDS", 0.05)
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3", source_vyper=str(executable)),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.resolved_compiler == "0.4.1"
+    assert result.compiler_started is True
+    assert result.failure_origin == "timeout"
+
+
+def test_real_invalid_compiler_output_is_adapter_origin(tmp_path: Path) -> None:
+    executable = _write_test_compiler(tmp_path, 'print("not-json")\n')
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3", source_vyper=str(executable)),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.resolved_compiler == "0.4.1"
+    assert result.compiler_started is True
+    assert result.failure_origin == "adapter"
+    assert result.compiler_output is not None
+    assert result.compiler_output.stdout == "not-json\n"
+
+
+def _write_test_compiler(tmp_path: Path, compile_body: str) -> Path:
+    executable = tmp_path / "test-vyper"
+    executable.write_text(
+        f"""#!/usr/bin/env python3
+import sys
+
+if "--version" in sys.argv:
+    print("0.4.1")
+    raise SystemExit
+
+{compile_body}
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable

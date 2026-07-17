@@ -1677,7 +1677,7 @@ def test_overlay_layout_conflict_exits_4(
     assert str(second.resolve()) in stderr
 
 
-def test_report_json_schema_v2(tmp_path: Path, passing_compiler) -> None:
+def test_report_json_schema_v3(tmp_path: Path, passing_compiler) -> None:
     project, dependency, search_path, json_dependency = (
         _write_dependency_cli_fixture(tmp_path, include_json=True)
     )
@@ -1709,10 +1709,18 @@ def test_report_json_schema_v2(tmp_path: Path, passing_compiler) -> None:
     assert closure_code == 0
     project_data = json.loads(project_report.read_text())
     closure_data = json.loads(closure_report.read_text())
-    assert project_data["schema_version"] == 2
+    assert project_data["schema_version"] == 3
     assert project_data["closure"] is None
     assert all(file["role"] == "project" for file in project_data["files"])
-    assert closure_data["schema_version"] == 2
+    assert {
+        "declared_spec",
+        "resolved_compiler",
+        "dependency_context",
+        "compiler_started",
+        "failure_origin",
+        "compiler_output",
+    } <= project_data["files"][0]["validation"].keys()
+    assert closure_data["schema_version"] == 3
     assert closure_data["closure"] == {
         "requested": True,
         "dependencies": sorted(

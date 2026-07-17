@@ -129,7 +129,9 @@ def prepare_migrations(
         source_version = (
             attempt.rule_version if attempt is not None else request.source_version
         )
-        source_compiler = attempt.compiler_label if attempt is not None else None
+        source_compiler = source_compile.resolved_compiler or (
+            attempt.compiler_label if attempt is not None else None
+        )
         source_ast = (
             source_compile.artifacts.get("ast") if source_compile.artifacts else None
         )
@@ -173,6 +175,12 @@ def prepare_migrations(
             source_error=(
                 source_compile.stderr if source_compile.status == "failed" else None
             ),
+            declared_spec=request.source_version,
+            resolved_compiler=source_compile.resolved_compiler,
+            dependency_context=source_compile.dependency_context,
+            compiler_started=source_compile.compiler_started,
+            failure_origin=source_compile.failure_origin,
+            compiler_output=source_compile.compiler_output,
         )
         if source_compile.status != "skipped":
             report.source_unavailable_artifacts = unavailable_validation_artifacts(

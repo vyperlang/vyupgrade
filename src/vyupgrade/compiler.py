@@ -6,17 +6,19 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from functools import cache
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from uv import find_uv_bin
 
-from .models import Config
+from .models import CompilerOutput, Config, DependencyContext, FailureOrigin
 from .source import code_mask
 from .storage_layout import compare_storage_layouts, parse_storage_layout
 from .versions import (
@@ -33,9 +35,6 @@ SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
 TARGET_FORMATS = (*FORMATS, "ast")
 COMPILE_TIMEOUT_SECONDS = 120
 ARCHIVE_TARGET_FLOOR = "0.4.0"
-COMMON_IMPORT_DEPENDENCIES = {
-    "snekmate": "snekmate",
-}
 OVERLAY_EXCLUDED_PARTS = {
     ".git",
     ".hg",
@@ -57,6 +56,7 @@ VALIDATION_MODULE_ALIASES = {
     "create2": "create2_address",
 }
 
+
 class OverlayLayoutConflictError(ValueError):
     """Two closure members with different content map to one overlay path."""
 
@@ -68,6 +68,24 @@ class CompileResult:
     stderr: str | None = None
     command: list[str] | None = None
     unavailable_formats: tuple[str, ...] = ()
+    resolved_compiler: str | None = None
+    dependency_context: DependencyContext | None = None
+    compiler_started: bool = False
+    failure_origin: FailureOrigin | None = None
+    compiler_output: CompilerOutput | None = None
+
+
+@dataclass(frozen=True)
+class _CompilerProcess:
+    command: list[str]
+    context: DependencyContext
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    resolved_compiler: str | None = None
+    compiler_started: bool = False
+    failure_origin: FailureOrigin | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +94,7 @@ class TargetOverlay:
     paths: Mapping[Path, Path]
     source_roots: tuple[Path, ...]
     search_paths: tuple[Path, ...]
+
 
 @dataclass(frozen=True)
 class ImportClosure:
@@ -103,11 +122,7 @@ def unavailable_validation_artifacts(result: CompileResult) -> list[str]:
         "method_identifiers": _valid_method_identifiers_artifact,
         "layout": _valid_layout_artifact,
     }
-    return [
-        name
-        for name, validator in validators.items()
-        if not validator(artifacts.get(name))
-    ]
+    return [name for name, validator in validators.items() if not validator(artifacts.get(name))]
 
 
 def _valid_abi_artifact(value: object) -> bool:
@@ -171,6 +186,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         (),
         suppress_warnings,
         allow_unsupported_formats=True,
+        project_compiler=True,
     )
     if _should_retry_source_with_final_newline(path, result):
         return _compile_source_file_with_final_newline(
@@ -214,6 +230,7 @@ def _compile_source_file_with_final_newline(
             (),
             suppress_warnings,
             allow_unsupported_formats=True,
+            project_compiler=True,
         )
     finally:
         with suppress(OSError):
@@ -257,6 +274,7 @@ def compile_target_source(
                     compile_config,
                     (),
                     suppress_warnings,
+                    environment_path=path,
                 )
             return _run_compile(
                 command,
@@ -264,6 +282,7 @@ def compile_target_source(
                 compile_config,
                 extra_paths=(),
                 suppress_warnings=suppress_warnings,
+                environment_path=path,
             )
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
@@ -277,6 +296,7 @@ def compile_target_source(
             compile_config,
             (path.parent,),
             suppress_warnings,
+            environment_path=path,
         )
     try:
         tmp = tempfile.NamedTemporaryFile(
@@ -305,6 +325,7 @@ def compile_target_source(
             compile_config,
             extra_paths=(path.parent,),
             suppress_warnings=suppress_warnings,
+            environment_path=path,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -317,6 +338,8 @@ def _compile_target_interface(
     config: Config,
     extra_paths: tuple[Path, ...],
     suppress_warnings: bool,
+    *,
+    environment_path: Path,
 ) -> CompileResult:
     try:
         interface_file = tempfile.NamedTemporaryFile(
@@ -350,13 +373,13 @@ def _compile_target_interface(
                 f"#pragma version {config.target_version}\n"
                 f"import {interface_path.stem} as InterfaceUnderTest\n"
             )
-        interface_command = _with_project_import_dependencies(command, interface_path)
         return _run_compile(
-            interface_command,
+            command,
             harness_path,
             config,
             extra_paths=tuple(dict.fromkeys((path.parent, *extra_paths))),
             suppress_warnings=suppress_warnings,
+            environment_path=environment_path,
         )
     except OSError as exc:
         return CompileResult(
@@ -387,15 +410,11 @@ def compile_target_archive(
     compile_config = _target_compile_config(source, config)
     compile_config = replace(
         compile_config,
-        compiler_search_paths=_overlay_search_paths(
-            overlay, compile_config.compiler_search_paths
-        ),
+        compiler_search_paths=_overlay_search_paths(overlay, compile_config.compiler_search_paths),
     )
-    tmp_out = output.with_name(
-        f".{output.name}.vyupgrade-{os.getpid()}-{uuid4().hex}"
-    )
+    tmp_out = output.with_name(f".{output.name}.vyupgrade-{os.getpid()}-{uuid4().hex}")
     full = [
-        *_with_project_import_dependencies(command, staged),
+        *command,
         "-f",
         "archive",
         "-o",
@@ -409,38 +428,36 @@ def compile_target_archive(
     full.append(str(staged.relative_to(overlay.root)))
 
     try:
-        try:
-            proc = subprocess.run(
-                full,
-                cwd=overlay.root,
-                capture_output=True,
-                text=True,
-                timeout=COMPILE_TIMEOUT_SECONDS,
+        process = _run_compiler_process(
+            full,
+            path,
+            project_compiler=False,
+            cwd=overlay.root,
+        )
+        if process.returncode is None:
+            return _failed_compile_result(
+                process,
+                process.error or "compiler process did not return a result",
             )
-        except subprocess.TimeoutExpired:
-            return CompileResult(
-                "failed",
-                stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
-                command=full,
-            )
-        if proc.returncode != 0:
-            return CompileResult(
-                "failed",
-                stderr=proc.stderr.strip() or proc.stdout.strip(),
-                command=full,
+        if process.returncode != 0:
+            return _failed_compile_result(
+                process,
+                process.stderr.strip() or process.stdout.strip(),
             )
         if not tmp_out.is_file():
-            return CompileResult(
-                "failed",
-                stderr="target compiler did not produce archive output",
-                command=full,
+            return _failed_compile_result(
+                replace(process, failure_origin="adapter"),
+                "target compiler did not produce archive output",
             )
         os.replace(tmp_out, output)
         return CompileResult(
             "passed",
             artifacts={"archive": str(output)},
-            stderr=proc.stderr.strip() or None,
-            command=full,
+            stderr=process.stderr.strip() or None,
+            command=process.command,
+            resolved_compiler=process.resolved_compiler,
+            dependency_context=process.context,
+            compiler_started=process.compiler_started,
         )
     finally:
         tmp_out.unlink(missing_ok=True)
@@ -458,9 +475,7 @@ def resolve_import_closure(
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
         raise ValueError("resolve_import_closure requires at least one source")
-    source_roots, import_roots, common_root = _overlay_roots(
-        resolved_sources, search_paths
-    )
+    source_roots, import_roots, common_root = _overlay_roots(resolved_sources, search_paths)
     dependencies = [
         path
         for path, _source, _import_root, is_override in _walk_validation_closure(
@@ -537,9 +552,7 @@ def materialize_target_overlay(
                 None,
             )
             overlay_search_paths.update(copied_search_paths)
-        overlay_search_paths.update(
-            _overlay_configured_search_paths(search_paths, common, root)
-        )
+        overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
         for path, source in resolved_sources.items():
             target = destination(path)
             if target is None:
@@ -549,9 +562,7 @@ def materialize_target_overlay(
             paths[path] = target
             overlay_search_paths.add(target.parent)
     if include_dependencies:
-        configured_search_paths = tuple(
-            search_path.resolve() for search_path in search_paths
-        )
+        configured_search_paths = tuple(search_path.resolve() for search_path in search_paths)
         for source_root in roots:
             if source_root not in configured_search_paths:
                 _copy_project_configs(
@@ -619,9 +630,7 @@ def _overlay_roots(
 ) -> tuple[tuple[Path, ...], tuple[Path, ...], Path]:
     roots = tuple(
         dict.fromkeys(
-            root
-            for path in resolved_sources
-            for root in _validation_roots(path, search_paths)
+            root for path in resolved_sources for root in _validation_roots(path, search_paths)
         )
     )
     import_roots = tuple(
@@ -661,6 +670,7 @@ def _claim_overlay_destination(
     raise OverlayLayoutConflictError(
         f"overlay destination {target} maps both {existing_source} and {source_path}"
     )
+
 
 def _overlay_configured_search_paths(
     search_paths: tuple[Path, ...], common_root: Path, target_root: Path
@@ -729,9 +739,7 @@ def _walk_validation_closure(
     override_paths = set(overrides)
     incoming_overrides: set[Path] = set()
     for path, source in overrides.items():
-        import_source = _standard_json_package_dependency_source(
-            path, source, common_root
-        )
+        import_source = _standard_json_package_dependency_source(path, source, common_root)
         for source_root in _containing_import_roots(path, source_roots):
             relative_path = path.relative_to(source_root)
             incoming_overrides.update(
@@ -782,13 +790,9 @@ def _walk_validation_closure(
             is_override,
         ) = queue.pop(0)
         existing_relative = layouts.get(current)
-        if (
-            existing_relative is not None
-            and existing_relative != current_relative
-        ):
+        if existing_relative is not None and existing_relative != current_relative:
             raise OverlayLayoutConflictError(
-                f"closure member {current} maps to both "
-                f"{existing_relative} and {current_relative}"
+                f"closure member {current} maps to both {existing_relative} and {current_relative}"
             )
         layouts[current] = current_relative
         if current in processed:
@@ -830,9 +834,7 @@ def _walk_validation_closure(
             )
 
 
-def _containing_import_roots(
-    path: Path, import_roots: tuple[Path, ...]
-) -> tuple[Path, ...]:
+def _containing_import_roots(path: Path, import_roots: tuple[Path, ...]) -> tuple[Path, ...]:
     roots = tuple(root for root in import_roots if _is_relative_to(path, root))
     assert roots, f"closure member is outside import roots: {path}"
     return tuple(sorted(roots, key=lambda root: len(root.parts)))
@@ -925,23 +927,17 @@ def _copy_validation_source(
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if source_path.suffix == ".json":
-        if placed is None or _claim_overlay_destination(
-            placed, target, source_path, source
-        ):
+        if placed is None or _claim_overlay_destination(placed, target, source_path, source):
             target.write_text(source, encoding="utf-8")
         search_paths.add(target.parent)
         return
-    source = _standard_json_package_dependency_source(
-        source_path, source, common_root
-    )
+    source = _standard_json_package_dependency_source(source_path, source, common_root)
     content = _target_validation_source(
         source,
         target_version,
         is_interface=source_path.suffix == ".vyi",
     )
-    if placed is None or _claim_overlay_destination(
-        placed, target, source_path, content
-    ):
+    if placed is None or _claim_overlay_destination(placed, target, source_path, content):
         target.write_text(content, encoding="utf-8")
     search_paths.add(target.parent)
     if source_path.name == "create2_address.vy":
@@ -951,13 +947,13 @@ def _copy_validation_source(
             target_version,
             is_interface=False,
         )
-        if placed is None or _claim_overlay_destination(
-            placed, alias, source_path, alias_content
-        ):
+        if placed is None or _claim_overlay_destination(placed, alias, source_path, alias_content):
             alias.write_text(alias_content, encoding="utf-8")
 
 
-def _standard_json_package_dependency_source(source_path: Path, source: str, common_root: Path) -> str:
+def _standard_json_package_dependency_source(
+    source_path: Path, source: str, common_root: Path
+) -> str:
     source = _local_sibling_import_source(source_path, source)
     if source_path.parent.name != "src":
         return source
@@ -1069,11 +1065,7 @@ def _resolve_validation_import(
     candidates: list[tuple[Path, Path, Path]] = []
     for base, import_root, relative_base in bases:
         module_path = base.joinpath(*module_parts) if module_parts else base
-        relative_module = (
-            relative_base.joinpath(*module_parts)
-            if module_parts
-            else relative_base
-        )
+        relative_module = relative_base.joinpath(*module_parts) if module_parts else relative_base
         if names:
             for name in names:
                 candidates.extend(
@@ -1084,15 +1076,11 @@ def _resolve_validation_import(
                     )
                 )
             candidates.extend(
-                _validation_module_candidate_layouts(
-                    module_path, relative_module, import_root
-                )
+                _validation_module_candidate_layouts(module_path, relative_module, import_root)
             )
         else:
             candidates.extend(
-                _validation_module_candidate_layouts(
-                    module_path, relative_module, import_root
-                )
+                _validation_module_candidate_layouts(module_path, relative_module, import_root)
             )
     resolved: dict[Path, tuple[Path, Path]] = {}
     roots = tuple(root.resolve() for root in (source_root, *import_roots))
@@ -1104,9 +1092,7 @@ def _resolve_validation_import(
         except (OSError, ValueError):
             continue
         if resolved_candidate.exists() and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
-            resolved.setdefault(
-                resolved_candidate, (import_root, candidate_relative)
-            )
+            resolved.setdefault(resolved_candidate, (import_root, candidate_relative))
     return tuple(
         _ResolvedValidationImport(path, import_root, candidate_relative)
         for path, (import_root, candidate_relative) in resolved.items()
@@ -1131,11 +1117,8 @@ def _validation_import_bases(
         for base, root, relative_base in bases:
             unique_bases.setdefault(base, (root, relative_base))
         return tuple(
-            (base, root, relative_base)
-            for base, (root, relative_base) in unique_bases.items()
-        ), tuple(
-            part for part in module.split(".") if part
-        )
+            (base, root, relative_base) for base, (root, relative_base) in unique_bases.items()
+        ), tuple(part for part in module.split(".") if part)
     level = len(module) - len(module.lstrip("."))
     base = path.parent
     relative_base = relative_parent
@@ -1160,7 +1143,11 @@ def _validation_module_candidates(path: Path) -> tuple[Path, ...]:
     alias = VALIDATION_MODULE_ALIASES.get(path.name)
     if alias is not None:
         paths.append(path.with_name(alias))
-    return tuple(candidate.with_suffix(suffix) for candidate in paths for suffix in sorted(VALIDATION_SOURCE_SUFFIXES))
+    return tuple(
+        candidate.with_suffix(suffix)
+        for candidate in paths
+        for suffix in sorted(VALIDATION_SOURCE_SUFFIXES)
+    )
 
 
 def _validation_module_candidate_layouts(
@@ -1170,9 +1157,7 @@ def _validation_module_candidate_layouts(
         (
             candidate,
             import_root,
-            relative_path.with_name(candidate.name)
-            if relative_path.name
-            else Path(candidate.name),
+            relative_path.with_name(candidate.name) if relative_path.name else Path(candidate.name),
         )
         for candidate in _validation_module_candidates(path)
     )
@@ -1182,8 +1167,10 @@ def _project_config_paths(
     source_root: Path,
     excluded_roots: tuple[Path, ...],
 ) -> Iterator[Path]:
+    names = ("pyproject.toml", "uv.lock", "uv.toml")
     if not excluded_roots:
-        yield from source_root.rglob("pyproject.toml")
+        for name in names:
+            yield from source_root.rglob(name)
         return
     for directory, directories, files in os.walk(source_root):
         current = Path(directory)
@@ -1195,8 +1182,9 @@ def _project_config_paths(
                 for excluded_root in excluded_roots
             )
         ]
-        if "pyproject.toml" in files:
-            yield current / "pyproject.toml"
+        for name in names:
+            if name in files:
+                yield current / name
 
 
 def _copy_project_configs(
@@ -1206,29 +1194,25 @@ def _copy_project_configs(
     excluded_roots: tuple[Path, ...] = (),
 ) -> None:
     resolved_target = target_root.resolve()
-    for pyproject in _project_config_paths(source_root, excluded_roots):
-        resolved_pyproject = pyproject.resolve()
+    for config_path in _project_config_paths(source_root, excluded_roots):
+        resolved_config = config_path.resolve()
         if (
-            resolved_pyproject == resolved_target
-            or resolved_target in resolved_pyproject.parents
+            resolved_config == resolved_target
+            or resolved_target in resolved_config.parents
             or any(
-                _is_relative_to(resolved_pyproject, excluded_root)
-                for excluded_root in excluded_roots
+                _is_relative_to(resolved_config, excluded_root) for excluded_root in excluded_roots
             )
         ):
             continue
-        if any(
-            part in {".git", ".venv", "venv", "node_modules"}
-            for part in pyproject.parts
-        ):
+        if any(part in {".git", ".venv", "venv", "node_modules"} for part in config_path.parts):
             continue
         try:
-            relative = pyproject.relative_to(source_root)
+            relative = config_path.relative_to(source_root)
         except ValueError:
             continue
         target = target_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(pyproject, target)
+        shutil.copyfile(config_path, target)
 
 
 def compile_source_ast(path: Path, config: Config, source_version: str | None) -> CompileResult:
@@ -1247,6 +1231,7 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         (),
         suppress_warnings,
         allow_unsupported_formats=True,
+        project_compiler=True,
     )
 
 
@@ -1503,7 +1488,11 @@ def _strip_abi_metadata(value: object) -> object:
             for key, item in sorted(value.items())
             if key not in {"gas", "internalType", "unit"}
             and not (key == "name" and not _is_abi_entry(value))
-            and not (value.get("type") == "constructor" and key == "stateMutability" and item == "nonpayable")
+            and not (
+                value.get("type") == "constructor"
+                and key == "stateMutability"
+                and item == "nonpayable"
+            )
             and key != "constant"
             and key != "payable"
             and not (value.get("type") == "constructor" and key == "outputs")
@@ -1682,9 +1671,7 @@ def _mapping_diff_lines(
     )
     for key in sorted(source.keys() & target.keys()):
         if not (
-            equivalent(key, source[key], target[key])
-            if equivalent
-            else source[key] == target[key]
+            equivalent(key, source[key], target[key]) if equivalent else source[key] == target[key]
         ):
             lines.extend(changed(key, source[key], target[key]))
     return lines
@@ -1794,7 +1781,9 @@ def _target_compile_config(source: str, config: Config) -> Config:
 def _uses_decimal(source: str) -> bool:
     if re.search(r"\bdecimal\b", source):
         return True
-    return bool(re.search(r"^\s*(?:from\s+math\s+import\b|import\s+math(?:\s|,|$))", source, re.MULTILINE))
+    return bool(
+        re.search(r"^\s*(?:from\s+math\s+import\b|import\s+math(?:\s|,|$))", source, re.MULTILINE)
+    )
 
 
 def _run_compile(
@@ -1803,6 +1792,7 @@ def _run_compile(
     config: Config,
     extra_paths: tuple[Path, ...] = (),
     suppress_warnings: bool = False,
+    environment_path: Path | None = None,
 ) -> CompileResult:
     return _run_compile_with_formats(
         command,
@@ -1812,6 +1802,7 @@ def _run_compile(
         extra_paths,
         suppress_warnings,
         optional_formats=frozenset({"ast"}),
+        environment_path=environment_path,
     )
 
 
@@ -1826,45 +1817,54 @@ def _run_compile_with_formats(
     allow_unsupported_formats: bool = False,
     unavailable_formats: tuple[str, ...] = (),
     optional_formats: frozenset[str] = frozenset(),
+    project_compiler: bool = False,
+    environment_path: Path | None = None,
 ) -> CompileResult:
+    environment_path = environment_path or path
     full = [
-        *_with_project_import_dependencies(command, path),
+        *command,
         "-f",
         ",".join(formats),
         *_compiler_search_path_args(command, path, config, extra_paths),
     ]
     if config.enable_decimals:
         full.append("--enable-decimals")
-    if suppress_warnings:
+    if suppress_warnings and not (
+        project_compiler and _project_declares_vyper(_nearest_pyproject(environment_path.parent))
+    ):
         full.extend(["-W", "none"])
     full.append(str(path))
-    try:
-        proc = subprocess.run(full, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        return CompileResult(
-            "failed",
-            stderr=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
-            command=full,
+    process = _run_compiler_process(
+        full,
+        environment_path,
+        project_compiler=project_compiler,
+    )
+    if process.returncode is None:
+        return _failed_compile_result(
+            process,
+            process.error or "compiler process did not return a result",
+            unavailable_formats,
         )
-    if proc.returncode != 0:
-        stderr = proc.stderr.strip() or proc.stdout.strip()
+    if process.returncode != 0:
+        stderr = process.stderr.strip() or process.stdout.strip()
         unsupported = _unsupported_output_format(stderr, formats)
         if unsupported is not None:
             unavailable = tuple(dict.fromkeys((*unavailable_formats, unsupported)))
             if not allow_unsupported_formats and unsupported not in optional_formats:
-                return CompileResult(
-                    "failed",
-                    stderr=f"target compiler did not support required output format '{unsupported}': {stderr}",
-                    command=full,
-                    unavailable_formats=unavailable,
+                return _failed_compile_result(
+                    process,
+                    (
+                        "target compiler did not support required output format "
+                        f"'{unsupported}': {stderr}"
+                    ),
+                    unavailable,
                 )
             fallback_formats = tuple(name for name in formats if name != unsupported)
             if not fallback_formats:
-                return CompileResult(
-                    "failed",
-                    stderr="source compiler did not support any requested output formats",
-                    command=full,
-                    unavailable_formats=unavailable,
+                return _failed_compile_result(
+                    process,
+                    "source compiler did not support any requested output formats",
+                    unavailable,
                 )
             return _run_compile_with_formats(
                 command,
@@ -1876,6 +1876,8 @@ def _run_compile_with_formats(
                 allow_unsupported_formats=allow_unsupported_formats,
                 unavailable_formats=unavailable,
                 optional_formats=optional_formats,
+                project_compiler=project_compiler,
+                environment_path=environment_path,
             )
         span_error_format = _legacy_span_error_format(stderr, formats)
         if (
@@ -1885,16 +1887,13 @@ def _run_compile_with_formats(
         ):
             span_error_format = None
         if span_error_format is not None:
-            unavailable = tuple(
-                dict.fromkeys((*unavailable_formats, span_error_format))
-            )
+            unavailable = tuple(dict.fromkeys((*unavailable_formats, span_error_format)))
             fallback_formats = tuple(name for name in formats if name != span_error_format)
             if not fallback_formats:
-                return CompileResult(
-                    "failed",
-                    stderr="source compiler could not produce any requested output formats",
-                    command=full,
-                    unavailable_formats=unavailable,
+                return _failed_compile_result(
+                    process,
+                    "source compiler could not produce any requested output formats",
+                    unavailable,
                 )
             return _run_compile_with_formats(
                 command,
@@ -1906,43 +1905,50 @@ def _run_compile_with_formats(
                 allow_unsupported_formats=allow_unsupported_formats,
                 unavailable_formats=unavailable,
                 optional_formats=optional_formats,
+                project_compiler=project_compiler,
+                environment_path=environment_path,
             )
-        retry_command = _command_with_missing_module_dependency(command, path, stderr)
-        if retry_command is not None:
-            return _run_compile_with_formats(
-                retry_command,
-                path,
-                config,
-                formats,
-                extra_paths,
-                suppress_warnings,
-                allow_unsupported_formats=allow_unsupported_formats,
-                unavailable_formats=unavailable_formats,
-                optional_formats=optional_formats,
-            )
-        return CompileResult(
-            "failed",
-            stderr=proc.stderr.strip() or proc.stdout.strip(),
-            command=full,
-            unavailable_formats=unavailable_formats,
-        )
+        return _failed_compile_result(process, stderr, unavailable_formats)
     try:
-        artifacts = _parse_outputs(proc.stdout, formats)
+        artifacts = _parse_outputs(process.stdout, formats)
     except ValueError as exc:
-        return CompileResult(
-            "failed",
-            stderr=f"could not parse compiler output: {exc}",
-            command=full,
-            unavailable_formats=unavailable_formats,
+        return _failed_compile_result(
+            replace(process, failure_origin="adapter"),
+            f"could not parse compiler output: {exc}",
+            unavailable_formats,
         )
     return CompileResult(
         "degraded"
         if any(name not in optional_formats for name in unavailable_formats)
         else "passed",
         artifacts=artifacts,
-        stderr=proc.stderr.strip() or None,
-        command=full,
+        stderr=process.stderr.strip() or None,
+        command=process.command,
         unavailable_formats=unavailable_formats,
+        resolved_compiler=process.resolved_compiler,
+        dependency_context=process.context,
+        compiler_started=process.compiler_started,
+    )
+
+
+def _failed_compile_result(
+    process: _CompilerProcess,
+    error: str,
+    unavailable_formats: tuple[str, ...] = (),
+) -> CompileResult:
+    compiler_output = (
+        CompilerOutput(process.stdout, process.stderr) if process.compiler_started else None
+    )
+    return CompileResult(
+        "failed",
+        stderr=error,
+        command=process.command,
+        unavailable_formats=unavailable_formats,
+        resolved_compiler=process.resolved_compiler,
+        dependency_context=process.context,
+        compiler_started=process.compiler_started,
+        failure_origin=process.failure_origin or "adapter",
+        compiler_output=compiler_output,
     )
 
 
@@ -1964,11 +1970,7 @@ def _compiler_search_path_args(
         *extra_paths,
         path.parent,
     ]
-    return [
-        argument
-        for search_path in paths
-        for argument in ("-p", str(search_path))
-    ]
+    return [argument for search_path in paths for argument in ("-p", str(search_path))]
 
 
 def _unsupported_output_format(stderr: str, formats: tuple[str, ...]) -> str | None:
@@ -2004,52 +2006,267 @@ def _command_vyper_version(command: list[str]) -> str | None:
     return None
 
 
-def _with_project_import_dependencies(command: list[str], path: Path) -> list[str]:
-    if not _is_uv_run_command(command):
-        return command
-    packages = _project_import_packages(path)
-    if not packages:
-        return command
-    return _uv_command_with_packages(command, packages)
+def _run_compiler_process(
+    command: list[str],
+    path: Path,
+    *,
+    project_compiler: bool,
+    cwd: Path | None = None,
+) -> _CompilerProcess:
+    managed_compiler = _is_uv_run_command(command)
+    with _declared_project_environment(
+        command,
+        path,
+        project_compiler=project_compiler,
+    ) as (full, context):
+        return _run_compiler_adapter(
+            full,
+            context,
+            managed_compiler=managed_compiler,
+            cwd=cwd,
+        )
 
 
-def _command_with_missing_module_dependency(
-    command: list[str], path: Path, stderr: str
-) -> list[str] | None:
-    if not _is_uv_run_command(command):
-        return None
-    missing = _missing_module_name(stderr)
-    if missing is None:
-        return None
-    pyproject = _nearest_pyproject(path.parent)
-    dependencies = _pyproject_dependencies(pyproject) if pyproject is not None else {}
-    root = missing.split(".", 1)[0]
-    package = dependencies.get(root) or COMMON_IMPORT_DEPENDENCIES.get(root)
-    if package is None:
-        return None
-    retry_command = _uv_command_with_packages(command, (package,))
-    return retry_command if retry_command != command else None
-
-
-def _missing_module_name(stderr: str) -> str | None:
-    match = re.search(
-        r"\bModuleNotFound:\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)", stderr
+def _run_compiler_adapter(
+    command: list[str],
+    context: DependencyContext,
+    *,
+    managed_compiler: bool,
+    cwd: Path | None,
+) -> _CompilerProcess:
+    result_file = tempfile.NamedTemporaryFile(
+        prefix="vyupgrade-compiler-result-",
+        suffix=".json",
+        delete=False,
     )
-    return match.group(1) if match else None
+    result_path = Path(result_file.name)
+    result_file.close()
+    result_path.unlink()
+    runner = [
+        *_compiler_runner_prefix(command),
+        str(Path(__file__).with_name("compiler_runner.py")),
+        str(result_path),
+        str(COMPILE_TIMEOUT_SECONDS),
+        "managed" if managed_compiler else "explicit",
+        *_compiler_runner_command(command),
+    ]
+    try:
+        try:
+            process = subprocess.run(
+                runner,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=COMPILE_TIMEOUT_SECONDS + 30,
+            )
+        except subprocess.TimeoutExpired:
+            payload = _compiler_runner_result(result_path)
+            return _CompilerProcess(
+                command=command,
+                context=context,
+                resolved_compiler=_payload_string(payload, "resolved_compiler"),
+                compiler_started=payload is not None,
+                failure_origin="timeout",
+                error=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
+            )
+        except OSError as exc:
+            return _CompilerProcess(
+                command=command,
+                context=context,
+                failure_origin="environment" if _is_uv_run_command(command) else "launch",
+                error=f"compiler environment failed to start: {exc}",
+            )
+
+        payload = _compiler_runner_result(result_path)
+        if payload is None or payload.get("state") != "complete":
+            wrapper_error = process.stderr.strip() or process.stdout.strip()
+            return _CompilerProcess(
+                command=command,
+                context=context,
+                compiler_started=payload is not None,
+                failure_origin=(
+                    "adapter"
+                    if payload is not None or process.returncode == 0
+                    else "environment"
+                    if _is_uv_run_command(command)
+                    else "adapter"
+                ),
+                error=wrapper_error or "compiler adapter returned no result",
+            )
+        return _compiler_process_from_payload(command, context, payload)
+    finally:
+        result_path.unlink(missing_ok=True)
 
 
-def _uv_command_with_packages(command: list[str], packages: tuple[str, ...]) -> list[str]:
-    insert_at = _uv_run_command_index(command)
-    full = command[:insert_at]
-    for package in packages:
-        if _uv_command_has_package(command, package):
+def _compiler_runner_prefix(command: list[str]) -> list[str]:
+    if not _is_uv_run_command(command):
+        return [sys.executable]
+    return [*command[: _uv_run_command_index(command)], "python"]
+
+
+def _compiler_runner_command(command: list[str]) -> list[str]:
+    if not _is_uv_run_command(command):
+        return command
+    return command[_uv_run_command_index(command) :]
+
+
+def _compiler_runner_result(path: Path) -> dict[str, object] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _compiler_process_from_payload(
+    command: list[str],
+    context: DependencyContext,
+    payload: dict[str, object],
+) -> _CompilerProcess:
+    raw_origin = payload.get("failure_origin")
+    origin = (
+        cast(FailureOrigin, raw_origin)
+        if raw_origin in {"compiler", "environment", "launch", "timeout", "adapter"}
+        else None
+    )
+    raw_returncode = payload.get("returncode")
+    returncode = raw_returncode if type(raw_returncode) is int else None
+    return _CompilerProcess(
+        command=command,
+        context=context,
+        returncode=returncode,
+        stdout=_payload_string(payload, "stdout") or "",
+        stderr=_payload_string(payload, "stderr") or "",
+        resolved_compiler=_payload_string(payload, "resolved_compiler"),
+        compiler_started=payload.get("compiler_started") is True,
+        failure_origin=origin,
+        error=_payload_string(payload, "error"),
+    )
+
+
+def _payload_string(payload: dict[str, object] | None, key: str) -> str | None:
+    if payload is None:
+        return None
+    value = payload.get(key)
+    return value if isinstance(value, str) else None
+
+
+@contextmanager
+def _declared_project_environment(
+    command: list[str],
+    path: Path,
+    *,
+    project_compiler: bool,
+) -> Iterator[tuple[list[str], DependencyContext]]:
+    pyproject = _nearest_pyproject(path.parent)
+    if pyproject is None:
+        yield command, DependencyContext(mode="isolated")
+        return
+
+    root = pyproject.parent.resolve()
+    lockfile = root / "uv.lock"
+    context = DependencyContext(
+        mode="project",
+        project_root=str(root),
+        manifest=str(pyproject.resolve()),
+        lockfile=str(lockfile) if lockfile.is_file() else None,
+    )
+    if lockfile.is_file():
+        yield (
+            _project_environment_command(
+                command,
+                root,
+                pyproject,
+                project_compiler=project_compiler,
+                frozen=True,
+            ),
+            context,
+        )
+        return
+
+    with tempfile.TemporaryDirectory(prefix="vyupgrade-project-") as raw_directory:
+        temporary_root = Path(raw_directory)
+        _mirror_project_root(root, temporary_root)
+        yield (
+            _project_environment_command(
+                command,
+                temporary_root,
+                pyproject,
+                project_compiler=project_compiler,
+                frozen=False,
+            ),
+            context,
+        )
+
+
+def _project_environment_command(
+    command: list[str],
+    root: Path,
+    pyproject: Path,
+    *,
+    project_compiler: bool,
+    frozen: bool,
+) -> list[str]:
+    environment = [
+        _uv_bin(),
+        "run",
+        "--isolated",
+        "--project",
+        str(root),
+        *(("--frozen",) if frozen else ()),
+        "--all-extras",
+        "--all-groups",
+    ]
+    if not _is_uv_run_command(command):
+        return [*environment, *command]
+
+    command_index = _uv_run_command_index(command)
+    options = _project_uv_options(
+        command[2:command_index],
+        remove_vyper=project_compiler and _project_declares_vyper(pyproject),
+    )
+    return [*environment, *options, *command[command_index:]]
+
+
+def _mirror_project_root(source: Path, target: Path) -> None:
+    for child in source.iterdir():
+        if child.name in {".venv", "uv.lock"}:
             continue
-        full.extend(["--with", package])
-    full.extend(command[insert_at:])
-    return full
+        destination = target / child.name
+        if child.name in {"pyproject.toml", "uv.toml"}:
+            shutil.copyfile(child, destination)
+        else:
+            destination.symlink_to(child, target_is_directory=child.is_dir())
 
 
-def _uv_run_command_index(command: list[str]) -> int:
+def _project_uv_options(options: Sequence[str], *, remove_vyper: bool) -> list[str]:
+    kept: list[str] = []
+    index = 0
+    while index < len(options):
+        option = options[index]
+        if option == "--no-project":
+            index += 1
+            continue
+        if remove_vyper and option == "--python":
+            index += 2
+            continue
+        if (
+            remove_vyper
+            and option == "--with"
+            and index + 1 < len(options)
+            and options[index + 1].startswith("vyper==")
+        ):
+            index += 2
+            continue
+        kept.append(option)
+        index += 1
+        if option in {"--with", "--with-editable", "--with-requirements", "--env-file"}:
+            kept.append(options[index])
+            index += 1
+    return kept
+
+
+def _uv_run_command_index(command: Sequence[str]) -> int:
     index = 2
     options_with_value = {
         "--python",
@@ -2057,63 +2274,86 @@ def _uv_run_command_index(command: list[str]) -> int:
         "--with-editable",
         "--with-requirements",
         "--env-file",
+        "--project",
     }
     while index < len(command):
-        arg = command[index]
-        if arg == "--":
+        argument = command[index]
+        if argument == "--":
             return index + 1
-        if not arg.startswith("-"):
+        if not argument.startswith("-"):
             return index
         index += 1
-        if arg in options_with_value and index < len(command):
+        if argument in options_with_value and index < len(command):
             index += 1
     return len(command)
 
 
-def _uv_command_has_package(command: list[str], package: str) -> bool:
-    return any(
-        arg == "--with" and index + 1 < len(command) and command[index + 1] == package
-        for index, arg in enumerate(command)
-    )
-
-
-def _is_uv_run_command(command: list[str]) -> bool:
+def _is_uv_run_command(command: Sequence[str]) -> bool:
     return len(command) >= 3 and Path(command[0]).name == "uv" and command[1] == "run"
 
 
-def _project_import_packages(path: Path) -> tuple[str, ...]:
+def _project_declares_vyper(pyproject: Path | None) -> bool:
+    if pyproject is None:
+        return False
     try:
-        source = path.read_text(encoding="utf-8")
-    except OSError:
-        return ()
-    imports = _vyper_import_roots(source)
-    if not imports:
-        return ()
-    pyproject = _nearest_pyproject(path.parent)
-    dependencies = _pyproject_dependencies(pyproject) if pyproject is not None else {}
-    return tuple(
-        package
-        for name in imports
-        if (package := dependencies.get(name) or COMMON_IMPORT_DEPENDENCIES.get(name)) is not None
-    )
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    if any(_dependency_name(spec) == "vyper" for spec in _project_dependency_specs(data)):
+        return True
+    return "vyper" in _poetry_dependency_names(data)
 
 
-def _vyper_import_roots(source: str) -> tuple[str, ...]:
-    roots: set[str] = set()
-    for line in source.splitlines():
-        match = re.match(
-            r"\s*from\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s+import\b", line
-        )
-        if match is None:
-            match = re.match(
-                r"\s*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b", line
-            )
-        if match is None:
-            continue
-        root = match.group(1).split(".", 1)[0]
-        if root != "vyper":
-            roots.add(root)
-    return tuple(sorted(roots))
+def _project_dependency_specs(data: dict[str, object]) -> Iterator[str]:
+    project = data.get("project")
+    if isinstance(project, dict):
+        yield from _string_dependencies(project.get("dependencies"))
+        optional = project.get("optional-dependencies")
+        if isinstance(optional, dict):
+            for dependencies in optional.values():
+                yield from _string_dependencies(dependencies)
+    groups = data.get("dependency-groups")
+    if isinstance(groups, dict):
+        for dependencies in groups.values():
+            yield from _string_dependencies(dependencies)
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    if isinstance(uv, dict):
+        yield from _string_dependencies(uv.get("dev-dependencies"))
+
+
+def _string_dependencies(value: object) -> Iterator[str]:
+    if isinstance(value, list):
+        yield from (dependency for dependency in value if isinstance(dependency, str))
+
+
+def _poetry_dependency_names(data: dict[str, object]) -> set[str]:
+    tool = data.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    if not isinstance(poetry, dict):
+        return set()
+    names = _normalized_dependency_keys(poetry.get("dependencies"))
+    groups = poetry.get("group")
+    if isinstance(groups, dict):
+        for group in groups.values():
+            if isinstance(group, dict):
+                names.update(_normalized_dependency_keys(group.get("dependencies")))
+    return names
+
+
+def _normalized_dependency_keys(value: object) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    return {_normalized_dependency_name(name) for name in value if name != "python"}
+
+
+def _dependency_name(dependency: str) -> str | None:
+    match = re.match(r"\s*([A-Za-z0-9_.-]+)", dependency)
+    return _normalized_dependency_name(match.group(1)) if match else None
+
+
+def _normalized_dependency_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _nearest_project_root(start: Path) -> Path | None:
@@ -2129,74 +2369,10 @@ def _nearest_pyproject(start: Path) -> Path | None:
     return None
 
 
-def _pyproject_dependencies(path: Path) -> dict[str, str]:
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
-    dependencies: dict[str, str] = {}
-    project = data.get("project")
-    if isinstance(project, dict) and isinstance(project.get("dependencies"), list):
-        for dependency in project["dependencies"]:
-            if isinstance(dependency, str):
-                name = _dependency_name(dependency)
-                if name is not None:
-                    dependencies[name] = dependency
-    tool = data.get("tool")
-    poetry = tool.get("poetry") if isinstance(tool, dict) else None
-    poetry_dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
-    if isinstance(poetry_dependencies, dict):
-        for name, value in poetry_dependencies.items():
-            if name == "python":
-                continue
-            package = _poetry_dependency_package(name, value)
-            if package is not None:
-                dependencies[name.replace("-", "_")] = package
-    return dependencies
-
-
-def _dependency_name(dependency: str) -> str | None:
-    match = re.match(r"\s*([A-Za-z0-9_.-]+)", dependency)
-    return match.group(1).replace("-", "_") if match else None
-
-
-def _poetry_dependency_package(name: str, value: object) -> str | None:
-    normalized_name = name.replace("-", "_")
-    if isinstance(value, str):
-        return _package_with_version(name, value)
-    if not isinstance(value, dict):
-        return None
-    package_name = str(value.get("package", name))
-    if "git" in value:
-        git = str(value["git"])
-        rev = value.get("rev") or value.get("tag") or value.get("branch")
-        suffix = f"@{rev}" if isinstance(rev, str) and rev else ""
-        return f"{package_name} @ git+{git}{suffix}"
-    version = value.get("version")
-    if isinstance(version, str):
-        return _package_with_version(package_name, version)
-    return package_name or normalized_name
-
-
-def _package_with_version(name: str, version: str) -> str | None:
-    version = version.strip()
-    if version in {"", "*"}:
-        return name
-    if version.startswith("^"):
-        return None
-    if version[0].isdigit():
-        return f"{name}=={version}"
-    if version.startswith(("==", "!=", "<=", ">=", "<", ">", "~=")):
-        return f"{name}{version}"
-    return None
-
-
 def _parse_outputs(stdout: str, formats: tuple[str, ...] = FORMATS) -> dict[str, object]:
     chunks = [line for line in stdout.splitlines() if line.strip()]
     if len(chunks) != len(formats):
-        raise ValueError(
-            f"expected {len(formats)} compiler outputs, received {len(chunks)}"
-        )
+        raise ValueError(f"expected {len(formats)} compiler outputs, received {len(chunks)}")
     artifacts: dict[str, object] = {}
     for name, raw in zip(formats, chunks, strict=True):
         artifacts[name] = json.loads(raw)

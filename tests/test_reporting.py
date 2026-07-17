@@ -55,7 +55,7 @@ def test_json_report_declares_additive_schema_version() -> None:
 
     data = report.to_json_obj()
 
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == 3
     assert data["files"] == []
     assert data["target_version"] == "0.4.3"
     assert data["closure"] is None

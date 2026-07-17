@@ -141,24 +141,16 @@ def compiler_version_for_source(spec: str | None, source: str) -> str | None:
 
 
 def compiler_version_for_source_validation(
-    spec: str | None, target_spec: str, source: str
+    spec: str | None, target_spec: str, _source: str
 ) -> str | None:
+    """Select the newest known satisfying release that is no newer than the target."""
     versions = known_versions_satisfying(spec)
     if not versions:
-        return compiler_version_for_source(spec, source)
+        return compiler_version_for_spec(spec)
 
     target = parse_version(compiler_version_for_spec(target_spec)) or parse_version(target_spec)
     candidates = tuple(version for version in versions if target is None or version <= target)
-    if not candidates:
-        return compiler_version_for_source(spec, source)
-
-    hinted = _source_syntax_floor(source)
-    if hinted is not None:
-        hinted_candidates = tuple(version for version in candidates if version >= hinted)
-        if hinted_candidates:
-            candidates = hinted_candidates
-
-    return str(candidates[-1])
+    return str(candidates[-1] if candidates else versions[-1])
 
 
 def _source_syntax_floor(source: str) -> VyperVersion | None:

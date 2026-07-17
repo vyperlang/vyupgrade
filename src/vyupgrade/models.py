@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 
 Severity = Literal["info", "warning", "error"]
+FailureOrigin = Literal["compiler", "environment", "launch", "timeout", "adapter"]
 ValidationDecisionStatus = Literal["not-required", "passed", "waived", "blocked"]
 ValidationIssueCode = Literal[
     "target_compile_failed",
@@ -17,7 +18,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,31 @@ class ValidationDecision:
         }
 
 
+@dataclass(frozen=True)
+class CompilerOutput:
+    stdout: str
+    stderr: str
+
+    def to_json_obj(self) -> dict[str, str]:
+        return {"stdout": self.stdout, "stderr": self.stderr}
+
+
+@dataclass(frozen=True)
+class DependencyContext:
+    mode: Literal["isolated", "project"]
+    project_root: str | None = None
+    manifest: str | None = None
+    lockfile: str | None = None
+
+    def to_json_obj(self) -> dict[str, str | None]:
+        return {
+            "mode": self.mode,
+            "project_root": self.project_root,
+            "manifest": self.manifest,
+            "lockfile": self.lockfile,
+        }
+
+
 @dataclass
 class FileReport:
     path: Path
@@ -96,6 +122,12 @@ class FileReport:
     source_compile: str = "skipped"
     target_compile: str = "skipped"
     source_error: str | None = None
+    declared_spec: str | None = None
+    resolved_compiler: str | None = None
+    dependency_context: DependencyContext | None = None
+    compiler_started: bool = False
+    failure_origin: FailureOrigin | None = None
+    compiler_output: CompilerOutput | None = None
     target_error: str | None = None
     abi_equal: bool | None = None
     method_ids_equal: bool | None = None
@@ -112,6 +144,7 @@ class FileReport:
     candidate_sha256: str | None = None
     final_sha256: str | None = None
     final_matches_candidate: bool | None = None
+
 
 @dataclass
 class ClosureReport:
@@ -223,6 +256,20 @@ class RunReport:
                         "source_version": file.source_version,
                         "source_compiler": file.source_compiler,
                         "source_compile": file.source_compile,
+                        "declared_spec": file.declared_spec,
+                        "resolved_compiler": file.resolved_compiler,
+                        "dependency_context": (
+                            file.dependency_context.to_json_obj()
+                            if file.dependency_context is not None
+                            else None
+                        ),
+                        "compiler_started": file.compiler_started,
+                        "failure_origin": file.failure_origin,
+                        "compiler_output": (
+                            file.compiler_output.to_json_obj()
+                            if file.compiler_output is not None
+                            else None
+                        ),
                         "target_compile": file.target_compile,
                         "abi_equal": file.abi_equal,
                         "method_ids_equal": file.method_ids_equal,

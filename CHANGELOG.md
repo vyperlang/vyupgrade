@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Made source validation use the complete declared project environment and
+  attest compiler resolution, dependency context, process start, typed failure
+  origin, and compiler-only output in JSON report schema v3. Removed
+  import-name dependency guessing and retry behavior.
+
 ## 0.6.0 - 2026-07-16
 
 - Reject source version specifications that match no compiler supported by the
