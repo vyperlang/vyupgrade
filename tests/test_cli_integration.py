@@ -1308,6 +1308,26 @@ os.kill(os.getpid(), signal.SIGTERM)
     assert result.exit_status.signal == signal.SIGTERM
 
 
+def test_real_unhandled_explicit_compiler_failure_is_not_rejection(tmp_path: Path) -> None:
+    executable = _write_test_compiler(tmp_path, 'raise RuntimeError("compiler crashed")\n')
+    contract = tmp_path / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3", source_vyper=str(executable)),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is True
+    assert result.failure_origin == "adapter"
+    assert result.completion_status == "completed"
+    assert result.exit_status.code == 1
+    assert result.compiler_output is not None
+    assert "RuntimeError: compiler crashed" in result.compiler_output.stderr
+
+
 def test_real_source_nonrejection_has_one_attested_attempt(tmp_path: Path) -> None:
     attempt_log = tmp_path / "attempts.log"
     executable = _write_test_compiler(
