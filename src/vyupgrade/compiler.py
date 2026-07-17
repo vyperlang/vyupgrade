@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -9,8 +10,8 @@ import tempfile
 import sys
 import tomllib
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
-from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
 from pathlib import Path
 from typing import cast
@@ -18,7 +19,19 @@ from uuid import uuid4
 
 from uv import find_uv_bin
 
-from .models import CompilerOutput, Config, DependencyContext, FailureOrigin
+from .models import (
+    CompilerAuthority,
+    CompilerDeclaration,
+    CompilerOutput,
+    CompletionStatus,
+    Config,
+    ContentIdentity,
+    DependencyContext,
+    ExitStatus,
+    FailureOrigin,
+    ResolvedCompiler,
+    ResolvedPackage,
+)
 from .source import code_mask
 from .storage_layout import compare_storage_layouts, parse_storage_layout
 from .versions import (
@@ -73,6 +86,12 @@ class CompileResult:
     compiler_started: bool = False
     failure_origin: FailureOrigin | None = None
     compiler_output: CompilerOutput | None = None
+    compiler_identity: ResolvedCompiler | None = None
+    compiler_authority: CompilerAuthority = "default"
+    compiler_declarations: tuple[CompilerDeclaration, ...] = ()
+    completion_status: CompletionStatus = "not-started"
+    exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
+    validated_sources: tuple[ContentIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +105,12 @@ class _CompilerProcess:
     compiler_started: bool = False
     failure_origin: FailureOrigin | None = None
     error: str | None = None
+    compiler_identity: ResolvedCompiler | None = None
+    compiler_authority: CompilerAuthority = "default"
+    compiler_declarations: tuple[CompilerDeclaration, ...] = ()
+    completion_status: CompletionStatus = "not-started"
+    exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
+    validated_sources: tuple[ContentIdentity, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -178,74 +203,16 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         source_version or infer_pragma(path.read_text()),
         config.source_python,
     )
-    result = _run_compile_with_formats(
+    return _run_compile_with_formats(
         command,
         path,
         config,
         SOURCE_FORMATS,
         (),
         suppress_warnings,
-        allow_unsupported_formats=True,
         project_compiler=True,
+        allow_format_retries=False,
     )
-    if _should_retry_source_with_final_newline(path, result):
-        return _compile_source_file_with_final_newline(
-            command, path, config, suppress_warnings, result
-        )
-    return result
-
-
-def _compile_source_file_with_final_newline(
-    command: list[str],
-    path: Path,
-    config: Config,
-    suppress_warnings: bool,
-    original_result: CompileResult,
-) -> CompileResult:
-    try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return CompileResult("failed", stderr="could not read source for final-newline retry")
-    try:
-        tmp = tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            prefix=f".{path.stem}.vyupgrade.source.",
-            suffix=path.suffix,
-            dir=path.parent,
-            delete=False,
-        )
-    except OSError:
-        return original_result
-    tmp_path = Path(tmp.name)
-    try:
-        with tmp:
-            tmp.write(source)
-            tmp.write("\n")
-        return _run_compile_with_formats(
-            command,
-            tmp_path,
-            config,
-            SOURCE_FORMATS,
-            (),
-            suppress_warnings,
-            allow_unsupported_formats=True,
-            project_compiler=True,
-        )
-    finally:
-        with suppress(OSError):
-            tmp_path.unlink()
-
-
-def _should_retry_source_with_final_newline(path: Path, result: CompileResult) -> bool:
-    if result.status != "failed" or result.stderr is None:
-        return False
-    if not _legacy_span_error(result.stderr):
-        return False
-    try:
-        return not path.read_bytes().endswith(b"\n")
-    except OSError:
-        return False
 
 
 def compile_target_source(
@@ -434,6 +401,11 @@ def compile_target_archive(
             project_compiler=False,
             cwd=overlay.root,
         )
+        if process.compiler_started:
+            process = replace(
+                process,
+                validated_sources=(_content_identity(path, content_path=staged),),
+            )
         if process.returncode is None:
             return _failed_compile_result(
                 process,
@@ -458,6 +430,12 @@ def compile_target_archive(
             resolved_compiler=process.resolved_compiler,
             dependency_context=process.context,
             compiler_started=process.compiler_started,
+            compiler_identity=process.compiler_identity,
+            compiler_authority=process.compiler_authority,
+            compiler_declarations=process.compiler_declarations,
+            completion_status=process.completion_status,
+            exit_status=process.exit_status,
+            validated_sources=process.validated_sources,
         )
     finally:
         tmp_out.unlink(missing_ok=True)
@@ -1815,6 +1793,7 @@ def _run_compile_with_formats(
     suppress_warnings: bool,
     *,
     allow_unsupported_formats: bool = False,
+    allow_format_retries: bool = True,
     unavailable_formats: tuple[str, ...] = (),
     optional_formats: frozenset[str] = frozenset(),
     project_compiler: bool = False,
@@ -1839,6 +1818,11 @@ def _run_compile_with_formats(
         environment_path,
         project_compiler=project_compiler,
     )
+    if process.compiler_started and path.is_file():
+        process = replace(
+            process,
+            validated_sources=(_content_identity(environment_path, content_path=path),),
+        )
     if process.returncode is None:
         return _failed_compile_result(
             process,
@@ -1847,6 +1831,8 @@ def _run_compile_with_formats(
         )
     if process.returncode != 0:
         stderr = process.stderr.strip() or process.stdout.strip()
+        if not allow_format_retries:
+            return _failed_compile_result(process, stderr, unavailable_formats)
         unsupported = _unsupported_output_format(stderr, formats)
         if unsupported is not None:
             unavailable = tuple(dict.fromkeys((*unavailable_formats, unsupported)))
@@ -1874,6 +1860,7 @@ def _run_compile_with_formats(
                 extra_paths,
                 suppress_warnings,
                 allow_unsupported_formats=allow_unsupported_formats,
+                allow_format_retries=allow_format_retries,
                 unavailable_formats=unavailable,
                 optional_formats=optional_formats,
                 project_compiler=project_compiler,
@@ -1903,6 +1890,7 @@ def _run_compile_with_formats(
                 extra_paths,
                 suppress_warnings,
                 allow_unsupported_formats=allow_unsupported_formats,
+                allow_format_retries=allow_format_retries,
                 unavailable_formats=unavailable,
                 optional_formats=optional_formats,
                 project_compiler=project_compiler,
@@ -1928,6 +1916,12 @@ def _run_compile_with_formats(
         resolved_compiler=process.resolved_compiler,
         dependency_context=process.context,
         compiler_started=process.compiler_started,
+        compiler_identity=process.compiler_identity,
+        compiler_authority=process.compiler_authority,
+        compiler_declarations=process.compiler_declarations,
+        completion_status=process.completion_status,
+        exit_status=process.exit_status,
+        validated_sources=process.validated_sources,
     )
 
 
@@ -1949,6 +1943,12 @@ def _failed_compile_result(
         compiler_started=process.compiler_started,
         failure_origin=process.failure_origin or "adapter",
         compiler_output=compiler_output,
+        compiler_identity=process.compiler_identity,
+        compiler_authority=process.compiler_authority,
+        compiler_declarations=process.compiler_declarations,
+        completion_status=process.completion_status,
+        exit_status=process.exit_status,
+        validated_sources=process.validated_sources,
     )
 
 
@@ -2013,16 +2013,29 @@ def _run_compiler_process(
     project_compiler: bool,
     cwd: Path | None = None,
 ) -> _CompilerProcess:
-    managed_compiler = _is_uv_run_command(command)
+    authority = _compiler_authority(command, path, project_compiler=project_compiler)
+    declarations = _compiler_declarations(command, path, project_compiler=project_compiler)
+    coherence_spec = (
+        infer_pragma(path.read_text(encoding="utf-8"))
+        if project_compiler and _project_declares_vyper(_nearest_pyproject(path.parent))
+        else None
+    )
     with _declared_project_environment(
         command,
         path,
         project_compiler=project_compiler,
     ) as (full, context):
+        runner_command = _compiler_runner_command(full)
+        managed_compiler = (
+            _is_uv_run_command(full) and bool(runner_command) and runner_command[0] == "vyper"
+        )
         return _run_compiler_adapter(
             full,
             context,
             managed_compiler=managed_compiler,
+            compiler_authority=authority,
+            compiler_declarations=declarations,
+            coherence_spec=coherence_spec,
             cwd=cwd,
         )
 
@@ -2032,6 +2045,9 @@ def _run_compiler_adapter(
     context: DependencyContext,
     *,
     managed_compiler: bool,
+    compiler_authority: CompilerAuthority,
+    compiler_declarations: tuple[CompilerDeclaration, ...],
+    coherence_spec: str | None,
     cwd: Path | None,
 ) -> _CompilerProcess:
     result_file = tempfile.NamedTemporaryFile(
@@ -2048,6 +2064,7 @@ def _run_compiler_adapter(
         str(result_path),
         str(COMPILE_TIMEOUT_SECONDS),
         "managed" if managed_compiler else "explicit",
+        coherence_spec or "",
         *_compiler_runner_command(command),
     ]
     try:
@@ -2063,11 +2080,15 @@ def _run_compiler_adapter(
             payload = _compiler_runner_result(result_path)
             return _CompilerProcess(
                 command=command,
-                context=context,
+                context=_context_with_resolved_packages(context, payload),
                 resolved_compiler=_payload_string(payload, "resolved_compiler"),
                 compiler_started=payload is not None,
                 failure_origin="timeout",
                 error=f"compiler timed out after {COMPILE_TIMEOUT_SECONDS} seconds",
+                compiler_identity=_payload_compiler_identity(payload),
+                compiler_authority=compiler_authority,
+                compiler_declarations=compiler_declarations,
+                completion_status="timed-out",
             )
         except OSError as exc:
             return _CompilerProcess(
@@ -2075,25 +2096,42 @@ def _run_compiler_adapter(
                 context=context,
                 failure_origin="environment" if _is_uv_run_command(command) else "launch",
                 error=f"compiler environment failed to start: {exc}",
+                compiler_authority=compiler_authority,
+                compiler_declarations=compiler_declarations,
             )
 
         payload = _compiler_runner_result(result_path)
         if payload is None or payload.get("state") != "complete":
             wrapper_error = process.stderr.strip() or process.stdout.strip()
+            signaled = process.returncode < 0
             return _CompilerProcess(
                 command=command,
-                context=context,
+                context=_context_with_resolved_packages(context, payload),
                 compiler_started=payload is not None,
                 failure_origin=(
-                    "adapter"
-                    if payload is not None or process.returncode == 0
+                    "compiler-internal"
+                    if signaled
                     else "environment"
-                    if _is_uv_run_command(command)
+                    if payload is None and _is_uv_run_command(command) and process.returncode != 0
                     else "adapter"
                 ),
                 error=wrapper_error or "compiler adapter returned no result",
+                compiler_identity=_payload_compiler_identity(payload),
+                compiler_authority=compiler_authority,
+                compiler_declarations=compiler_declarations,
+                completion_status="signaled" if signaled else "adapter-failed",
+                exit_status=ExitStatus(
+                    process.returncode,
+                    -process.returncode if signaled else None,
+                ),
             )
-        return _compiler_process_from_payload(command, context, payload)
+        return _compiler_process_from_payload(
+            command,
+            context,
+            payload,
+            compiler_authority=compiler_authority,
+            compiler_declarations=compiler_declarations,
+        )
     finally:
         result_path.unlink(missing_ok=True)
 
@@ -2122,18 +2160,28 @@ def _compiler_process_from_payload(
     command: list[str],
     context: DependencyContext,
     payload: dict[str, object],
+    *,
+    compiler_authority: CompilerAuthority,
+    compiler_declarations: tuple[CompilerDeclaration, ...],
 ) -> _CompilerProcess:
     raw_origin = payload.get("failure_origin")
     origin = (
         cast(FailureOrigin, raw_origin)
-        if raw_origin in {"compiler", "environment", "launch", "timeout", "adapter"}
+        if raw_origin
+        in {"compiler", "compiler-internal", "environment", "launch", "timeout", "adapter"}
         else None
     )
     raw_returncode = payload.get("returncode")
     returncode = raw_returncode if type(raw_returncode) is int else None
+    raw_completion = payload.get("completion_status")
+    completion_status = (
+        cast(CompletionStatus, raw_completion)
+        if raw_completion in {"not-started", "completed", "timed-out", "signaled", "adapter-failed"}
+        else "adapter-failed"
+    )
     return _CompilerProcess(
         command=command,
-        context=context,
+        context=_context_with_resolved_packages(context, payload),
         returncode=returncode,
         stdout=_payload_string(payload, "stdout") or "",
         stderr=_payload_string(payload, "stderr") or "",
@@ -2141,6 +2189,14 @@ def _compiler_process_from_payload(
         compiler_started=payload.get("compiler_started") is True,
         failure_origin=origin,
         error=_payload_string(payload, "error"),
+        compiler_identity=_payload_compiler_identity(payload),
+        compiler_authority=compiler_authority,
+        compiler_declarations=compiler_declarations,
+        completion_status=completion_status,
+        exit_status=ExitStatus(
+            returncode,
+            -returncode if returncode is not None and returncode < 0 else None,
+        ),
     )
 
 
@@ -2149,6 +2205,131 @@ def _payload_string(payload: dict[str, object] | None, key: str) -> str | None:
         return None
     value = payload.get(key)
     return value if isinstance(value, str) else None
+
+
+def _payload_compiler_identity(
+    payload: dict[str, object] | None,
+) -> ResolvedCompiler | None:
+    if payload is None:
+        return None
+    value = payload.get("compiler_identity")
+    if not isinstance(value, dict):
+        return None
+    version = value.get("version")
+    executable = _payload_content_identity(value.get("executable"))
+    artifact = _payload_content_identity(value.get("artifact"))
+    if not isinstance(version, str) or executable is None or artifact is None:
+        return None
+    return ResolvedCompiler(version, executable, artifact)
+
+
+def _payload_content_identity(value: object) -> ContentIdentity | None:
+    if not isinstance(value, dict):
+        return None
+    path = value.get("path")
+    digest = value.get("sha256")
+    if not isinstance(path, str) or not isinstance(digest, str):
+        return None
+    return ContentIdentity(path, digest)
+
+
+def _context_with_resolved_packages(
+    context: DependencyContext,
+    payload: dict[str, object] | None,
+) -> DependencyContext:
+    if payload is None:
+        return context
+    raw_packages = payload.get("resolved_packages")
+    if not isinstance(raw_packages, list):
+        return context
+    packages: list[ResolvedPackage] = []
+    for value in raw_packages:
+        if not isinstance(value, dict):
+            return context
+        name = value.get("name")
+        version = value.get("version")
+        source = value.get("source")
+        artifact_sha256 = value.get("artifact_sha256")
+        if (
+            not isinstance(name, str)
+            or not isinstance(version, str)
+            or (source is not None and not isinstance(source, str))
+            or not isinstance(artifact_sha256, str)
+        ):
+            return context
+        packages.append(ResolvedPackage(name, version, source, artifact_sha256))
+    return replace(context, resolved_packages=tuple(packages))
+
+
+def _content_identity(path: Path, *, content_path: Path | None = None) -> ContentIdentity:
+    content = content_path or path
+    return ContentIdentity(
+        str(path.resolve()),
+        hashlib.sha256(content.read_bytes()).hexdigest(),
+    )
+
+
+def _compiler_authority(
+    command: list[str],
+    path: Path,
+    *,
+    project_compiler: bool,
+) -> CompilerAuthority:
+    pyproject = _nearest_pyproject(path.parent)
+    if project_compiler and _project_declares_vyper(pyproject):
+        assert pyproject is not None
+        return "project-lock" if (pyproject.parent / "uv.lock").is_file() else "project-manifest"
+    if not _is_uv_run_command(command):
+        return "explicit-executable"
+    if not project_compiler:
+        return "fixed-target"
+    source_spec = infer_pragma(path.read_text(encoding="utf-8"))
+    if source_spec is None:
+        return "default"
+    return "source-exact" if parse_version(source_spec) is not None else "source-range"
+
+
+def _compiler_declarations(
+    command: list[str],
+    path: Path,
+    *,
+    project_compiler: bool,
+) -> tuple[CompilerDeclaration, ...]:
+    declarations: list[CompilerDeclaration] = []
+    pyproject = _nearest_pyproject(path.parent)
+    if project_compiler:
+        if pyproject is not None:
+            declarations.extend(
+                CompilerDeclaration("project", spec, str(pyproject.resolve()))
+                for spec in _project_vyper_specs(pyproject)
+            )
+        source_spec = infer_pragma(path.read_text(encoding="utf-8"))
+        if source_spec is not None:
+            declarations.append(
+                CompilerDeclaration("source-pragma", source_spec, str(path.resolve()))
+            )
+    else:
+        target_version = _command_vyper_version(command)
+        if target_version is not None:
+            declarations.append(CompilerDeclaration("target-version", target_version))
+    if not _is_uv_run_command(command):
+        declarations.append(CompilerDeclaration("explicit-executable", command[0]))
+    return tuple(declarations)
+
+
+def _project_vyper_specs(pyproject: Path) -> tuple[str, ...]:
+    data = _project_data(pyproject)
+    specs = [
+        dependency
+        for dependency in _project_dependency_specs(data)
+        if _dependency_name(dependency) == "vyper"
+    ]
+    tool = data.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    if isinstance(dependencies, dict) and "vyper" in dependencies:
+        specs.append(f"vyper {json.dumps(dependencies['vyper'], sort_keys=True)}")
+    return tuple(specs)
 
 
 @contextmanager
@@ -2165,11 +2346,16 @@ def _declared_project_environment(
 
     root = pyproject.parent.resolve()
     lockfile = root / "uv.lock"
+    data = _project_data(pyproject)
+    project = data.get("project")
+    python_constraint = project.get("requires-python") if isinstance(project, dict) else None
     context = DependencyContext(
         mode="project",
         project_root=str(root),
-        manifest=str(pyproject.resolve()),
-        lockfile=str(lockfile) if lockfile.is_file() else None,
+        manifest=_content_identity(pyproject),
+        lockfile=_content_identity(lockfile) if lockfile.is_file() else None,
+        python_constraint=python_constraint if isinstance(python_constraint, str) else None,
+        declared_sources=_declared_local_source_identities(pyproject, data),
     )
     if lockfile.is_file():
         yield (
@@ -2217,17 +2403,61 @@ def _project_environment_command(
         "--all-extras",
         "--all-groups",
     ]
+    project_declares_vyper = _project_declares_vyper(pyproject)
     if not _is_uv_run_command(command):
+        if project_compiler and project_declares_vyper:
+            return [*environment, "vyper"]
         return [*environment, *command]
 
     command_index = _uv_run_command_index(command)
-    project_declares_vyper = _project_declares_vyper(pyproject)
     options = _project_uv_options(
         command[2:command_index],
         remove_vyper=project_compiler and project_declares_vyper,
         remove_python=not project_compiler or project_declares_vyper,
     )
     return [*environment, *options, *command[command_index:]]
+
+
+def _project_data(pyproject: Path) -> dict[str, object]:
+    try:
+        return tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _declared_local_source_identities(
+    pyproject: Path,
+    data: dict[str, object],
+) -> tuple[ContentIdentity, ...]:
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    sources = uv.get("sources") if isinstance(uv, dict) else None
+    if not isinstance(sources, dict):
+        return ()
+    identities: list[ContentIdentity] = []
+    for source in sources.values():
+        path_value = source.get("path") if isinstance(source, dict) else None
+        if not isinstance(path_value, str):
+            continue
+        path = (pyproject.parent / path_value).resolve()
+        if path.exists():
+            identities.append(_tree_identity(path))
+    return tuple(sorted(identities, key=lambda identity: identity.path))
+
+
+def _tree_identity(path: Path) -> ContentIdentity:
+    if path.is_file():
+        return _content_identity(path)
+    digest = hashlib.sha256()
+    for child in sorted(path.rglob("*")):
+        relative = child.relative_to(path)
+        if not child.is_file() or any(part in OVERLAY_EXCLUDED_PARTS for part in relative.parts):
+            continue
+        digest.update(relative.as_posix().encode())
+        digest.update(b"\0")
+        digest.update(child.read_bytes())
+        digest.update(b"\0")
+    return ContentIdentity(str(path.resolve()), digest.hexdigest())
 
 
 def _mirror_project_root(source: Path, target: Path) -> None:
@@ -2299,10 +2529,7 @@ def _is_uv_run_command(command: Sequence[str]) -> bool:
 def _project_declares_vyper(pyproject: Path | None) -> bool:
     if pyproject is None:
         return False
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
+    data = _project_data(pyproject)
     if any(_dependency_name(spec) == "vyper" for spec in _project_dependency_specs(data)):
         return True
     return "vyper" in _poetry_dependency_names(data)

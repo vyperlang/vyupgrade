@@ -105,11 +105,7 @@ def owner() -> address:
     assert target_compile.artifacts is not None
     layout = target_compile.artifacts["layout"]
     assert isinstance(layout, dict)
-    assert layout == {
-        "code_layout": {
-            "OWNER": {"type": "address", "length": 32, "offset": 0}
-        }
-    }
+    assert layout == {"code_layout": {"OWNER": {"type": "address", "length": 32, "offset": 0}}}
 
 
 def test_real_legacy_immutable_layout_compares_with_modern_code_only_target(
@@ -128,9 +124,9 @@ def __init__():
 def owner() -> address:
     return OWNER
 """
-    target_source = legacy_source.replace(
-        "# @version 0.3.10", "#pragma version 0.4.3"
-    ).replace("@external\ndef __init__", "@deploy\ndef __init__", 1)
+    target_source = legacy_source.replace("# @version 0.3.10", "#pragma version 0.4.3").replace(
+        "@external\ndef __init__", "@deploy\ndef __init__", 1
+    )
     contract.write_text(legacy_source, encoding="utf-8")
     config = Config(paths=(contract,), target_version="0.4.3")
 
@@ -144,9 +140,7 @@ def owner() -> address:
     assert compare_artifacts(source_compile, target_compile) == (True, True, True)
     assert source_compile.artifacts is not None
     assert source_compile.artifacts["layout"] == {
-        "code_layout": {
-            "OWNER": {"type": "address", "length": 32, "offset": 0}
-        },
+        "code_layout": {"OWNER": {"type": "address", "length": 32, "offset": 0}},
         "storage_layout": {},
     }
 
@@ -160,9 +154,7 @@ blob: Bytes[64]
 label: String[32]
 pools: HashMap[address, uint256]
 """
-    target_source = legacy_source.replace(
-        "# @version 0.3.10", "#pragma version 0.4.3"
-    )
+    target_source = legacy_source.replace("# @version 0.3.10", "#pragma version 0.4.3")
     contract.write_text(legacy_source, encoding="utf-8")
     config = Config(paths=(contract,), target_version="0.4.3")
 
@@ -180,9 +172,7 @@ pools: HashMap[address, uint256]
     storage = layout["storage_layout"]
     assert isinstance(storage, dict)
     assert {
-        name: entry["n_slots"]
-        for name, entry in storage.items()
-        if isinstance(entry, dict)
+        name: entry["n_slots"] for name, entry in storage.items() if isinstance(entry, dict)
     } == {
         "fixed_values": 3,
         "dynamic_values": 4,
@@ -224,9 +214,7 @@ mixed_values: DynArray[DynArray[uint256, 3][3], 3][5]
     assert str(tokens["type"]).endswith("IERC20.vyi[3]")
     assert dynamic_values["type"] == "DynArray[uint256, 3][3]"
     assert {
-        name: entry["n_slots"]
-        for name, entry in storage.items()
-        if isinstance(entry, dict)
+        name: entry["n_slots"] for name, entry in storage.items() if isinstance(entry, dict)
     } == {
         "tokens": 3,
         "dynamic_values": 12,
@@ -544,8 +532,7 @@ def test_legacy_erc4626_interface_getter_stub_compiles_but_width_is_unproven(
     assert file["validation"]["decision"]["status"] == "blocked"
     assert file["validation"]["storage_layout_equal"] is False
     assert file["validation"]["storage_layout_diff"] == [
-        "changed storage: asset slot 0 ERC20 -> 0 interface IERC20 "
-        "(n_slots unknown -> 1)"
+        "changed storage: asset slot 0 ERC20 -> 0 interface IERC20 (n_slots unknown -> 1)"
     ]
 
 
@@ -627,9 +614,7 @@ def sqrt_plus_zero(x: uint256) -> uint256:
     assert file["validation"]["target_compile"] == "passed"
     assert file["validation"]["decision"]["status"] == "passed"
     assert any(
-        fix["after"] == "builtin_math.isqrt"
-        for fix in file["fixes"]
-        if fix["rule"] == "VY101"
+        fix["after"] == "builtin_math.isqrt" for fix in file["fixes"] if fix["rule"] == "VY101"
     )
 
 
@@ -690,9 +675,7 @@ def test_real_compiler_include_dependencies_upgrades_closure(
     dependency = search_path / "depkg" / "mod.vy"
     dependency.parent.mkdir(parents=True)
     project_root.mkdir()
-    (project_root / "pyproject.toml").write_text(
-        "[project]\nname='project'\nversion='0.1.0'\n"
-    )
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\nversion='0.1.0'\n")
     (project_root / "depkg").symlink_to(dependency.parent, target_is_directory=True)
     project_source = (
         "# @version 0.3.10\n"
@@ -702,10 +685,7 @@ def test_real_compiler_include_dependencies_upgrades_closure(
         "def value() -> uint256:\n"
         "    return 1\n"
     )
-    dependency_source = (
-        "# @version 0.3.10\n"
-        "VALUE: constant(uint256) = 1\n"
-    )
+    dependency_source = "# @version 0.3.10\nVALUE: constant(uint256) = 1\n"
     project.write_text(project_source, encoding="utf-8")
     dependency.write_text(dependency_source, encoding="utf-8")
     report = tmp_path / "report.json"
@@ -734,6 +714,54 @@ def test_real_compiler_include_dependencies_upgrades_closure(
     assert files[dependency.resolve()]["role"] == "dependency"
 
 
+def test_real_fixed_target_dependency_rejection_has_typed_origin(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project = project_root / "main.vy"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\nversion='0.1.0'\n")
+    (project_root / "depkg").symlink_to(dependency.parent, target_is_directory=True)
+    project.write_text(
+        "# @version 0.3.10\nfrom depkg import mod\n",
+        encoding="utf-8",
+    )
+    dependency.write_text(
+        "# @version 0.3.10\n@external\ndef __init__():\n    pass\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "target-origin-report.json"
+
+    code = main(
+        [
+            str(project),
+            "--target-version",
+            "0.4.3",
+            "--include-dependencies",
+            "--compiler-search-paths",
+            str(search_path),
+            "--select",
+            "VY001",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code != 0
+    files = {Path(file["path"]): file for file in json.loads(report.read_text())["files"]}
+    dependency_report = files[dependency.resolve()]
+    assert dependency_report["role"] == "dependency"
+    assert dependency_report["validation"]["source_compile"] == "passed"
+    assert dependency_report["validation"]["target_compile"] == "failed"
+    target_attestation = dependency_report["validation"]["target_attestation"]
+    assert target_attestation["authority_rule"] == "fixed-target"
+    assert target_attestation["failure_origin"] == "fixed-target-dependency"
+    assert target_attestation["compiler_started"] is True
+    assert target_attestation["exit_status"] == {"code": 1, "signal": None}
+    assert target_attestation["compiler_output"]["stderr"]
+
+
 def test_real_compiler_closure_output_tree_compiles_standalone(
     tmp_path: Path,
 ) -> None:
@@ -743,12 +771,8 @@ def test_real_compiler_closure_output_tree_compiles_standalone(
     dependency = search_path / "depkg" / "mod.vy"
     dependency.parent.mkdir(parents=True)
     project_root.mkdir()
-    (project_root / "pyproject.toml").write_text(
-        "[project]\nname='project'\nversion='0.1.0'\n"
-    )
-    (project_root / "depkg").symlink_to(
-        dependency.parent, target_is_directory=True
-    )
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\nversion='0.1.0'\n")
+    (project_root / "depkg").symlink_to(dependency.parent, target_is_directory=True)
     project_source = (
         "# @version 0.3.10\n"
         "from depkg import mod\n"
@@ -757,10 +781,7 @@ def test_real_compiler_closure_output_tree_compiles_standalone(
         "def value() -> uint256:\n"
         "    return 1\n"
     )
-    dependency_source = (
-        "# @version 0.3.10\n"
-        "VALUE: constant(uint256) = 1\n"
-    )
+    dependency_source = "# @version 0.3.10\nVALUE: constant(uint256) = 1\n"
     project.write_text(project_source, encoding="utf-8")
     dependency.write_text(dependency_source, encoding="utf-8")
     output = project_root / "output"
@@ -803,12 +824,8 @@ def test_real_compiler_closure_archive_round_trips(tmp_path: Path) -> None:
     dependency = search_path / "depkg" / "mod.vy"
     dependency.parent.mkdir(parents=True)
     project_root.mkdir()
-    (project_root / "pyproject.toml").write_text(
-        "[project]\nname='project'\nversion='0.1.0'\n"
-    )
-    (project_root / "depkg").symlink_to(
-        dependency.parent, target_is_directory=True
-    )
+    (project_root / "pyproject.toml").write_text("[project]\nname='project'\nversion='0.1.0'\n")
+    (project_root / "depkg").symlink_to(dependency.parent, target_is_directory=True)
     project_source = (
         "# @version 0.3.10\n"
         "from depkg import mod\n"
@@ -817,10 +834,7 @@ def test_real_compiler_closure_archive_round_trips(tmp_path: Path) -> None:
         "def value() -> uint256:\n"
         "    return 1\n"
     )
-    dependency_source = (
-        "# @version 0.3.10\n"
-        "VALUE: constant(uint256) = 1\n"
-    )
+    dependency_source = "# @version 0.3.10\nVALUE: constant(uint256) = 1\n"
     project.write_text(project_source, encoding="utf-8")
     dependency.write_text(dependency_source, encoding="utf-8")
     archive = tmp_path / "out.vyz"
@@ -877,13 +891,7 @@ def test_real_compiler_closure_archive_round_trips(tmp_path: Path) -> None:
 
 def test_real_compiler_archive_floor_0_4_0(tmp_path: Path, capsys) -> None:
     contract = tmp_path / "floor.vy"
-    contract_source = (
-        "#pragma version 0.4.0\n"
-        "\n"
-        "@external\n"
-        "def value() -> uint256:\n"
-        "    return 1\n"
-    )
+    contract_source = "#pragma version 0.4.0\n\n@external\ndef value() -> uint256:\n    return 1\n"
     contract.write_text(contract_source, encoding="utf-8")
     archive = tmp_path / "floor.vyz"
 
@@ -972,6 +980,12 @@ def decimals() -> uint8:
 """,
         encoding="utf-8",
     )
+    subprocess.run(
+        [find_uv_bin(), "lock", "--project", str(project)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     report = tmp_path / "twocrypto-report.json"
 
     assert (
@@ -987,18 +1001,55 @@ def decimals() -> uint8:
         == 0
     )
 
-    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
-    assert validation["declared_spec"] == "0.4.1"
-    assert validation["resolved_compiler"] == "0.4.1"
-    assert validation["dependency_context"] == {
-        "mode": "project",
-        "project_root": str(project.resolve()),
-        "manifest": str((project / "pyproject.toml").resolve()),
-        "lockfile": None,
+    report_data = json.loads(report.read_text(encoding="utf-8"))
+    assert report_data["schema_version"] == 4
+    assert report_data["producer"] == {"name": "vyupgrade", "version": "0.6.0"}
+    validation = report_data["files"][0]["validation"]
+    attestation = validation["source_attestation"]
+    declarations = attestation["declared_spec"]["compiler_declarations"]
+    assert {declaration["value"] for declaration in declarations} == {
+        "vyper==0.4.1",
+        "0.4.1",
     }
-    assert validation["compiler_started"] is True
-    assert validation["failure_origin"] is None
-    assert validation["compiler_output"] is None
+    assert attestation["resolved_compiler"]["version"] == "0.4.1"
+    assert attestation["authority_rule"] == "project-lock"
+    assert attestation["dependency_context"]["mode"] == "project"
+    assert attestation["dependency_context"]["project_root"] == str(project.resolve())
+    assert attestation["dependency_context"]["manifest"]["path"] == str(
+        (project / "pyproject.toml").resolve()
+    )
+    assert len(attestation["dependency_context"]["manifest"]["sha256"]) == 64
+    lock_identity = attestation["dependency_context"]["lockfile"]
+    assert lock_identity["path"] == str((project / "uv.lock").resolve())
+    assert lock_identity["sha256"] == hashlib.sha256((project / "uv.lock").read_bytes()).hexdigest()
+    resolved_packages = attestation["dependency_context"]["resolved_packages"]
+    assert {"vyper", "snekmate"} <= {package["name"].lower() for package in resolved_packages}
+    compiler_identity = attestation["resolved_compiler"]
+    assert compiler_identity["executable"]["path"] == "vyper"
+    assert len(compiler_identity["executable"]["sha256"]) == 64
+    assert len(compiler_identity["artifact"]["sha256"]) == 64
+    source_identity = {
+        "path": str(contract.resolve()),
+        "sha256": hashlib.sha256(contract.read_bytes()).hexdigest(),
+    }
+    assert attestation["declared_spec"]["sources"] == [source_identity]
+    assert len(attestation["declared_spec"]["snapshot"]["sha256"]) == 64
+    assert attestation["validated_source_set"] == [source_identity]
+    assert attestation["attempt_sequence"] == [
+        {
+            "sequence": 1,
+            "source": source_identity,
+            "compiler_started": True,
+            "completion_status": "completed",
+            "exit_status": {"code": 0, "signal": None},
+            "failure_origin": None,
+        }
+    ]
+    assert attestation["compiler_started"] is True
+    assert attestation["completion_status"] == "completed"
+    assert attestation["exit_status"] == {"code": 0, "signal": None}
+    assert attestation["failure_origin"] is None
+    assert attestation["compiler_output"] is None
 
 
 def test_real_ranged_pragma_prefers_declared_project_compiler(tmp_path: Path) -> None:
@@ -1037,11 +1088,61 @@ value: public(uint256)
     )
 
     validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
-    assert validation["declared_spec"] == ">=0.4.0"
-    assert validation["resolved_compiler"] == "0.4.1"
+    attestation = validation["source_attestation"]
+    declarations = attestation["declared_spec"]["compiler_declarations"]
+    assert {declaration["value"] for declaration in declarations} == {
+        "vyper==0.4.1",
+        ">=0.4.0",
+    }
+    assert attestation["resolved_compiler"]["version"] == "0.4.1"
     assert validation["source_compiler"] == "0.4.1"
-    assert validation["compiler_started"] is True
-    assert validation["failure_origin"] is None
+    assert attestation["authority_rule"] == "project-manifest"
+    assert attestation["compiler_started"] is True
+    assert attestation["failure_origin"] is None
+
+
+def test_real_conflicting_project_and_source_declarations_are_environment_origin(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "conflict"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.3"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\nvalue: public(uint256)\n", encoding="utf-8")
+    report = tmp_path / "conflict-report.json"
+
+    assert (
+        main(
+            [
+                str(contract),
+                "--target-version",
+                "0.4.3",
+                "--report-json",
+                str(report),
+            ]
+        )
+        != 0
+    )
+
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    attestation = validation["source_attestation"]
+    assert validation["source_compile"] == "failed"
+    assert attestation["authority_rule"] == "project-manifest"
+    assert attestation["resolved_compiler"]["version"] == "0.4.3"
+    assert attestation["compiler_started"] is False
+    assert attestation["completion_status"] == "not-started"
+    assert attestation["exit_status"] == {"code": None, "signal": None}
+    assert attestation["validated_source_set"] == []
+    assert attestation["failure_origin"] == "environment"
+    assert attestation["compiler_output"] is None
 
 
 def test_real_declared_dependency_rejection_is_compiler_origin(tmp_path: Path) -> None:

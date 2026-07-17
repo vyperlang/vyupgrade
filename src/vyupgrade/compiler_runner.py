@@ -1,67 +1,109 @@
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import importlib
 import importlib.metadata
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import traceback
 from pathlib import Path
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 
 _VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*)?\b")
 
 
+class _CompilerTimedOut(Exception):
+    pass
+
+
 def main() -> None:
-    result_path, timeout, managed, *command = sys.argv[1:]
+    result_path, timeout, managed_value, coherence_spec, *command = sys.argv[1:]
     destination = Path(result_path)
+    managed = managed_value == "managed"
     _write_result(destination, {"state": "started"})
     try:
-        resolved_compiler = _resolved_compiler(command, managed == "managed")
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        resolved_compiler, compiler_identity = _resolved_compiler(command, managed)
+        packages = _resolved_packages()
+    except OSError as exc:
         _write_result(
             destination,
-            {
-                "state": "complete",
-                "compiler_started": False,
-                "failure_origin": "launch",
-                "resolved_compiler": None,
-                "error": f"could not identify compiler: {exc}",
-            },
+            _failure_payload(
+                origin="environment" if managed else "launch",
+                completion_status="not-started",
+                error=f"could not identify compiler: {exc}",
+            ),
+        )
+        return
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        _write_result(
+            destination,
+            _failure_payload(
+                origin="environment" if managed else "adapter",
+                completion_status="not-started",
+                error=f"could not identify compiler: {exc}",
+            ),
+        )
+        return
+
+    evidence = {
+        "resolved_compiler": resolved_compiler,
+        "compiler_identity": compiler_identity,
+        "resolved_packages": packages,
+    }
+    if coherence_spec and not _version_satisfies(resolved_compiler, coherence_spec):
+        _write_result(
+            destination,
+            _failure_payload(
+                origin="environment",
+                completion_status="not-started",
+                error=(
+                    f"resolved project compiler {resolved_compiler} conflicts with "
+                    f"source declaration {coherence_spec}"
+                ),
+                **evidence,
+            ),
         )
         return
 
     try:
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=float(timeout),
+        process = (
+            _run_managed_compiler(command, float(timeout))
+            if managed and command and command[0] == "vyper"
+            else _run_explicit_compiler(command, float(timeout))
         )
     except subprocess.TimeoutExpired as exc:
         _write_result(
             destination,
-            {
-                "state": "complete",
-                "compiler_started": True,
-                "failure_origin": "timeout",
-                "resolved_compiler": resolved_compiler,
-                "stdout": _timeout_text(exc.stdout),
-                "stderr": _timeout_text(exc.stderr),
-                "error": f"compiler timed out after {timeout} seconds",
-            },
+            _failure_payload(
+                origin="timeout",
+                completion_status="timed-out",
+                compiler_started=True,
+                stdout=_timeout_text(exc.stdout),
+                stderr=_timeout_text(exc.stderr),
+                error=f"compiler timed out after {timeout} seconds",
+                **evidence,
+            ),
         )
         return
     except OSError as exc:
         _write_result(
             destination,
-            {
-                "state": "complete",
-                "compiler_started": False,
-                "failure_origin": "launch",
-                "resolved_compiler": resolved_compiler,
-                "error": f"compiler failed to start: {exc}",
-            },
+            _failure_payload(
+                origin="launch",
+                completion_status="not-started",
+                error=f"compiler failed to start: {exc}",
+                **evidence,
+            ),
         )
         return
 
@@ -70,32 +112,214 @@ def main() -> None:
         {
             "state": "complete",
             "compiler_started": True,
-            "failure_origin": "compiler" if process.returncode != 0 else None,
-            "resolved_compiler": resolved_compiler,
-            "returncode": process.returncode,
-            "stdout": process.stdout,
-            "stderr": process.stderr,
+            "failure_origin": process["failure_origin"],
+            "completion_status": process["completion_status"],
+            "returncode": process["returncode"],
+            "stdout": process["stdout"],
+            "stderr": process["stderr"],
+            **evidence,
         },
     )
 
 
-def _resolved_compiler(command: list[str], managed: bool) -> str:
-    if managed:
-        return importlib.metadata.version("vyper")
+def _run_managed_compiler(command: list[str], timeout: float) -> dict[str, object]:
+    vyper_compile = importlib.import_module("vyper.cli.vyper_compile")
+    exception_type = importlib.import_module("vyper.exceptions").VyperException
+    with (
+        tempfile.TemporaryFile("w+", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile("w+", encoding="utf-8") as stderr,
+    ):
+        previous_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                try:
+                    vyper_compile._parse_args(command[1:])
+                    returncode = 0
+                    origin = None
+                except exception_type as exc:
+                    traceback.print_exception(exc, file=stderr)
+                    returncode = 1
+                    origin = "compiler"
+                except _CompilerTimedOut:
+                    raise subprocess.TimeoutExpired(command, timeout) from None
+                except SystemExit as exc:
+                    returncode = exc.code if type(exc.code) is int else 1
+                    origin = None if returncode == 0 else "adapter"
+                except BaseException as exc:
+                    traceback.print_exception(exc, file=stderr)
+                    returncode = 1
+                    origin = "compiler-internal"
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        stdout.seek(0)
+        stderr.seek(0)
+        return {
+            "returncode": returncode,
+            "failure_origin": origin,
+            "completion_status": "completed",
+            "stdout": stdout.read(),
+            "stderr": stderr.read(),
+        }
+
+
+def _run_explicit_compiler(command: list[str], timeout: float) -> dict[str, object]:
     process = subprocess.run(
-        [command[0], "--version"],
+        command,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=timeout,
     )
-    if process.returncode != 0:
-        raise RuntimeError(
-            process.stderr.strip() or process.stdout.strip() or "version query failed"
+    signaled = process.returncode < 0
+    return {
+        "returncode": process.returncode,
+        "failure_origin": (
+            "compiler-internal" if signaled else "adapter" if process.returncode != 0 else None
+        ),
+        "completion_status": "signaled" if signaled else "completed",
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+    }
+
+
+def _resolved_compiler(command: list[str], managed: bool) -> tuple[str, dict[str, object]]:
+    if managed:
+        version = importlib.metadata.version("vyper")
+    else:
+        process = subprocess.run(
+            [command[0], "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
-    match = _VERSION_PATTERN.search(process.stdout)
-    if match is None:
-        raise RuntimeError("version query returned no version")
-    return match.group(0)
+        if process.returncode != 0:
+            raise RuntimeError(
+                process.stderr.strip() or process.stdout.strip() or "version query failed"
+            )
+        match = _VERSION_PATTERN.search(process.stdout)
+        if match is None:
+            raise RuntimeError("version query returned no version")
+        version = match.group(0)
+    executable = (
+        _managed_executable_identity(command[0])
+        if managed
+        else _file_identity(_resolved_executable(command[0]))
+    )
+    artifact = _compiler_artifact_identity() if managed else executable
+    return version, {
+        "version": version,
+        "executable": executable,
+        "artifact": artifact,
+    }
+
+
+def _resolved_executable(command: str) -> Path:
+    resolved = shutil.which(command)
+    if resolved is None:
+        return Path(command).resolve(strict=True)
+    return Path(resolved).resolve(strict=True)
+
+
+def _managed_executable_identity(command: str) -> dict[str, str]:
+    path = _resolved_executable(command)
+    lines = path.read_bytes().splitlines(keepends=True)
+    if lines and lines[0].startswith(b"#!"):
+        lines[0] = b"#!python\n"
+    return {
+        "path": command,
+        "sha256": hashlib.sha256(b"".join(lines)).hexdigest(),
+    }
+
+
+def _compiler_artifact_identity() -> dict[str, str]:
+    distribution = importlib.metadata.distribution("vyper")
+    artifact = _distribution_artifact(distribution)
+    if artifact is None:
+        raise RuntimeError("vyper distribution has no RECORD or METADATA artifact")
+    return artifact
+
+
+def _resolved_packages() -> list[dict[str, str | None]]:
+    packages: dict[tuple[str, str, str | None, str], dict[str, str | None]] = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if not name:
+            continue
+        artifact = _distribution_artifact(distribution)
+        if artifact is None:
+            continue
+        source = _canonical_json(distribution.read_text("direct_url.json"))
+        identity = (name.lower(), distribution.version, source, artifact["sha256"])
+        packages[identity] = {
+            "name": name,
+            "version": distribution.version,
+            "source": source,
+            "artifact_sha256": artifact["sha256"],
+        }
+    return [packages[identity] for identity in sorted(packages, key=repr)]
+
+
+def _distribution_artifact(
+    distribution: importlib.metadata.Distribution,
+) -> dict[str, str] | None:
+    files = distribution.files or ()
+    for suffix in (".dist-info/RECORD", ".dist-info/METADATA"):
+        entry = next((file for file in files if str(file).endswith(suffix)), None)
+        if entry is None:
+            continue
+        path = Path(distribution.locate_file(entry)).resolve()
+        if path.is_file():
+            return _file_identity(path)
+    return None
+
+
+def _canonical_json(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return json.dumps(json.loads(value), sort_keys=True, separators=(",", ":"))
+    except json.JSONDecodeError:
+        return value
+
+
+def _file_identity(path: Path) -> dict[str, str]:
+    return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def _version_satisfies(version: str, declaration: str) -> bool:
+    normalized = declaration.strip()
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:[A-Za-z]+\d+)?", normalized):
+        normalized = f"=={normalized}"
+    elif normalized.startswith("^"):
+        normalized = f"~={normalized[1:]}"
+    try:
+        return SpecifierSet(normalized).contains(Version(version), prereleases=True)
+    except (InvalidSpecifier, InvalidVersion):
+        return False
+
+
+def _failure_payload(
+    *,
+    origin: str,
+    completion_status: str,
+    compiler_started: bool = False,
+    error: str,
+    **evidence: object,
+) -> dict[str, object]:
+    return {
+        "state": "complete",
+        "compiler_started": compiler_started,
+        "failure_origin": origin,
+        "completion_status": completion_status,
+        "returncode": None,
+        "error": error,
+        **evidence,
+    }
+
+
+def _timeout_handler(_signum: int, _frame: object) -> None:
+    raise _CompilerTimedOut
 
 
 def _timeout_text(value: str | bytes | None) -> str:

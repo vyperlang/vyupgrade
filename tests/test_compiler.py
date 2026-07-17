@@ -1,4 +1,5 @@
 from __future__ import annotations
+from hashlib import sha256
 
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from vyupgrade.compiler import (
     target_overlay,
     unavailable_validation_artifacts,
 )
-from vyupgrade.models import Config, DependencyContext, FailureOrigin
+from vyupgrade.models import Config, ContentIdentity, DependencyContext, FailureOrigin
 from vyupgrade.versions import KNOWN_VERSIONS, parse_version
 
 
@@ -431,7 +432,10 @@ dependencies = ["vyper==0.4.1", "snekmate==0.1.1", "requests==2.32.4"]
         assert context == DependencyContext(
             mode="project",
             project_root=str(project.resolve()),
-            manifest=str(pyproject.resolve()),
+            manifest=ContentIdentity(
+                str(pyproject.resolve()),
+                sha256(pyproject.read_bytes()).hexdigest(),
+            ),
         )
 
 
@@ -464,8 +468,14 @@ dependencies = ["vyper==0.4.1"]
         assert context == DependencyContext(
             mode="project",
             project_root=str(project.resolve()),
-            manifest=str(pyproject.resolve()),
-            lockfile=str(lockfile),
+            manifest=ContentIdentity(
+                str(pyproject.resolve()),
+                sha256(pyproject.read_bytes()).hexdigest(),
+            ),
+            lockfile=ContentIdentity(
+                str(lockfile.resolve()),
+                sha256(lockfile.read_bytes()).hexdigest(),
+            ),
         )
 
 
@@ -669,13 +679,13 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
     )
 
 
-def test_compile_source_file_retries_legacy_span_error_with_final_newline(
+def test_compile_source_file_does_not_retry_or_transform_final_newline(
     monkeypatch, tmp_path
 ) -> None:
     contract = tmp_path / "contract.vy"
     source = "# @version 0.2.8\n# eof"
     contract.write_text(source, encoding="utf-8")
-    calls: list[tuple[Path, bytes]] = []
+    calls: list[tuple[Path, bytes, object]] = []
 
     def fake_run_compile_with_formats(
         command: list[str],
@@ -684,14 +694,10 @@ def test_compile_source_file_retries_legacy_span_error_with_final_newline(
         formats: tuple[str, ...],
         extra_paths: tuple[Path, ...],
         suppress_warnings: bool,
-        **_kwargs,
+        **kwargs,
     ) -> CompileResult:
-        calls.append((path, path.read_bytes()))
-        if len(calls) == 1:
-            return CompileResult(
-                "failed", stderr="ValueError: start (2,0) precedes previous end (3,0)"
-            )
-        return CompileResult("passed", artifacts={"abi": []})
+        calls.append((path, path.read_bytes(), kwargs.get("allow_format_retries")))
+        return CompileResult("failed", stderr="ValueError: start (2,0) precedes previous end (3,0)")
 
     monkeypatch.setattr("vyupgrade.compiler._prepare_command", lambda *args: (["vyper"], False))
     monkeypatch.setattr(
@@ -700,12 +706,8 @@ def test_compile_source_file_retries_legacy_span_error_with_final_newline(
 
     result = compile_source_file(contract, Config(paths=(contract,)), "0.2.8")
 
-    assert result.status == "passed"
-    assert calls[0] == (contract, source.encode())
-    assert calls[1][0].parent == contract.parent
-    assert calls[1][0] != contract
-    assert calls[1][1] == source.encode() + b"\n"
-    assert not calls[1][0].exists()
+    assert result.status == "failed"
+    assert calls == [(contract, source.encode(), False)]
     assert contract.read_text(encoding="utf-8") == source
 
 

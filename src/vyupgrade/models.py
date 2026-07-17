@@ -5,8 +5,40 @@ from pathlib import Path
 from typing import Any, Literal
 
 
+FailureOrigin = Literal[
+    "compiler",
+    "compiler-internal",
+    "environment",
+    "launch",
+    "timeout",
+    "adapter",
+]
+TargetFailureOrigin = Literal[
+    "fixed-target-rewrite",
+    "fixed-target-dependency",
+    "compiler-internal",
+    "environment",
+    "launch",
+    "timeout",
+    "adapter",
+]
+CompilerAuthority = Literal[
+    "project-lock",
+    "project-manifest",
+    "source-exact",
+    "source-range",
+    "explicit-executable",
+    "fixed-target",
+    "default",
+]
+CompletionStatus = Literal[
+    "not-started",
+    "completed",
+    "timed-out",
+    "signaled",
+    "adapter-failed",
+]
 Severity = Literal["info", "warning", "error"]
-FailureOrigin = Literal["compiler", "environment", "launch", "timeout", "adapter"]
 ValidationDecisionStatus = Literal["not-required", "passed", "waived", "blocked"]
 ValidationIssueCode = Literal[
     "target_compile_failed",
@@ -18,7 +50,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
-REPORT_SCHEMA_VERSION = 3
+REPORT_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -95,18 +127,152 @@ class CompilerOutput:
 
 
 @dataclass(frozen=True)
-class DependencyContext:
-    mode: Literal["isolated", "project"]
-    project_root: str | None = None
-    manifest: str | None = None
-    lockfile: str | None = None
+class ContentIdentity:
+    path: str
+    sha256: str
+
+    def to_json_obj(self) -> dict[str, str]:
+        return {"path": self.path, "sha256": self.sha256}
+
+
+@dataclass(frozen=True)
+class CompilerDeclaration:
+    kind: Literal["project", "source-pragma", "target-version", "explicit-executable"]
+    value: str
+    path: str | None = None
+
+    def to_json_obj(self) -> dict[str, str | None]:
+        return {"kind": self.kind, "value": self.value, "path": self.path}
+
+
+@dataclass(frozen=True)
+class DeclaredSpec:
+    snapshot_sha256: str
+    sources: tuple[ContentIdentity, ...]
+    compiler_declarations: tuple[CompilerDeclaration, ...]
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "snapshot": {"sha256": self.snapshot_sha256},
+            "sources": [source.to_json_obj() for source in self.sources],
+            "compiler_declarations": [
+                declaration.to_json_obj() for declaration in self.compiler_declarations
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedCompiler:
+    version: str
+    executable: ContentIdentity
+    artifact: ContentIdentity
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "executable": self.executable.to_json_obj(),
+            "artifact": self.artifact.to_json_obj(),
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedPackage:
+    name: str
+    version: str
+    source: str | None
+    artifact_sha256: str
 
     def to_json_obj(self) -> dict[str, str | None]:
         return {
+            "name": self.name,
+            "version": self.version,
+            "source": self.source,
+            "artifact_sha256": self.artifact_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class DependencyContext:
+    mode: Literal["isolated", "project"]
+    project_root: str | None = None
+    manifest: ContentIdentity | None = None
+    lockfile: ContentIdentity | None = None
+    python_constraint: str | None = None
+    declared_sources: tuple[ContentIdentity, ...] = ()
+    resolved_packages: tuple[ResolvedPackage, ...] = ()
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
             "mode": self.mode,
             "project_root": self.project_root,
-            "manifest": self.manifest,
-            "lockfile": self.lockfile,
+            "manifest": self.manifest.to_json_obj() if self.manifest is not None else None,
+            "lockfile": self.lockfile.to_json_obj() if self.lockfile is not None else None,
+            "python_constraint": self.python_constraint,
+            "declared_sources": [source.to_json_obj() for source in self.declared_sources],
+            "resolved_packages": [package.to_json_obj() for package in self.resolved_packages],
+        }
+
+
+@dataclass(frozen=True)
+class ExitStatus:
+    code: int | None
+    signal: int | None = None
+
+    def to_json_obj(self) -> dict[str, int | None]:
+        return {"code": self.code, "signal": self.signal}
+
+
+@dataclass(frozen=True)
+class CompileAttempt:
+    sequence: int
+    source: ContentIdentity
+    compiler_started: bool
+    completion_status: CompletionStatus
+    exit_status: ExitStatus
+    failure_origin: FailureOrigin | TargetFailureOrigin | None
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "sequence": self.sequence,
+            "source": self.source.to_json_obj(),
+            "compiler_started": self.compiler_started,
+            "completion_status": self.completion_status,
+            "exit_status": self.exit_status.to_json_obj(),
+            "failure_origin": self.failure_origin,
+        }
+
+
+@dataclass(frozen=True)
+class ValidationAttestation:
+    declared_spec: DeclaredSpec
+    authority_rule: CompilerAuthority
+    resolved_compiler: ResolvedCompiler | None
+    dependency_context: DependencyContext
+    compiler_started: bool
+    completion_status: CompletionStatus
+    exit_status: ExitStatus
+    validated_source_set: tuple[ContentIdentity, ...]
+    attempt_sequence: tuple[CompileAttempt, ...]
+    failure_origin: FailureOrigin | TargetFailureOrigin | None
+    compiler_output: CompilerOutput | None
+
+    def to_json_obj(self) -> dict[str, object]:
+        return {
+            "declared_spec": self.declared_spec.to_json_obj(),
+            "authority_rule": self.authority_rule,
+            "resolved_compiler": (
+                self.resolved_compiler.to_json_obj() if self.resolved_compiler is not None else None
+            ),
+            "dependency_context": self.dependency_context.to_json_obj(),
+            "compiler_started": self.compiler_started,
+            "completion_status": self.completion_status,
+            "exit_status": self.exit_status.to_json_obj(),
+            "validated_source_set": [source.to_json_obj() for source in self.validated_source_set],
+            "attempt_sequence": [attempt.to_json_obj() for attempt in self.attempt_sequence],
+            "failure_origin": self.failure_origin,
+            "compiler_output": (
+                self.compiler_output.to_json_obj() if self.compiler_output is not None else None
+            ),
         }
 
 
@@ -122,12 +288,8 @@ class FileReport:
     source_compile: str = "skipped"
     target_compile: str = "skipped"
     source_error: str | None = None
-    declared_spec: str | None = None
-    resolved_compiler: str | None = None
-    dependency_context: DependencyContext | None = None
-    compiler_started: bool = False
-    failure_origin: FailureOrigin | None = None
-    compiler_output: CompilerOutput | None = None
+    source_attestation: ValidationAttestation | None = None
+    target_attestation: ValidationAttestation | None = None
     target_error: str | None = None
     abi_equal: bool | None = None
     method_ids_equal: bool | None = None
@@ -232,8 +394,11 @@ class RunReport:
         return sum(len(file.diagnostics) for file in self.files)
 
     def to_json_obj(self) -> dict[str, Any]:
+        from . import __version__
+
         return {
             "schema_version": REPORT_SCHEMA_VERSION,
+            "producer": {"name": "vyupgrade", "version": __version__},
             "source_version": self.source_version,
             "target_version": self.target_version,
             "write_requested": self.write_requested,
@@ -256,18 +421,14 @@ class RunReport:
                         "source_version": file.source_version,
                         "source_compiler": file.source_compiler,
                         "source_compile": file.source_compile,
-                        "declared_spec": file.declared_spec,
-                        "resolved_compiler": file.resolved_compiler,
-                        "dependency_context": (
-                            file.dependency_context.to_json_obj()
-                            if file.dependency_context is not None
+                        "source_attestation": (
+                            file.source_attestation.to_json_obj()
+                            if file.source_attestation is not None
                             else None
                         ),
-                        "compiler_started": file.compiler_started,
-                        "failure_origin": file.failure_origin,
-                        "compiler_output": (
-                            file.compiler_output.to_json_obj()
-                            if file.compiler_output is not None
+                        "target_attestation": (
+                            file.target_attestation.to_json_obj()
+                            if file.target_attestation is not None
                             else None
                         ),
                         "target_compile": file.target_compile,
