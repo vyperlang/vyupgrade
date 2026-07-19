@@ -1391,16 +1391,9 @@ def _parse_args(_arguments):
     time.sleep(5)
 """,
     )
-    source_root = Path(__file__).parents[1] / "src"
-    python_path = os.pathsep.join(
-        part for part in (str(site), str(source_root), os.environ.get("PYTHONPATH")) if part
-    )
-    process = subprocess.run(
-        [
-            sys.executable,
-            "-S",
-            "-c",
-            """import signal
+    process = _run_managed_compiler_harness(
+        site,
+        """import signal
 import subprocess
 from vyupgrade.compiler_runner import _run_managed_compiler
 
@@ -1413,10 +1406,29 @@ except subprocess.TimeoutExpired:
     raise SystemExit(0)
 raise SystemExit("managed compiler did not time out")
 """,
-        ],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PYTHONPATH": python_path},
+    )
+
+    assert process.returncode == 0, process.stderr
+
+
+def test_managed_compiler_worker_crash_is_internal(tmp_path: Path) -> None:
+    site, _bin_dir = _write_managed_vyper_environment(
+        tmp_path,
+        """import os
+
+def _parse_args(_arguments):
+    os._exit(17)
+""",
+    )
+
+    process = _run_managed_compiler_harness(
+        site,
+        """from vyupgrade.compiler_runner import _run_managed_compiler
+
+result = _run_managed_compiler(["vyper"], 5)
+assert result["failure_origin"] == "compiler-internal", result
+assert result["returncode"] == 17, result
+""",
     )
 
     assert process.returncode == 0, process.stderr
@@ -1767,6 +1779,22 @@ def test_real_invalid_compiler_output_is_adapter_origin(tmp_path: Path) -> None:
     assert result.failure_origin == "adapter"
     assert result.compiler_output is not None
     assert result.compiler_output.stdout == "not-json\n"
+
+
+def _run_managed_compiler_harness(
+    site: Path,
+    script: str,
+) -> subprocess.CompletedProcess[str]:
+    source_root = Path(__file__).parents[1] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(site), str(source_root), os.environ.get("PYTHONPATH")) if part
+    )
+    return subprocess.run(
+        [sys.executable, "-S", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": python_path},
+    )
 
 
 def _write_managed_vyper_environment(

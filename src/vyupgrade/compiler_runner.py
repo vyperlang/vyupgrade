@@ -133,7 +133,7 @@ def _run_managed_compiler(command: list[str], timeout: float) -> dict[str, objec
         signaled = process.returncode < 0
         return {
             "returncode": process.returncode,
-            "failure_origin": "compiler-internal" if signaled else "adapter",
+            "failure_origin": "compiler-internal",
             "completion_status": "signaled" if signaled else "adapter-failed",
             "stdout": process.stdout,
             "stderr": process.stderr,
