@@ -1382,6 +1382,46 @@ def test_compiler_runner_writes_evidence_without_site_packages(tmp_path: Path) -
     assert payload["resolved_compiler"] == "0.4.3"
 
 
+def test_managed_compiler_timeout_does_not_require_posix_alarms(tmp_path: Path) -> None:
+    site, _bin_dir = _write_managed_vyper_environment(
+        tmp_path,
+        """import time
+
+def _parse_args(_arguments):
+    time.sleep(5)
+""",
+    )
+    source_root = Path(__file__).parents[1] / "src"
+    python_path = os.pathsep.join(
+        part for part in (str(site), str(source_root), os.environ.get("PYTHONPATH")) if part
+    )
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            """import signal
+import subprocess
+from vyupgrade.compiler_runner import _run_managed_compiler
+
+for name in ("SIGALRM", "ITIMER_REAL", "setitimer"):
+    if hasattr(signal, name):
+        delattr(signal, name)
+try:
+    _run_managed_compiler(["vyper"], 0.05)
+except subprocess.TimeoutExpired:
+    raise SystemExit(0)
+raise SystemExit("managed compiler did not time out")
+""",
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": python_path},
+    )
+
+    assert process.returncode == 0, process.stderr
+
+
 def test_real_ranged_pragma_prefers_declared_project_compiler(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

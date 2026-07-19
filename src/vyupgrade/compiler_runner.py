@@ -8,7 +8,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -17,13 +16,13 @@ from pathlib import Path
 
 
 _VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*)?\b")
-
-
-class _CompilerTimedOut(Exception):
-    pass
+_MANAGED_WORKER_ARGUMENT = "--managed-compiler-worker"
 
 
 def main() -> None:
+    if sys.argv[1:2] == [_MANAGED_WORKER_ARGUMENT]:
+        _managed_compiler_worker(sys.argv[2:])
+        return
     result_path, timeout, managed_value, coherence, *command = sys.argv[1:]
     destination = Path(result_path)
     managed = managed_value == "managed"
@@ -118,36 +117,74 @@ def main() -> None:
 
 
 def _run_managed_compiler(command: list[str], timeout: float) -> dict[str, object]:
-    vyper_compile = importlib.import_module("vyper.cli.vyper_compile")
-    exception_type = importlib.import_module("vyper.exceptions").VyperException
+    process = subprocess.run(
+        [
+            sys.executable,
+            *(("-S",) if sys.flags.no_site else ()),
+            str(Path(__file__).resolve()),
+            _MANAGED_WORKER_ARGUMENT,
+            *command,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if process.returncode != 0:
+        signaled = process.returncode < 0
+        return {
+            "returncode": process.returncode,
+            "failure_origin": "compiler-internal" if signaled else "adapter",
+            "completion_status": "signaled" if signaled else "adapter-failed",
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+        }
+    try:
+        result = json.loads(process.stdout)
+    except json.JSONDecodeError:
+        return {
+            "returncode": 1,
+            "failure_origin": "adapter",
+            "completion_status": "adapter-failed",
+            "stdout": process.stdout,
+            "stderr": process.stderr or "managed compiler worker returned invalid output",
+        }
+    if not isinstance(result, dict):
+        return {
+            "returncode": 1,
+            "failure_origin": "adapter",
+            "completion_status": "adapter-failed",
+            "stdout": process.stdout,
+            "stderr": process.stderr or "managed compiler worker returned invalid output",
+        }
+    return result
+
+
+def _managed_compiler_worker(command: list[str]) -> None:
+    sys.stdout.write(json.dumps(_managed_compiler_result(command)))
+
+
+def _managed_compiler_result(command: list[str]) -> dict[str, object]:
     with (
         tempfile.TemporaryFile("w+", encoding="utf-8") as stdout,
         tempfile.TemporaryFile("w+", encoding="utf-8") as stderr,
     ):
-        previous_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.setitimer(signal.ITIMER_REAL, timeout)
-        try:
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                try:
-                    vyper_compile._parse_args(command[1:])
-                    returncode = 0
-                    origin = None
-                except exception_type as exc:
-                    traceback.print_exception(exc, file=stderr)
-                    returncode = 1
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                vyper_compile = importlib.import_module("vyper.cli.vyper_compile")
+                exception_type = importlib.import_module("vyper.exceptions").VyperException
+                vyper_compile._parse_args(command[1:])
+                returncode = 0
+                origin = None
+            except SystemExit as exc:
+                returncode = exc.code if type(exc.code) is int else 1
+                origin = None if returncode == 0 else "adapter"
+            except BaseException as exc:
+                if "exception_type" in locals() and isinstance(exc, exception_type):
                     origin = "compiler"
-                except _CompilerTimedOut:
-                    raise subprocess.TimeoutExpired(command, timeout) from None
-                except SystemExit as exc:
-                    returncode = exc.code if type(exc.code) is int else 1
-                    origin = None if returncode == 0 else "adapter"
-                except BaseException as exc:
-                    traceback.print_exception(exc, file=stderr)
-                    returncode = 1
+                else:
                     origin = "compiler-internal"
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, previous_handler)
+                traceback.print_exception(exc, file=stderr)
+                returncode = 1
         stdout.seek(0)
         stderr.seek(0)
         return {
@@ -321,10 +358,6 @@ def _failure_payload(
         "error": error,
         **evidence,
     }
-
-
-def _timeout_handler(_signum: int, _frame: object) -> None:
-    raise _CompilerTimedOut
 
 
 def _timeout_text(value: str | bytes | None) -> str:
