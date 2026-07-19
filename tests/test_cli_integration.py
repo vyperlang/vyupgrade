@@ -1125,6 +1125,52 @@ version = "0.1.0"
     }
 
 
+def test_real_unlocked_project_preserves_sibling_path_sources(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    helper = tmp_path / "helper"
+    helper_package = helper / "src" / "vyupgrade_pr33_helper"
+    project.mkdir()
+    helper_package.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "sibling-path-app"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.1", "vyupgrade-pr33-helper"]
+
+[tool.uv.sources]
+vyupgrade-pr33-helper = { path = "../helper" }
+""",
+        encoding="utf-8",
+    )
+    (helper / "pyproject.toml").write_text(
+        """[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vyupgrade-pr33-helper"
+version = "0.1.0"
+""",
+        encoding="utf-8",
+    )
+    (helper_package / "__init__.py").write_text("", encoding="utf-8")
+    source = "# pragma version 0.4.1\nvalue: public(uint256)\n"
+    contract = project / "contract.vy"
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.1")
+
+    source_result = compile_source_file(contract, config, "0.4.1")
+    target_result = compile_target_source(contract, source, config)
+
+    assert source_result.status == "passed"
+    assert target_result.status == "passed"
+    assert source_result.dependency_context is not None
+    assert {source.path for source in source_result.dependency_context.declared_sources} == {
+        str(helper.resolve())
+    }
+
+
 def test_real_compiler_overlay_uses_project_interpreter(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -1151,6 +1197,99 @@ dependencies = []
     assert result.resolved_compiler == "0.4.3"
     assert result.dependency_context is not None
     assert result.dependency_context.python_constraint == ">=3.13"
+
+
+def test_real_project_markers_use_the_selected_python(tmp_path: Path) -> None:
+    if sys.version_info[:2] == (3, 11):
+        python_constraint = ">=3.12,<3.13"
+        marker = "python_version >= '3.12'"
+    else:
+        python_constraint = ">=3.11,<3.12"
+        marker = "python_version < '3.12'"
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        f"""[project]
+name = "selected-python-markers"
+version = "0.1.0"
+requires-python = "{python_constraint}"
+dependencies = ["vyper==0.4.1; {marker}"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version >=0.4.0\nvalue: public(uint256)\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.3",
+    )
+
+    assert result.status == "passed"
+    assert result.compiler_authority == "project-manifest"
+    assert result.resolved_compiler == "0.4.1"
+    assert {declaration.value for declaration in result.compiler_declarations} == {
+        "vyper==0.4.1; " + marker,
+        ">=0.4.0",
+    }
+
+
+def test_real_target_python_pin_is_preserved_when_compatible(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "compatible-target-python"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = []
+""",
+        encoding="utf-8",
+    )
+    source = "# pragma version 0.4.3\nvalue: public(uint256)\n"
+    contract = project / "contract.vy"
+    contract.write_text(source, encoding="utf-8")
+
+    result = compile_target_source(
+        contract,
+        source,
+        Config(paths=(contract,), target_version="0.4.3", target_python="3.11"),
+    )
+
+    assert result.status == "passed"
+    assert result.command is not None
+    assert result.command[result.command.index("--python") + 1] == "3.11"
+
+
+def test_real_target_python_pin_conflict_is_an_environment_failure(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "conflicting-target-python"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+""",
+        encoding="utf-8",
+    )
+    source = "# pragma version 0.4.3\nvalue: public(uint256)\n"
+    contract = project / "contract.vy"
+    contract.write_text(source, encoding="utf-8")
+
+    result = compile_target_source(
+        contract,
+        source,
+        Config(paths=(contract,), target_version="0.4.3", target_python="3.12"),
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is False
+    assert result.failure_origin == "environment"
+    assert result.stderr is not None
+    assert "target Python pin '3.12'" in result.stderr
+    assert "requires-python '>=3.13'" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1199,37 +1338,15 @@ requires-python = ">=3.11"
 
 
 def test_compiler_runner_writes_evidence_without_site_packages(tmp_path: Path) -> None:
-    site = tmp_path / "site"
-    package = site / "vyper"
-    cli = package / "cli"
-    dist_info = site / "vyper-0.4.3.dist-info"
-    bin_dir = tmp_path / "bin"
-    cli.mkdir(parents=True)
-    dist_info.mkdir(parents=True)
-    bin_dir.mkdir()
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "exceptions.py").write_text(
-        "class VyperException(Exception):\n    pass\n",
-        encoding="utf-8",
-    )
-    (cli / "__init__.py").write_text("", encoding="utf-8")
-    (cli / "vyper_compile.py").write_text(
+    site, bin_dir = _write_managed_vyper_environment(
+        tmp_path,
         """def _parse_args(_arguments):
     print("[]")
     print("{}")
     print("{}")
     print('{"ast_type": "Module", "body": []}')
 """,
-        encoding="utf-8",
     )
-    (dist_info / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: vyper\nVersion: 0.4.3\n",
-        encoding="utf-8",
-    )
-    (dist_info / "RECORD").write_text("vyper-0.4.3.dist-info/METADATA,,\n", encoding="utf-8")
-    executable = bin_dir / "vyper"
-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    executable.chmod(0o755)
     result_path = tmp_path / "result.json"
     runner = Path(__file__).parents[1] / "src" / "vyupgrade" / "compiler_runner.py"
     coherence = json.dumps({"declaration": "0.4.3", "versions": ["0.4.3"]})
@@ -1610,6 +1727,39 @@ def test_real_invalid_compiler_output_is_adapter_origin(tmp_path: Path) -> None:
     assert result.failure_origin == "adapter"
     assert result.compiler_output is not None
     assert result.compiler_output.stdout == "not-json\n"
+
+
+def _write_managed_vyper_environment(
+    tmp_path: Path,
+    compiler_module: str,
+) -> tuple[Path, Path]:
+    site = tmp_path / "site"
+    package = site / "vyper"
+    cli = package / "cli"
+    dist_info = site / "vyper-0.4.3.dist-info"
+    bin_dir = tmp_path / "bin"
+    cli.mkdir(parents=True)
+    dist_info.mkdir(parents=True)
+    bin_dir.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "exceptions.py").write_text(
+        "class VyperException(Exception):\n    pass\n",
+        encoding="utf-8",
+    )
+    (cli / "__init__.py").write_text("", encoding="utf-8")
+    (cli / "vyper_compile.py").write_text(compiler_module, encoding="utf-8")
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: vyper\nVersion: 0.4.3\n",
+        encoding="utf-8",
+    )
+    (dist_info / "RECORD").write_text(
+        "vyper-0.4.3.dist-info/METADATA,,\n",
+        encoding="utf-8",
+    )
+    executable = bin_dir / "vyper"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    return site, bin_dir
 
 
 def _write_test_compiler(tmp_path: Path, compile_body: str) -> Path:
