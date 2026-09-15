@@ -9,6 +9,7 @@ from .source import (
     TextEdit,
     apply_edits,
     code_mask,
+    find_matching_open as find_matching_open,
     line_number,
     line_starts_in_code,
     span_is_code,
@@ -236,21 +237,6 @@ def replace_identifier_expr(
         edits.append(TextEdit(match.start(), match.end(), after))
         fixes.append(Fix(rule, line_number(source, match.start()), message, before, after))
     return apply_edits(source, edits), fixes
-
-
-def find_matching_open(
-    source: str, close_index: int, open_char: str = "(", close_char: str = ")"
-) -> int | None:
-    depth = 0
-    for index in range(close_index, -1, -1):
-        char = source[index]
-        if char == close_char:
-            depth += 1
-        elif char == open_char:
-            depth -= 1
-            if depth == 0:
-                return index
-    return None
 
 
 def literal_integer(value: str) -> bool:
