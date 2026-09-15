@@ -52,6 +52,7 @@ class MigrationPlan:
 
     def __init__(self) -> None:
         self._entries: dict[Path, PlannedWrite] = {}
+        self._dependencies: dict[Path, bytes] = {}
         self._generated_destinations: set[Path] = set()
 
     @property
@@ -61,6 +62,13 @@ class MigrationPlan:
     @property
     def writes(self) -> tuple[PlannedWrite, ...]:
         return tuple(entry for entry in self._entries.values() if entry.changed)
+
+    def add_dependency(self, path: Path, content: bytes) -> None:
+        """Track a read-only input for the same final transaction recheck."""
+        destination = path.resolve()
+        if destination in self._entries:
+            raise PlanConflictError(f"duplicate migration input: {destination}")
+        self._dependencies[destination] = content
 
     def add_source(
         self,
@@ -186,7 +194,10 @@ class MigrationPlan:
         return chunks
 
     def commit(self) -> bool:
-        entries = self.entries
+        entries = self.entries + tuple(
+            PlannedWrite(path, content, content, None, False)
+            for path, content in self._dependencies.items()
+        )
         self._assert_destinations_unchanged(entries)
         writes = self.writes
         if not writes:

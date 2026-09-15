@@ -158,12 +158,15 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 4
+    snapshot = compiler.resolve_import_closure(
+        {request.path: request.original for request in requests}, config.compiler_search_paths
+    ) if requests else None
     closure_report = ClosureReport(requested=True) if config.include_dependencies else None
     if closure_report is not None and requests:
-        dependency_requests, closure = _dependency_requests(requests, config)
+        dependency_requests, closure = _dependency_requests(requests, config, snapshot)
         requests += dependency_requests
         closure_report.dependencies = tuple(str(path) for path in sorted(closure.dependencies))
-    batch = engine.prepare_migrations(requests, config)
+    batch = engine.prepare_migrations(requests, config, snapshot=snapshot)
     reports, plan, plan_error = _build_migration_plan(batch)
     if plan_error is None:
         validation_decision = _validate_or_layout_conflict(batch, config, plan.candidate_source)
@@ -356,6 +359,11 @@ def _build_migration_plan(
     reports = batch.reports
     plan = MigrationPlan()
     try:
+        planned_paths = {migration.path.resolve() for migration in batch.files if migration.request.role != "dependency"}
+        if batch.snapshot is not None:
+            for path, content in batch.snapshot.contents.items():
+                if path not in planned_paths:
+                    plan.add_dependency(path, content)
         for migration in batch.files:
             if migration.request.role == "dependency":
                 continue
@@ -390,9 +398,10 @@ def _archive_entry(requests: list[engine.MigrationRequest]) -> Path:
 
 
 def _dependency_requests(
-    requests: list[engine.MigrationRequest], config: Config
+    requests: list[engine.MigrationRequest], config: Config,
+    snapshot: compiler.ImportClosure | None = None,
 ) -> tuple[list[engine.MigrationRequest], compiler.ImportClosure]:
-    closure = compiler.resolve_import_closure(
+    closure = snapshot or compiler.resolve_import_closure(
         {request.path: request.original for request in requests},
         config.compiler_search_paths,
     )
@@ -400,7 +409,7 @@ def _dependency_requests(
     dependencies = [
         engine.bounded_migration_request(
             path,
-            path.read_text(encoding="utf-8"),
+            closure.contents[path].decode("utf-8"),
             dependency_config,
             role="dependency",
             consumer_roots=closure.consumers.get(path, ()),
@@ -440,6 +449,7 @@ def _emit_closure_output(
         engine.candidate_sources(batch, plan.candidate_source),
         config.target_version,
         config.compiler_search_paths,
+        snapshot=batch.snapshot,
     )
     run_report.closure.output_dir = str(result.root)
     run_report.closure.output_status = result.status
@@ -460,6 +470,7 @@ def _emit_closure_archive(
         entry,
         engine.candidate_sources(batch, plan.candidate_source),
         config,
+        snapshot=batch.snapshot,
     )
     run_report.closure.archive = str(result.root)
     run_report.closure.archive_status = result.status

@@ -24,7 +24,6 @@ from vyupgrade.compiler import (
     _provision_environment,
     _run_compiler_process,
     _supports_warning_policy,
-    _target_validation_source,
     _uv_bin,
     compare_artifact_details,
     compare_artifacts,
@@ -55,6 +54,12 @@ def _compiler_process(
     error_type: str | None = None,
     error: str | None = None,
 ) -> _CompilerProcess:
+    if "-f" in command:
+        formats = command[command.index("-f") + 1].split(",")
+        chunks = stdout.splitlines()
+        if "bytecode" in formats and len(chunks) == len(formats) - 1:
+            chunks.insert(formats.index("bytecode"), "0x00")
+            stdout = "\n".join(chunks) + "\n"
     return _CompilerProcess(
         command=command,
         context=DependencyContext(mode="isolated"),
@@ -201,7 +206,7 @@ def test_target_compile_fails_on_unsupported_required_layout(monkeypatch) -> Non
     assert result.status == "failed"
     assert result.unavailable_formats == ("layout",)
     assert "required output format 'layout'" in (result.stderr or "")
-    assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout,ast"
+    assert calls[0][calls[0].index("-f") + 1] == "abi,method_identifiers,layout,bytecode,ast"
     assert len(calls) == 1
 
 
@@ -232,11 +237,11 @@ def test_target_compile_falls_back_when_optional_ast_is_unavailable(
     )
 
     assert result.status == "passed"
-    assert result.artifacts == {"abi": [], "method_identifiers": {}, "layout": {}}
+    assert result.artifacts == {"abi": [], "method_identifiers": {}, "layout": {}, "bytecode": "0x00"}
     assert result.unavailable_formats == ("ast",)
     assert [call[call.index("-f") + 1] for call in calls] == [
-        "abi,method_identifiers,layout,ast",
-        "abi,method_identifiers,layout",
+        "abi,method_identifiers,layout,bytecode,ast",
+        "abi,method_identifiers,layout,bytecode",
     ]
 
 
@@ -416,7 +421,7 @@ def test_target_compile_fails_when_compiler_omits_requested_output(monkeypatch) 
 
     assert result.status == "failed"
     assert (
-        result.stderr == "could not parse compiler output: expected 4 compiler outputs, received 2"
+        result.stderr == "could not parse compiler output: expected 5 compiler outputs, received 2"
     )
 
 
@@ -1010,7 +1015,7 @@ def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, t
     assert calls["run"] == (
         ["vyper"],
         contract,
-        ("abi", "method_identifiers", "layout", "ast"),
+        ("abi", "method_identifiers", "layout", "bytecode", "ast"),
         (),
         True,
     )
@@ -1177,84 +1182,14 @@ def test_compile_target_interface_uses_import_harness(monkeypatch, tmp_path) -> 
     assert not list(tmp_path.glob("vyupgrade_interface_*"))
 
 
-def test_target_validation_source_removes_duplicate_vyper_pragmas() -> None:
-    source = "# @version 0.3.10\n# \u00a0@version ^0.2.11\n# pragma solidity ^0.8.0\n"
-
-    result = _target_validation_source(source, "0.4.3")
-
-    assert result == "#pragma version 0.4.3\n\n"
 
 
-def test_target_validation_source_strips_natspec_docstrings() -> None:
-    source = '''# @version 0.3.10
-"""
-@custom:dev first
-@custom:dev duplicate
-"""
-
-@external
-def f():
-    """
-    @returns legacy tag
-    """
-    pass
-'''
-
-    result = _target_validation_source(source, "0.4.3")
-
-    assert '"""' not in result
-    assert "@custom:dev" not in result
-    assert "@returns" not in result
-    assert "@external\ndef f():" in result
 
 
-def test_target_validation_source_strips_multiline_function_natspec_docstrings() -> None:
-    source = '''# @version 0.3.10
-@external
-def callback_deposit(
-    user: address,
-    callback_args: DynArray[uint256, 5]
-  ) -> uint256[2]:
-    """
-    @notice Migrate loan
-    @returns legacy plural tag
-    """
-    return [0, 0]
-'''
-
-    result = _target_validation_source(source, "0.4.3")
-
-    assert '"""' not in result
-    assert "@returns" not in result
-    assert "def callback_deposit(" in result
 
 
-def test_target_validation_source_keeps_assigned_triple_quoted_strings() -> None:
-    source = '''# @version 0.3.10
-VALUE: constant(String[32]) = """literal"""
-'''
-
-    result = _target_validation_source(source, "0.4.3")
-
-    assert 'VALUE: constant(String[32]) = """literal"""' in result
 
 
-def test_target_validation_source_keeps_multiline_string_literals() -> None:
-    source = '''# @version 0.3.10
-@external
-def tokenURI(token_id: uint256) -> String[256]:
-    return concat(
-        """data:application/json,{
-    "name": "Token #"""
-        ,
-        uint2str(token_id),
-    )
-'''
-
-    result = _target_validation_source(source, "0.4.3")
-
-    assert '"""data:application/json,{' in result
-    assert "return concat(\n        ," not in result
 
 
 def test_compile_target_source_uses_source_dir_for_relative_imports(monkeypatch, tmp_path) -> None:
@@ -1488,7 +1423,7 @@ def test_resolve_import_closure_search_path_dependency(tmp_path) -> None:
         dependency.resolve().relative_to(closure.common_root)
     with target_overlay({contract: source}, "0.4.3", (site_packages, project)) as overlay:
         assert overlay is not None
-        assert not any(path.name == "dep.vy" for path in overlay.root.rglob("*") if path.is_file())
+        assert overlay.paths[dependency.resolve()].read_bytes() == dependency.read_bytes()
 
 
 def test_resolve_import_closure_create2_alias_resolves_to_real_file(tmp_path) -> None:
@@ -1581,9 +1516,7 @@ def test_closure_overlay_places_external_dep_import_root_relative(
 
     assert overlay is not None
     target = root / "depkg" / "util.vy"
-    assert target.read_text(encoding="utf-8") == _target_validation_source(
-        dependency.read_text(encoding="utf-8"), "0.4.3"
-    )
+    assert target.read_text(encoding="utf-8") == dependency.read_text(encoding="utf-8")
     assert overlay.paths[dependency.resolve()] == target
     assert overlay.source_roots == (
         contract.parents[1].resolve(),
@@ -1798,10 +1731,10 @@ def test_closure_overlay_drops_external_search_paths_from_compile_paths(
         default_paths = _overlay_search_paths(default_overlay, search_paths)
 
     assert search_paths[0] not in closure_paths
-    assert search_paths[0] in default_paths
+    assert search_paths[0] not in default_paths
 
 
-def test_closure_overlay_create2_alias_beside_override(tmp_path) -> None:
+def test_closure_overlay_does_not_invent_alias_beside_override(tmp_path) -> None:
     project = tmp_path / "project"
     contract = project / "factory.vy"
     create2_address = project / "snekmate" / "utils" / "create2_address.vy"
@@ -1830,7 +1763,7 @@ def test_closure_overlay_create2_alias_beside_override(tmp_path) -> None:
     assert closure is not None
     assert default is not None
     alias = closure_root / "snekmate" / "utils" / "create2.vy"
-    assert alias.read_text() == candidate.replace("_compute_address", "_compute_create2_address")
+    assert not alias.exists()
     assert (closure_root / "snekmate" / "utils" / "create2_address.vy").read_text() == candidate
     assert alias not in closure.paths.values()
     assert not (default_root / "snekmate" / "utils" / "create2.vy").exists()
@@ -1847,25 +1780,17 @@ def test_default_overlay_create2_alias_collision_preserves_last_write(
 
     assert overlay is not None
     assert (root / "snekmate" / "utils" / "create2.vy").read_text() == (
-        _target_validation_source(create2_source, "0.4.3")
+        create2_source
     )
 
 
-def test_closure_overlay_create2_alias_collision_raises(tmp_path) -> None:
+def test_closure_overlay_preserves_distinct_create2_sources(tmp_path) -> None:
     create2_source = "# @version 0.3.10\nREAL_CREATE2: constant(uint256) = 2\n"
-    create2_address, create2, sources = _write_create2_collision_fixture(tmp_path, create2_source)
-
-    with pytest.raises(OverlayLayoutConflictError) as exc_info:
-        materialize_target_overlay(
-            sources,
-            "0.4.3",
-            tmp_path / "overlay",
-            include_dependencies=True,
-        )
-
-    message = str(exc_info.value)
-    assert str(create2_address.resolve()) in message
-    assert str(create2.resolve()) in message
+    first, second, sources = _write_create2_collision_fixture(tmp_path, create2_source)
+    overlay = materialize_target_overlay(sources, "0.4.3", tmp_path / "overlay", include_dependencies=True)
+    assert overlay is not None
+    assert overlay.paths[first.resolve()].read_bytes() == first.read_bytes()
+    assert overlay.paths[second.resolve()].read_bytes() == second.read_bytes()
 
 
 def test_closure_overlay_create2_alias_identical_content_dedupes(
@@ -1883,7 +1808,7 @@ def test_closure_overlay_create2_alias_identical_content_dedupes(
 
     assert overlay is not None
     target = root / "snekmate" / "utils" / "create2.vy"
-    assert target.read_text() == _target_validation_source(create2.read_text(), "0.4.3")
+    assert target.read_text() == create2.read_text()
     assert overlay.paths[create2.resolve()] == target
 
 
@@ -1945,7 +1870,7 @@ def test_closure_overlay_excludes_nested_search_path_pyprojects(
     }
 
 
-def test_materialize_default_mode_ignores_external_deps(tmp_path) -> None:
+def test_materialize_default_mode_snapshots_external_deps(tmp_path) -> None:
     contract, dependency, sources, search_paths = _write_external_import_fixture(tmp_path)
     project = contract.parents[1]
     local_dependency = contract.with_name("local.vy")
@@ -1971,24 +1896,17 @@ def test_materialize_default_mode_ignores_external_deps(tmp_path) -> None:
 
     expected_tree = {
         Path("pyproject.toml"): (project / "pyproject.toml").read_bytes(),
-        Path("src/local.vy"): _target_validation_source(
-            local_dependency.read_text(), "0.4.3"
-        ).encode(),
-        Path("src/main.vy"): sources[contract].encode(),
+        Path("project/src/local.vy"): local_dependency.read_bytes(),
+        Path("project/src/main.vy"): sources[contract].encode(),
+        Path("site-packages/depkg/util.vy"): dependency.read_bytes(),
     }
     assert tree(implicit_root) == expected_tree
     assert tree(explicit_root) == expected_tree
-    assert dependency.resolve() not in implicit.paths
-    assert {path: target.relative_to(implicit_root) for path, target in implicit.paths.items()} == {
-        contract.resolve(): Path("src/main.vy")
-    }
-    assert {path: target.relative_to(explicit_root) for path, target in explicit.paths.items()} == {
-        contract.resolve(): Path("src/main.vy")
-    }
-    assert implicit.source_roots == explicit.source_roots == (project.resolve(),)
+    assert dependency.resolve() in implicit.paths
+    assert implicit.source_roots == explicit.source_roots
 
 
-def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -> None:
+def test_target_overlay_preserves_imported_interface_bytes(monkeypatch, tmp_path) -> None:
     project = tmp_path / "project"
     contract = project / "src" / "exchanges" / "sfrxusd.vy"
     imported = project / "src" / "interfaces" / "IExchange.vyi"
@@ -2037,14 +1955,10 @@ def test_target_overlay_rewrites_imported_vyper_pragmas(monkeypatch, tmp_path) -
     assert result.status == "passed"
     assert calls["path"] != contract
     assert calls["search_paths"][0].name.startswith("vyupgrade-target-")
-    assert "#pragma version 0.4.3" in calls["imported_source"]
-    assert "# @version 0.4.1" not in calls["imported_source"]
-    assert "def quote() -> uint256: ..." in calls["imported_source"]
-    assert '"""docs"""' not in calls["imported_source"]
-    assert "return ..." not in calls["imported_source"]
+    assert calls["imported_source"] == imported.read_text()
 
 
-def test_target_overlay_rewrites_imported_dependency_modules(monkeypatch, tmp_path) -> None:
+def test_target_overlay_preserves_imported_dependency_modules(monkeypatch, tmp_path) -> None:
     project = tmp_path / "project"
     contract = project / "contracts" / "LpSugar.vy"
     imported = project / "contracts" / "modules" / "lp_shared.vy"
@@ -2091,8 +2005,7 @@ def test_target_overlay_rewrites_imported_dependency_modules(monkeypatch, tmp_pa
         )
 
     assert result.status == "passed"
-    assert "from snekmate.utils import create2" in calls["imported_source"]
-    assert "create2._compute_create2_address(salt, init_hash, factory)" in calls["imported_source"]
+    assert calls["imported_source"] == imported.read_text()
 
 
 def test_target_overlay_skips_unrelated_sibling_sources(tmp_path) -> None:
@@ -2162,7 +2075,7 @@ def test_target_overlay_copies_json_interfaces(tmp_path) -> None:
         assert (overlay_project / "src" / "interfaces" / "IValidator.json").exists()
 
 
-def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) -> None:
+def test_target_overlay_does_not_repair_create2_imports(tmp_path) -> None:
     project = tmp_path / "project"
     contract = project / "src" / "factory.vy"
     dependency = project / "snekmate" / "utils" / "create2_address.vy"
@@ -2186,12 +2099,8 @@ def test_target_overlay_copies_create2_address_under_rewritten_name(tmp_path) ->
         assert overlay is not None
         overlay_contract = overlay.paths[contract.resolve()]
         overlay_project = overlay_contract.parents[1]
-        alias_source = (overlay_project / "snekmate" / "utils" / "create2.vy").read_text(
-            encoding="utf-8"
-        )
-
-    assert "def _compute_create2_address(" in alias_source
-    assert "def _compute_address(" not in alias_source
+        assert not (overlay_project / "snekmate" / "utils" / "create2.vy").exists()
+        assert overlay.paths[dependency.resolve()].read_bytes() == dependency.read_bytes()
 
 
 def test_target_overlay_resolves_dependency_imports_from_search_roots(tmp_path) -> None:
@@ -2322,7 +2231,7 @@ def test_target_overlay_resolves_relative_dependency_imports(tmp_path) -> None:
         assert (overlay.root / "src" / "utils" / "interfaces" / "IERC5267.vyi").exists()
 
 
-def test_target_overlay_rewrites_standard_json_src_package_imports(tmp_path) -> None:
+def test_target_overlay_preserves_standard_json_src_package_imports(tmp_path) -> None:
     project = tmp_path / "project"
     contract = project / "src" / "token.vy"
     erc20 = project / "src" / "erc20.vy"
@@ -2343,10 +2252,7 @@ def test_target_overlay_rewrites_standard_json_src_package_imports(tmp_path) -> 
     ) as overlay:
         assert overlay is not None
         erc20_overlay = overlay.root / "src" / "erc20.vy"
-        assert "from ..utils.interfaces import IERC5267" in erc20_overlay.read_text(
-            encoding="utf-8"
-        )
-        assert (overlay.root / "utils" / "interfaces" / "IERC5267.vyi").exists()
+        assert "from .utils.interfaces import IERC5267" in erc20_overlay.read_text(encoding="utf-8")
 
 
 def test_target_overlay_preserves_exact_override_bytes(tmp_path) -> None:

@@ -2295,6 +2295,7 @@ def test_closure_archive_failure_exits_9(tmp_path: Path, passing_compiler, monke
         _entry: Path,
         _sources: dict[Path, str],
         _config: Config,
+        *, snapshot=None,
     ) -> cli.closure.ClosureWriteResult:
         return cli.closure.ClosureWriteResult("failed", output.resolve(), (), "archive failed")
 
@@ -2332,6 +2333,7 @@ def test_report_json_closure_archive_fields(
         entry: Path,
         sources: dict[Path, str],
         _config: Config,
+        *, snapshot=None,
     ) -> cli.closure.ClosureWriteResult:
         assert entry == project.resolve()
         assert dependency.resolve() in sources
@@ -2372,6 +2374,7 @@ def test_closure_output_and_archive_combine(tmp_path: Path, passing_compiler, mo
         _entry: Path,
         _sources: dict[Path, str],
         _config: Config,
+        *, snapshot=None,
     ) -> cli.closure.ClosureWriteResult:
         archive_path.write_bytes(b"archive")
         return cli.closure.ClosureWriteResult(
@@ -2422,6 +2425,7 @@ def test_closure_archive_pyproject_key(tmp_path: Path, passing_compiler, monkeyp
         _entry: Path,
         _sources: dict[Path, str],
         _config: Config,
+        *, snapshot=None,
     ) -> cli.closure.ClosureWriteResult:
         output.write_bytes(b"archive")
         return cli.closure.ClosureWriteResult("written", output.resolve(), (output.resolve(),))
