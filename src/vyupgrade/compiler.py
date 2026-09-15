@@ -1297,64 +1297,72 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
     return result
 
 
+@dataclass(frozen=True)
+class ArtifactComparison:
+    equal: bool | None = None
+    differences: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ArtifactComparisons:
+    abi: ArtifactComparison
+    method_identifiers: ArtifactComparison
+    storage_layout: ArtifactComparison
+
+    @property
+    def equalities(self) -> tuple[bool | None, bool | None, bool | None]:
+        return self.abi.equal, self.method_identifiers.equal, self.storage_layout.equal
+
+    @property
+    def details(self) -> tuple[list[str], list[str], list[str]]:
+        return (
+            list(self.abi.differences),
+            list(self.method_identifiers.differences),
+            list(self.storage_layout.differences),
+        )
+
+
+def compare_validation_artifacts(source: CompileResult, target: CompileResult) -> ArtifactComparisons:
+    if source.artifacts is None or target.artifacts is None:
+        return ArtifactComparisons(ArtifactComparison(), ArtifactComparison(), ArtifactComparison())
+    source_layout = parse_storage_layout(source.artifacts.get("layout"))
+    target_layout = parse_storage_layout(target.artifacts.get("layout"))
+    layout = ArtifactComparison()
+    if source_layout is not None and target_layout is not None:
+        result = compare_storage_layouts(
+            source_layout, target_layout, target_ast=target.artifacts.get("ast")
+        )
+        layout = ArtifactComparison(result.equal, tuple(result.differences))
+    source_abi = source.artifacts.get("abi")
+    target_abi = target.artifacts.get("abi")
+    source_methods = source.artifacts.get("method_identifiers")
+    target_methods = target.artifacts.get("method_identifiers")
+    abi = ArtifactComparison()
+    methods = ArtifactComparison()
+    if source_abi is not None and target_abi is not None:
+        canonical_source, canonical_target = _canonical_abi(source_abi), _canonical_abi(target_abi)
+        abi = ArtifactComparison(
+            canonical_source == canonical_target,
+            tuple(_canonical_abi_diff(canonical_source, canonical_target)),
+        )
+    if source_methods is not None and target_methods is not None:
+        methods = ArtifactComparison(
+            _canonical_method_identifiers(source_methods) == _canonical_method_identifiers(target_methods),
+            tuple(_method_identifier_diff(source_methods, target_methods)),
+        )
+    return ArtifactComparisons(abi, methods, layout)
+
+
 def compare_artifacts(
     source: CompileResult, target: CompileResult
 ) -> tuple[bool | None, bool | None, bool | None]:
-    if source.artifacts is None or target.artifacts is None:
-        return None, None, None
-    source_layout = parse_storage_layout(source.artifacts.get("layout"))
-    target_layout = parse_storage_layout(target.artifacts.get("layout"))
-    source_abi = source.artifacts.get("abi")
-    target_abi = target.artifacts.get("abi")
-    source_methods = source.artifacts.get("method_identifiers")
-    target_methods = target.artifacts.get("method_identifiers")
-    storage_comparison = (
-        None
-        if source_layout is None or target_layout is None
-        else compare_storage_layouts(
-            source_layout,
-            target_layout,
-            target_ast=target.artifacts.get("ast"),
-        )
-    )
-    return (
-        None
-        if source_abi is None or target_abi is None
-        else _canonical_abi(source_abi) == _canonical_abi(target_abi),
-        None
-        if source_methods is None or target_methods is None
-        else _canonical_method_identifiers(source_methods)
-        == _canonical_method_identifiers(target_methods),
-        None if storage_comparison is None else storage_comparison.equal,
-    )
+    return compare_validation_artifacts(source, target).equalities
 
 
 def compare_artifact_details(
-    source: CompileResult,
-    target: CompileResult,
+    source: CompileResult, target: CompileResult
 ) -> tuple[list[str], list[str], list[str]]:
-    if source.artifacts is None or target.artifacts is None:
-        return [], [], []
-    source_abi = source.artifacts.get("abi")
-    target_abi = target.artifacts.get("abi")
-    source_methods = source.artifacts.get("method_identifiers")
-    target_methods = target.artifacts.get("method_identifiers")
-    source_layout = parse_storage_layout(source.artifacts.get("layout"))
-    target_layout = parse_storage_layout(target.artifacts.get("layout"))
-    storage_comparison = (
-        None
-        if source_layout is None or target_layout is None
-        else compare_storage_layouts(
-            source_layout,
-            target_layout,
-            target_ast=target.artifacts.get("ast"),
-        )
-    )
-    return (
-        _abi_diff(source_abi, target_abi),
-        _method_identifier_diff(source_methods, target_methods),
-        [] if storage_comparison is None else list(storage_comparison.differences),
-    )
+    return compare_validation_artifacts(source, target).details
 
 
 def _target_validation_source(
@@ -1601,11 +1609,29 @@ def _canonical_abi_outputs(value: object) -> object:
         isinstance(value, list)
         and len(value) == 1
         and isinstance(value[0], dict)
-        and _is_tuple_abi_type(value[0].get("type"))
-        and isinstance(value[0].get("components"), list)
+        and value[0].get("type") == "tuple"
+        and _static_abi_parameter(value[0])
     ):
         return _strip_abi_metadata(value[0]["components"])
     return _strip_abi_metadata(value)
+
+
+def _static_abi_parameter(parameter: object) -> bool:
+    """Only static tuples have the same encoding as their unwrapped outputs."""
+    if not isinstance(parameter, dict):
+        return False
+    type_name = parameter.get("type")
+    if not isinstance(type_name, str):
+        return False
+    if re.fullmatch(r"tuple(?:\[[0-9]+\])*", type_name):
+        components = parameter.get("components")
+        return isinstance(components, list) and bool(components) and all(
+            _static_abi_parameter(component) for component in components
+        )
+    return re.fullmatch(
+        r"(?:u?int[0-9]*|address|bool|bytes[0-9]+|u?fixed[0-9]+x[0-9]+)(?:\[[0-9]+\])*",
+        type_name,
+    ) is not None
 
 
 def _canonical_abi_type(type_name: str, components: object = None) -> str:
@@ -1647,8 +1673,12 @@ def _canonical_method_identifiers(methods: object) -> object:
 def _abi_diff(source: object, target: object) -> list[str]:
     if source is None or target is None:
         return []
-    source_entries = _abi_entry_map(_canonical_abi(source))
-    target_entries = _abi_entry_map(_canonical_abi(target))
+    return _canonical_abi_diff(_canonical_abi(source), _canonical_abi(target))
+
+
+def _canonical_abi_diff(source: object, target: object) -> list[str]:
+    source_entries = _abi_entry_map(source)
+    target_entries = _abi_entry_map(target)
     return _mapping_diff_lines(
         source_entries,
         target_entries,

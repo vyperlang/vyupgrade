@@ -33,6 +33,7 @@ vyupgrade = "vyupgrade.cli:main"
 
 [dependency-groups]
 dev = [
+    "eth-tester[py-evm]>=0.13.0b1",
     "polars>=1.30",
     "pytest>=8",
     "ruff>=0.13.0",
