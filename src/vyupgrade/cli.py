@@ -10,11 +10,11 @@ import subprocess
 import sys
 import tempfile
 import threading
-import tomllib
 from pathlib import Path
 from typing import TextIO
 
 from . import closure, compiler, engine
+from .configuration import ConfigurationError, load_project_config
 from .models import (
     DEFAULT_COMPILER_TIMEOUT_SECONDS,
     DEFAULT_NETWORK_TIMEOUT_SECONDS,
@@ -36,72 +36,70 @@ _MAX_TIMEOUT_SECONDS = threading.TIMEOUT_MAX - compiler.ADAPTER_TIMEOUT_GRACE_SE
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    pyproject = _load_pyproject_config(Path(args.config) if args.config else Path("pyproject.toml"))
-    paths = [Path(path) for path in args.paths] or [
-        Path(path) for path in pyproject.get("paths", [])
-    ]
+    try:
+        pyproject = load_project_config(
+            Path(args.config) if args.config else Path("pyproject.toml"),
+            required=args.config is not None,
+        )
+    except ConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    paths = [Path(path) for path in args.paths] or [Path(path) for path in pyproject.paths]
     if not paths:
         print("no paths supplied", file=sys.stderr)
         return 4
     compiler_timeout = _positive_seconds(
-        args.compiler_timeout
-        if args.compiler_timeout is not None
-        else pyproject.get("compiler-timeout", DEFAULT_COMPILER_TIMEOUT_SECONDS)
+        args.compiler_timeout if args.compiler_timeout is not None else pyproject.compiler_timeout
     )
     if compiler_timeout is None:
         print("--compiler-timeout must be a positive number of seconds", file=sys.stderr)
         return 4
     network_timeout = _positive_seconds(
-        args.network_timeout
-        if args.network_timeout is not None
-        else pyproject.get("network-timeout", DEFAULT_NETWORK_TIMEOUT_SECONDS)
+        args.network_timeout if args.network_timeout is not None else pyproject.network_timeout
     )
     if network_timeout is None:
         print("--network-timeout must be a positive number of seconds", file=sys.stderr)
         return 4
     config = Config(
         paths=tuple(paths),
-        target_version=args.target_version or pyproject.get("target-version", "0.4.3"),
-        source_version=args.source_version or _none_if_infer(pyproject.get("source-version")),
-        strip_pragma=args.strip_pragma or bool(pyproject.get("strip-pragma", False)),
+        target_version=args.target_version or pyproject.target_version,
+        source_version=args.source_version or _none_if_infer(pyproject.source_version),
+        strip_pragma=args.strip_pragma or pyproject.strip_pragma,
         write=args.write,
         check=args.check,
         diff=args.diff,
-        report_json=Path(args.report_json or pyproject["report-json"])
-        if args.report_json or pyproject.get("report-json")
+        report_json=Path(args.report_json or pyproject.report_json)
+        if args.report_json or pyproject.report_json
         else None,
         select=_split_rules(args.select),
         ignore=_split_rules(args.ignore),
-        aggressive=args.aggressive or bool(pyproject.get("aggressive", False)),
-        include_dependencies=args.include_dependencies
-        or bool(pyproject.get("include-dependencies", False)),
-        closure_output=Path(args.closure_output or pyproject["closure-output"])
-        if args.closure_output or pyproject.get("closure-output")
+        aggressive=args.aggressive or pyproject.aggressive,
+        include_dependencies=args.include_dependencies or pyproject.include_dependencies,
+        closure_output=Path(args.closure_output or pyproject.closure_output)
+        if args.closure_output or pyproject.closure_output
         else None,
-        closure_archive=Path(args.closure_archive or pyproject["closure-archive"])
-        if args.closure_archive or pyproject.get("closure-archive")
+        closure_archive=Path(args.closure_archive or pyproject.closure_archive)
+        if args.closure_archive or pyproject.closure_archive
         else None,
         test_command=args.test_command,
         source_vyper=args.source_vyper,
         target_vyper=args.target_vyper,
-        source_python=args.source_python or _string_or_none(pyproject.get("source-python")),
-        target_python=args.target_python or _string_or_none(pyproject.get("target-python")),
+        source_python=args.source_python or pyproject.source_python,
+        target_python=args.target_python or pyproject.target_python,
         compiler_search_paths=tuple(
-            Path(path)
-            for path in (args.compiler_search_paths or pyproject.get("compiler-search-paths", []))
+            Path(path) for path in (args.compiler_search_paths or pyproject.compiler_search_paths)
         ),
         compiler_timeout=compiler_timeout,
         network_timeout=network_timeout,
         enable_decimals=args.enable_decimals,
-        split_interfaces=args.split_interfaces or bool(pyproject.get("split-interfaces", False)),
-        format=args.format or pyproject.get("format", "none"),
+        split_interfaces=args.split_interfaces or pyproject.split_interfaces,
+        format=args.format or pyproject.format,
         allow_unvalidated_source=args.allow_unvalidated_source
-        or bool(pyproject.get("allow-unvalidated-source", False)),
-        allow_abi_change=args.allow_abi_change or bool(pyproject.get("allow-abi-change", False)),
-        allow_method_id_change=args.allow_method_id_change
-        or bool(pyproject.get("allow-method-id-change", False)),
+        or pyproject.allow_unvalidated_source,
+        allow_abi_change=args.allow_abi_change or pyproject.allow_abi_change,
+        allow_method_id_change=args.allow_method_id_change or pyproject.allow_method_id_change,
         allow_storage_layout_change=args.allow_storage_layout_change
-        or bool(pyproject.get("allow-storage-layout-change", False)),
+        or pyproject.allow_storage_layout_change,
     )
 
     if config.write and config.check:
@@ -158,9 +156,13 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 4
-    snapshot = compiler.resolve_import_closure(
-        {request.path: request.original for request in requests}, config.compiler_search_paths
-    ) if requests else None
+    snapshot = (
+        compiler.resolve_import_closure(
+            {request.path: request.original for request in requests}, config.compiler_search_paths
+        )
+        if requests
+        else None
+    )
     closure_report = ClosureReport(requested=True) if config.include_dependencies else None
     if closure_report is not None and requests:
         dependency_requests, closure = _dependency_requests(requests, config, snapshot)
@@ -359,7 +361,11 @@ def _build_migration_plan(
     reports = batch.reports
     plan = MigrationPlan()
     try:
-        planned_paths = {migration.path.resolve() for migration in batch.files if migration.request.role != "dependency"}
+        planned_paths = {
+            migration.path.resolve()
+            for migration in batch.files
+            if migration.request.role != "dependency"
+        }
         if batch.snapshot is not None:
             for path, content in batch.snapshot.contents.items():
                 if path not in planned_paths:
@@ -398,7 +404,8 @@ def _archive_entry(requests: list[engine.MigrationRequest]) -> Path:
 
 
 def _dependency_requests(
-    requests: list[engine.MigrationRequest], config: Config,
+    requests: list[engine.MigrationRequest],
+    config: Config,
     snapshot: compiler.ImportClosure | None = None,
 ) -> tuple[list[engine.MigrationRequest], compiler.ImportClosure]:
     closure = snapshot or compiler.resolve_import_closure(
@@ -533,28 +540,8 @@ def _split_rules(raw: str) -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
-def _load_pyproject_config(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
-        return {}
-    tool = data.get("tool", {})
-    if not isinstance(tool, dict):
-        return {}
-    config = tool.get("vyupgrade", {})
-    return config if isinstance(config, dict) else {}
-
-
-def _none_if_infer(value: object) -> str | None:
-    if value in {None, "infer"}:
-        return None
-    return str(value)
-
-
-def _string_or_none(value: object) -> str | None:
-    return None if value is None else str(value)
+def _none_if_infer(value: str | None) -> str | None:
+    return None if value == "infer" else value
 
 
 def _positive_seconds(value: object) -> float | None:

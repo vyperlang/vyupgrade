@@ -513,8 +513,8 @@ def resolve_import_closure(
 ) -> ImportClosure:
     """Resolve the full transitive closure, including external search-path files.
 
-    Default overlay materialization copies only closure members under
-    ``common_root``; closure mode materializes external dependencies too.
+    Capture all discovered contract and import bytes for source compilation,
+    target validation, and closure exports.
     """
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:

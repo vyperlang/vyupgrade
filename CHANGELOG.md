@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Share lexical scanning for code masking, argument splitting, and delimiter
+  matching; handle escaped quotes, triple-quoted strings, and comments consistently.
+- Parse project defaults into a typed configuration and reject malformed TOML,
+  unknown options, and incorrect value types before migration. Quoted strings
+  cannot enable safety-waiver booleans.
+
 - Require deployment bytecode generation during source and target validation.
 - Capture source closures once and reuse their exact bytes for compilation,
   validation, and export; recheck unchanged dependencies before in-place writes.

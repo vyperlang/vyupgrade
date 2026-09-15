@@ -161,7 +161,9 @@ relying on renamed, removed, or type-changed fields.
 ### Configuration
 
 Defaults can live in `pyproject.toml` under `[tool.vyupgrade]`. Command-line
-flags take precedence.
+flags take precedence. Configuration errors stop the run with exit code `4`: keys
+and value types are checked, booleans must be unquoted `true` or `false`, and
+explicit `--config` paths must exist.
 
 ```toml
 [tool.vyupgrade]

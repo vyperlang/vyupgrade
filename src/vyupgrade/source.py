@@ -19,6 +19,10 @@ def line_number(source: str, offset: int) -> int:
 
 
 def code_mask(source: str) -> list[bool]:
+    return _scan_source(source)[0]
+
+
+def _scan_source(source: str) -> tuple[list[bool], bool]:
     mask = [True] * len(source)
     i = 0
     string_quote: str | None = None
@@ -27,7 +31,7 @@ def code_mask(source: str) -> list[bool]:
         char = source[i]
         if string_quote is not None:
             mask[i] = False
-            if char == "\\" and not triple:
+            if char == "\\":
                 if i + 1 < len(source):
                     mask[i + 1] = False
                 i += 2
@@ -60,7 +64,7 @@ def code_mask(source: str) -> list[bool]:
             continue
 
         i += 1
-    return mask
+    return mask, string_quote is None
 
 
 def span_is_code(mask: list[bool], start: int, end: int) -> bool:
@@ -117,29 +121,24 @@ def split_top_level_arg_spans(
     *,
     include_empty_separators: bool = False,
 ) -> list[tuple[int, int, str]] | None:
+    mask, complete = _scan_source(text)
+    if not complete:
+        return None
     spans: list[tuple[int, int, str]] = []
     start = 0
-    depth = 0
-    quote: str | None = None
+    stack: list[str] = []
     for index, char in enumerate(text):
-        if quote is not None:
-            if char == "\\":
-                continue
-            if char == quote:
-                quote = None
+        if not mask[index]:
             continue
-        if char in {"'", '"'}:
-            quote = char
-        elif char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-            if depth < 0:
+        if char in _CLOSERS:
+            stack.append(_CLOSERS[char])
+        elif char in _OPENERS:
+            if not stack or stack.pop() != char:
                 return None
-        elif char == "," and depth == 0:
+        elif char == "," and not stack:
             _append_arg_span(spans, text, start, index, include_empty=include_empty_separators)
             start = index + 1
-    if depth != 0 or quote is not None:
+    if stack:
         return None
     _append_arg_span(spans, text, start, len(text), include_empty=False)
     return spans
@@ -161,29 +160,44 @@ def _append_arg_span(
         spans.append((start, end, text[start:end]))
 
 
+_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+_OPENERS = {close: opening for opening, close in _CLOSERS.items()}
+
+
+def _matching_delimiter(
+    source: str, index: int, opening: str, closing: str, *, reverse: bool = False
+) -> int | None:
+    pairs = _OPENERS if reverse else _CLOSERS
+    if pairs.get(opening) != closing:
+        return None
+    if not 0 <= index < len(source) or source[index] != opening:
+        return None
+    mask = code_mask(source)
+    if not mask[index]:
+        return None
+    stack: list[str] = []
+    indices = range(index, -1, -1) if reverse else range(index, len(source))
+    for offset in indices:
+        if not mask[offset]:
+            continue
+        char = source[offset]
+        if char in pairs:
+            stack.append(pairs[char])
+        elif char in pairs.values():
+            if not stack or stack.pop() != char:
+                return None
+            if not stack:
+                return offset
+    return None
+
+
 def find_matching(
     source: str, open_index: int, open_char: str = "(", close_char: str = ")"
 ) -> int | None:
-    depth = 0
-    quote: str | None = None
-    i = open_index
-    while i < len(source):
-        char = source[i]
-        if quote is not None:
-            if char == "\\":
-                i += 2
-                continue
-            if char == quote:
-                quote = None
-            i += 1
-            continue
-        if char in {"'", '"'}:
-            quote = char
-        elif char == open_char:
-            depth += 1
-        elif char == close_char:
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return None
+    return _matching_delimiter(source, open_index, open_char, close_char)
+
+
+def find_matching_open(
+    source: str, close_index: int, open_char: str = "(", close_char: str = ")"
+) -> int | None:
+    return _matching_delimiter(source, close_index, close_char, open_char, reverse=True)
