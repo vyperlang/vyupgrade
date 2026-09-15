@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Require deployment bytecode generation during source and target validation.
+- Capture source closures once and reuse their exact bytes for compilation,
+  validation, and export; recheck unchanged dependencies before in-place writes.
+- Remove validation-only dependency repairs. Incompatible dependency pragmas and
+  imports now block writes; use closure migration to upgrade dependencies.
+
 - Correct signed constant folding, bound fallback evaluation, and prefer compiler
   constant evidence. Add differential EVM tests for returns, storage, and reverts.
 - Preserve array dimensions and dynamic tuple wrappers in ABI comparison; share

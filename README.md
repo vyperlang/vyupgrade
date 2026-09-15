@@ -86,9 +86,13 @@ dropped and reported as unavailable. Writes then remain blocked unless the
 source-validation gap is explicitly accepted with `--allow-unvalidated-source`.
 Target compilers must produce every requested validation output.
 
-The target compiler receives the exact migrated source bytes. Historical
-normalization is limited to copied dependencies in the temporary validation
-overlay and is not applied to files that would be written.
+Source and target validation require deployment bytecode generation for entry
+contracts as well as the comparison artifacts. Imports and source bytes are
+captured once and reused for source compilation, target validation, and closure
+export. Overlays preserve dependency bytes exactly: they do not repair imports,
+pragmas, or interface bodies. If dependencies also need upgrading, use
+`--include-dependencies` with `--closure-output` or `--closure-archive`.
+Unchanged dependency inputs are rechecked before an in-place write.
 Optional `--format mamushi` runs only against temporary staged candidates. The
 formatted bytes are read back into the migration plan, compiled again under the
 target compiler, and compared before any destination is changed. Formatter

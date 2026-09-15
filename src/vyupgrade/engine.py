@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .compiler import (
     CompileResult,
+    ImportClosure,
+    resolve_import_closure,
     compare_validation_artifacts,
     compile_source_ast,
     compile_source_file,
@@ -101,6 +103,7 @@ class GeneratedMigration:
 class MigrationBatch:
     files: list[MigrationFile]
     generated: list[GeneratedMigration]
+    snapshot: ImportClosure | None = None
 
     @property
     def reports(self) -> list[FileReport]:
@@ -140,9 +143,16 @@ def bounded_migration_request(
     )
 
 
-def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> MigrationBatch:
+def prepare_migrations(
+    requests: Iterable[MigrationRequest], config: Config, *, snapshot: ImportClosure | None = None
+) -> MigrationBatch:
     """Compile and rewrite sources without mutating their destinations."""
     request_list = tuple(requests)
+    if request_list:
+        snapshot = snapshot or resolve_import_closure(
+            {request.path: request.original for request in request_list}, config.compiler_search_paths
+        )
+        config = replace(config, source_snapshot=snapshot)
     snapshot_sources = tuple(
         ContentIdentity(
             str(request.path.resolve()),
@@ -150,6 +160,11 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
         )
         for request in request_list
     )
+    if snapshot is not None:
+        snapshot_sources = tuple(
+            ContentIdentity(str(path), hashlib.sha256(content).hexdigest())
+            for path, content in snapshot.contents.items()
+        )
     files: list[MigrationFile] = []
     for request in request_list:
         attempt, source_compile = _compile_source(request, config)
@@ -248,7 +263,7 @@ def prepare_migrations(requests: Iterable[MigrationRequest], config: Config) -> 
         for migration in files
         for generated_file in getattr(migration.rewrite, "generated_files", ())
     ]
-    return MigrationBatch(files, generated)
+    return MigrationBatch(files, generated, snapshot)
 
 
 def validate_migrations(
@@ -259,10 +274,11 @@ def validate_migrations(
     """Validate one coherent candidate overlay and return its typed decision."""
     resolve_candidate = candidate_source or _unchanged_candidate
     target_sources = candidate_sources(batch, resolve_candidate)
+    declared_sources = {**(batch.snapshot.sources if batch.snapshot else {}), **target_sources}
     target_declared_spec = _declared_spec(
         tuple(
             ContentIdentity(str(path.resolve()), hashlib.sha256(source.encode()).hexdigest())
-            for path, source in target_sources.items()
+            for path, source in declared_sources.items()
         ),
         (CompilerDeclaration("target-version", config.target_version),),
     )
@@ -272,6 +288,7 @@ def validate_migrations(
         config.target_version,
         config.compiler_search_paths,
         include_dependencies=config.include_dependencies,
+        snapshot=batch.snapshot,
     ) as overlay:
         for migration in batch.files:
             _reset_target_validation(migration.report, migration.validation_diagnostics)
@@ -298,6 +315,16 @@ def validate_migrations(
                 target_compile,
                 target_declared_spec,
             )
+            if (
+                target_compile.status == "failed"
+                and target_compile.failure_origin == "compiler"
+                and batch.snapshot is not None and batch.snapshot.dependencies
+                and not config.include_dependencies
+            ):
+                migration.report.target_error = (migration.report.target_error or "") + (
+                    "\nDependencies were validated unchanged. Use --include-dependencies with "
+                    "--closure-output or --closure-archive if they also need migration."
+                )
             comparisons = compare_validation_artifacts(migration.source_compile, target_compile)
             (
                 migration.report.abi_equal,

@@ -51,7 +51,8 @@ The CLI flow is:
 
 1. `cli.main()` loads command-line and `[tool.vyupgrade]` config.
 2. `project.discover_files()` finds `.vy` and `.vyi` inputs.
-3. `engine.prepare_migrations()` compiles each source under the inferred or
+3. Resolve and capture an immutable import closure, preserving exact source bytes.
+   `engine.prepare_migrations()` compiles each source snapshot under the inferred or
    provided source compiler, gives each file its own source AST-backed config,
    and calls `rules.apply_rules()`.
 4. `rules.apply_rules()` constructs a `MigrationContext`, then runs the ordered
@@ -62,7 +63,7 @@ The CLI flow is:
    generated outputs and pre-existing generated-file collisions, and records
    original and candidate SHA-256 hashes.
 7. `engine.validate_migrations()` builds a temporary target overlay, directly
-   validates generated interfaces, compiles migrated sources under the target
+   validates generated interfaces, compiles migrated sources through bytecode generation under the target
    compiler, compares ABI, method identifiers, and storage layout, and returns
    the typed fail-closed decision from `validation.decide_run_validation()`.
    Rule selection and diagnostic version gating do not participate in this
@@ -83,6 +84,12 @@ files are copied to staging with `copy2`, permission modes are retained, and cha
 hard-linked or read-only files are rejected. Platform-specific ownership, ACL, flag,
 or extended-attribute behavior remains filesystem dependent. An incomplete rollback
 is reported explicitly with final on-disk hashes instead of being described as clean.
+
+Overlays only copy captured bytes. They must not normalize imports, pragmas,
+NatSpec, or interface bodies. Repairs belong in migration rules (or explicit
+corpus ingestion), so the same candidate bytes are validated and exported.
+Deployable source and target contracts must produce bytecode; dependency
+modules retain AST-only analysis and consumer-root validation.
 
 Important files:
 
@@ -132,9 +139,8 @@ two otherwise identical legacy layouts that both omit it remain comparable,
 while their occupied span beyond the compiler-reported start slot is not
 independently provable.
 
-JSON reports use the existing top-level envelope with `schema_version: 2`.
-Schema 2 adds per-file roles and the top-level closure report while preserving
-the schema 1 fields. Within a schema version, fields may be added but existing
+JSON reports use the existing top-level envelope with `schema_version: 6`.
+Within a schema version, fields may be added but existing
 fields are not renamed, removed, or type-changed. A missing version identifies
 the legacy unversioned format; incompatible changes require a new schema
 version.

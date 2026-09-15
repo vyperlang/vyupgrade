@@ -25,6 +25,7 @@ def write_closure_output(
     sources: Mapping[Path, str],
     target_version: str,
     search_paths: tuple[Path, ...] = (),
+    *, snapshot: compiler.ImportClosure | None = None,
 ) -> ClosureWriteResult:
     resolved = output_root
     try:
@@ -38,7 +39,8 @@ def write_closure_output(
             )
         if not sources:
             return ClosureWriteResult("written", resolved, ())
-        members = compiler.resolve_import_closure(sources, search_paths).files
+        snapshot = snapshot or compiler.resolve_import_closure(sources, search_paths)
+        members = snapshot.files
         if any(member.is_relative_to(resolved) for member in members):
             return ClosureWriteResult(
                 "failed",
@@ -46,7 +48,7 @@ def write_closure_output(
                 (),
                 "refusing to write the closure into a directory that contains migration sources",
             )
-        relative_files = _closure_relative_files(sources, target_version, search_paths)
+        relative_files = _closure_relative_files(sources, target_version, search_paths, snapshot)
         linked = _linked_output_path(resolved, relative_files)
         if linked is not None:
             return ClosureWriteResult(
@@ -62,6 +64,7 @@ def write_closure_output(
             resolved,
             search_paths,
             include_dependencies=True,
+            snapshot=snapshot,
         )
         assert overlay is not None
         return ClosureWriteResult("written", resolved, tuple(sorted(set(overlay.paths.values()))))
@@ -74,6 +77,7 @@ def write_closure_archive(
     entry: Path,
     sources: Mapping[Path, str],
     config: Config,
+    *, snapshot: compiler.ImportClosure | None = None,
 ) -> ClosureWriteResult:
     resolved = output
     try:
@@ -85,7 +89,8 @@ def write_closure_archive(
                 (),
                 f"archive entry is missing from closure sources: {entry}",
             )
-        members = compiler.resolve_import_closure(sources, config.compiler_search_paths).files
+        snapshot = snapshot or compiler.resolve_import_closure(sources, config.compiler_search_paths)
+        members = snapshot.files
         if resolved in members:
             return ClosureWriteResult(
                 "failed",
@@ -98,6 +103,7 @@ def write_closure_archive(
             config.target_version,
             config.compiler_search_paths,
             include_dependencies=True,
+            snapshot=snapshot,
         ) as overlay:
             assert overlay is not None
             result = compiler.compile_target_archive(
@@ -114,6 +120,7 @@ def _closure_relative_files(
     sources: Mapping[Path, str],
     target_version: str,
     search_paths: tuple[Path, ...],
+    snapshot: compiler.ImportClosure,
 ) -> tuple[Path, ...]:
     with TemporaryDirectory(prefix="vyupgrade-closure-") as tmp:
         root = Path(tmp)
@@ -123,6 +130,7 @@ def _closure_relative_files(
             root,
             search_paths,
             include_dependencies=True,
+            snapshot=snapshot,
         )
         assert overlay is not None
         return tuple(path.relative_to(root) for path in root.rglob("*") if path.is_file())

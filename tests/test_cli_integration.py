@@ -604,6 +604,7 @@ def sqrt_plus_zero(x: uint256) -> uint256:
         [
             str(contract),
             "--check",
+            "--include-dependencies",
             "--target-version",
             "0.5.0a3",
             "--compiler-search-paths",
@@ -1357,9 +1358,7 @@ dependencies = ["vyper==0.4.3"]
     assert result.command[compiler_index:] == [
         str(requested_compiler),
         "-f",
-        "abi,method_identifiers,layout,ast",
-        "-p",
-        str(project),
+        "abi,method_identifiers,layout,bytecode,ast",
         "-p",
         str(project),
         str(contract),
@@ -1397,6 +1396,7 @@ dependencies = ["vyper==0.4.1"]
         """print("[]")
 print("{}")
 print("{}")
+print("0x00")
 print('{"ast_type": "Module", "body": []}')
 """,
         version=resolved_version,
@@ -1590,7 +1590,8 @@ def test_compiler_runner_writes_evidence_without_site_packages(tmp_path: Path) -
     print("[]")
     print("{}")
     print("{}")
-    print('{"ast_type": "Module", "body": []}')
+    print("0x00")
+print('{"ast_type": "Module", "body": []}')
 """,
     )
     result_path = tmp_path / "result.json"
@@ -1608,7 +1609,7 @@ def test_compiler_runner_writes_evidence_without_site_packages(tmp_path: Path) -
             coherence,
             "vyper",
             "-f",
-            "abi,method_identifiers,layout,ast",
+            "abi,method_identifiers,layout,bytecode,ast",
             "contract.vy",
         ],
         capture_output=True,

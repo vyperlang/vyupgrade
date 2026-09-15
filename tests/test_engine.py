@@ -256,7 +256,7 @@ def test_generated_interface_and_cross_file_sources_share_one_overlay(
         return RewriteResult(source, [], [], generated)
 
     @contextmanager
-    def overlay(sources, target_version, search_paths, *, include_dependencies=False):
+    def overlay(sources, target_version, search_paths, *, include_dependencies=False, snapshot=None):
         assert include_dependencies is False
         overlay_sources.update(sources)
         yield overlay_token
@@ -292,7 +292,7 @@ def test_dependency_validation_uses_consumer_root_artifacts(
         return CompileResult("passed", artifacts=SOURCE_ARTIFACTS)
 
     @contextmanager
-    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False):
+    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False, snapshot=None):
         assert include_dependencies is True
         yield object()
 
@@ -344,7 +344,7 @@ def test_dependency_validation_aggregates_multiple_consumer_roots(
         return CompileResult("passed", artifacts=SOURCE_ARTIFACTS)
 
     @contextmanager
-    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False):
+    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False, snapshot=None):
         assert include_dependencies is True
         yield object()
 
@@ -632,6 +632,7 @@ def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -
         search_paths,
         *,
         include_dependencies=False,
+        snapshot=None,
     ):
         observed_flags.append(include_dependencies)
         with real_target_overlay(
@@ -639,6 +640,7 @@ def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -
             target_version,
             search_paths,
             include_dependencies=include_dependencies,
+            snapshot=snapshot,
         ) as overlay:
             yield overlay
 
@@ -686,7 +688,7 @@ def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -
 
     assert observed_flags == [True, False]
     assert search_path.resolve() not in observed_search_paths[True]
-    assert search_path.resolve() in observed_search_paths[False]
+    assert search_path.resolve() not in observed_search_paths[False]
 
 
 def test_dependency_source_final_newline_retry_handles_read_only_directory(

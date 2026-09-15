@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 from uuid import uuid4
 
@@ -51,8 +52,8 @@ from .versions import (
 
 
 FORMATS = ("abi", "method_identifiers", "layout")
-SOURCE_FORMATS = ("abi", "method_identifiers", "layout", "ast")
-TARGET_FORMATS = (*FORMATS, "ast")
+SOURCE_FORMATS = (*FORMATS, "bytecode", "ast")
+TARGET_FORMATS = SOURCE_FORMATS
 ADAPTER_TIMEOUT_GRACE_SECONDS = 30
 ARCHIVE_TARGET_FLOOR = "0.4.0"
 OVERLAY_EXCLUDED_PARTS = {
@@ -175,6 +176,13 @@ class ImportClosure:
     consumers: Mapping[Path, tuple[Path, ...]]
     source_roots: tuple[Path, ...]
     common_root: Path
+    contents: Mapping[Path, bytes]
+    layouts: Mapping[Path, Path]
+    import_roots: tuple[Path, ...]
+
+    @property
+    def sources(self) -> dict[Path, str]:
+        return {path: content.decode("utf-8") for path, content in self.contents.items()}
 
     @property
     def files(self) -> tuple[Path, ...]:
@@ -243,24 +251,31 @@ def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+@contextmanager
+def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Config]]:
+    if config.source_snapshot is None:
+        yield path, config
+        return
+    snapshot = config.source_snapshot
+    with target_overlay(snapshot.sources, config.target_version, config.compiler_search_paths,
+                        snapshot=snapshot, include_dependencies=True) as overlay:
+        assert overlay is not None
+        yield overlay.paths[path.resolve()], replace(
+            config, compiler_search_paths=_overlay_search_paths(overlay, config.compiler_search_paths)
+        )
+
+
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    command, suppress_warnings = _prepare_command(
-        config.source_vyper,
-        source_version or infer_pragma(path.read_text()),
-        config.source_python,
-    )
-    return _run_compile_with_formats(
-        command,
-        path,
-        config,
-        SOURCE_FORMATS,
-        (),
-        suppress_warnings,
-        project_compiler=True,
-        allow_format_retries=False,
-    )
+    with _source_compile_path(path, config) as (staged, compile_config):
+        command, suppress_warnings = _prepare_command(
+            config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
+        )
+        return _run_compile_with_formats(
+            command, staged, compile_config, SOURCE_FORMATS, (), suppress_warnings,
+            project_compiler=True, allow_format_retries=False, environment_path=path,
+        )
 
 
 def compile_target_source(
@@ -505,24 +520,22 @@ def resolve_import_closure(
     if not resolved_sources:
         raise ValueError("resolve_import_closure requires at least one source")
     source_roots, import_roots, common_root = _overlay_roots(resolved_sources, search_paths)
-    dependencies = [
-        path
-        for path, _source, _import_root, is_override in _walk_validation_closure(
-            source_roots, import_roots, common_root, resolved_sources
-        )
-        if not is_override
-    ]
+    members = tuple(_walk_validation_closure(
+        source_roots, import_roots, common_root, resolved_sources
+    ))
+    captured = {path: source for path, source, _relative, _override in members}
+    dependencies = [path for path in captured if path not in resolved_sources]
     dependency_paths = set(dependencies)
     consumers: dict[Path, list[Path]] = {path: [] for path in dependency_paths}
     for root in sorted(resolved_sources):
-        for path, _source, _relative_path, is_override in _walk_validation_closure(
+        for path, _source, _relative_path, _is_override in _walk_validation_closure(
             source_roots,
             import_roots,
             common_root,
-            resolved_sources,
+            captured,
             entry_paths=(root,),
         ):
-            if not is_override and path in dependency_paths:
+            if path in dependency_paths:
                 consumers[path].append(root)
     return ImportClosure(
         roots=tuple(sorted(resolved_sources)),
@@ -532,6 +545,9 @@ def resolve_import_closure(
         },
         source_roots=source_roots,
         common_root=common_root,
+        contents=MappingProxyType({path: text.encode("utf-8") for path, text in captured.items()}),
+        layouts=MappingProxyType({path: relative for path, _s, relative, _o in members}),
+        import_roots=import_roots,
     )
 
 
@@ -542,6 +558,7 @@ def target_overlay(
     search_paths: tuple[Path, ...] = (),
     *,
     include_dependencies: bool = False,
+    snapshot: ImportClosure | None = None,
 ) -> Iterator[TargetOverlay | None]:
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
@@ -554,6 +571,7 @@ def target_overlay(
             Path(tmp),
             search_paths,
             include_dependencies=include_dependencies,
+            snapshot=snapshot,
         )
         assert overlay is not None
         yield overlay
@@ -566,106 +584,51 @@ def materialize_target_overlay(
     search_paths: tuple[Path, ...] = (),
     *,
     include_dependencies: bool = False,
+    snapshot: ImportClosure | None = None,
 ) -> TargetOverlay | None:
+    """Stage captured bytes without repairing imports, pragmas, or interfaces."""
     resolved_sources = {path.resolve(): source for path, source in sources.items()}
     if not resolved_sources:
         return None
-    roots, import_roots, common = _overlay_roots(resolved_sources, search_paths)
-    if include_dependencies:
-        paths, overlay_search_paths = _materialize_closure_sources(
-            roots,
-            import_roots,
-            common,
-            root,
-            target_version,
-            resolved_sources,
-        )
-    else:
-        destination = _overlay_destination_resolver(common, root)
-        paths: dict[Path, Path] = {}
-        overlay_search_paths: set[Path] = set()
-        for source_root in roots:
-            copied_search_paths, _copied = _copy_validation_sources(
-                source_root,
-                import_roots,
-                common,
-                root,
-                target_version,
-                resolved_sources,
-                destination,
-                None,
-            )
-            overlay_search_paths.update(copied_search_paths)
-        overlay_search_paths.update(_overlay_configured_search_paths(search_paths, common, root))
-        for path, source in resolved_sources.items():
-            target = destination(path)
-            if target is None:
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(source, encoding="utf-8")
-            paths[path] = target
-            overlay_search_paths.add(target.parent)
-    if include_dependencies:
-        configured_search_paths = tuple(search_path.resolve() for search_path in search_paths)
-        for source_root in roots:
-            if source_root not in configured_search_paths:
-                _copy_project_configs(
-                    source_root,
-                    root,
-                    excluded_roots=configured_search_paths,
-                )
-    else:
-        _copy_project_configs(common, root)
-    return TargetOverlay(
-        root=root,
-        paths=paths,
-        source_roots=import_roots if include_dependencies else roots,
-        search_paths=tuple(
-            sorted(
-                (path for path in overlay_search_paths if path != root),
-                key=lambda path: str(path),
-            )
-        ),
-    )
-
-
-def _materialize_closure_sources(
-    source_roots: tuple[Path, ...],
-    import_roots: tuple[Path, ...],
-    common_root: Path,
-    target_root: Path,
-    target_version: str,
-    overrides: Mapping[Path, str],
-) -> tuple[dict[Path, Path], set[Path]]:
-    placed: dict[Path, Path] = {}
+    snapshot = snapshot or resolve_import_closure(resolved_sources, search_paths)
+    version = parse_version(target_version)
+    include_dependencies = include_dependencies or (version is not None and version < Version("0.4.0"))
+    contents = dict(snapshot.contents)
+    contents.update({path: source.encode("utf-8") for path, source in resolved_sources.items()})
     paths: dict[Path, Path] = {}
-    search_paths: set[Path] = set()
-    for path, source, relative_path, is_override in _walk_validation_closure(
-        source_roots, import_roots, common_root, overrides
-    ):
-        target = target_root / relative_path
-        if is_override:
-            if _claim_overlay_destination(placed, target, path, source):
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(source, encoding="utf-8")
-            search_paths.add(target.parent)
-            if path.name == "create2_address.vy":
-                alias = target.with_name("create2.vy")
-                alias_source = _target_validation_create2_alias_source(source)
-                if _claim_overlay_destination(placed, alias, path, alias_source):
-                    alias.write_text(alias_source, encoding="utf-8")
+    placed: dict[Path, Path] = {}
+    staged_search_paths: set[Path] = set()
+    common = Path(os.path.commonpath([str(snapshot.common_root), *(str(p.parent) for p in contents)]))
+    for path, content in contents.items():
+        if include_dependencies:
+            relative = snapshot.layouts.get(path)
+            if relative is None:
+                source_root = _containing_import_roots(path, snapshot.import_roots)[0]
+                relative = path.relative_to(source_root)
         else:
-            _copy_validation_source(
-                path,
-                source,
-                target,
-                common_root,
-                target_version,
-                search_paths,
-                placed,
-            )
+            # Preserve the original filesystem hierarchy, including external roots.
+            relative = path.relative_to(common)
+        target = root / relative
+        if _claim_overlay_destination(placed, target, path, content.decode("utf-8")):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
         paths[path] = target
-    return paths, search_paths
+        staged_search_paths.add(target.parent)
+    if not include_dependencies:
+        for search_path in snapshot.import_roots:
+            if search_path.is_relative_to(common):
+                staged_search_paths.add(root / search_path.relative_to(common))
+    configured = tuple(path.resolve() for path in search_paths)
+    for source_root in snapshot.source_roots:
+        if include_dependencies and source_root in configured:
+            continue
+        _copy_project_configs(
+            source_root, root, excluded_roots=configured if include_dependencies else ()
+        )
+    return TargetOverlay(
+        root=root, paths=MappingProxyType(paths), source_roots=snapshot.import_roots,
+        search_paths=tuple(sorted(staged_search_paths - {root})),
+    )
 
 
 def _overlay_roots(
@@ -682,19 +645,6 @@ def _overlay_roots(
     )
     common = Path(os.path.commonpath([str(root) for root in roots]))
     return roots, import_roots, common
-
-
-def _overlay_destination_resolver(
-    common_root: Path,
-    target_root: Path,
-) -> Callable[[Path], Path | None]:
-    def destination(path: Path) -> Path | None:
-        try:
-            return target_root / path.relative_to(common_root)
-        except ValueError:
-            return None
-
-    return destination
 
 
 def _claim_overlay_destination(
@@ -714,21 +664,6 @@ def _claim_overlay_destination(
     raise OverlayLayoutConflictError(
         f"overlay destination {target} maps both {existing_source} and {source_path}"
     )
-
-
-def _overlay_configured_search_paths(
-    search_paths: tuple[Path, ...], common_root: Path, target_root: Path
-) -> set[Path]:
-    paths: set[Path] = set()
-    for search_path in search_paths:
-        try:
-            relative = search_path.resolve().relative_to(common_root)
-        except ValueError:
-            continue
-        target = target_root / relative
-        if target.exists():
-            paths.add(target)
-    return paths
 
 
 def _overlay_search_paths(
@@ -783,10 +718,11 @@ def _walk_validation_closure(
     entry_paths: Iterable[Path] | None = None,
 ) -> Iterator[tuple[Path, str, Path, bool]]:
     override_paths = set(overrides)
+    source_cache = dict(overrides)
     if entry_paths is None:
         incoming_overrides: set[Path] = set()
         for path, source in overrides.items():
-            import_source = _standard_json_package_dependency_source(path, source, common_root)
+            import_source = source
             for source_root in _containing_import_roots(path, source_roots):
                 relative_path = path.relative_to(source_root)
                 incoming_overrides.update(
@@ -853,9 +789,7 @@ def _walk_validation_closure(
             continue
         processed.add(current)
         yield current, current_source, current_relative, is_override
-        import_source = _standard_json_package_dependency_source(
-            current, current_source, common_root
-        )
+        import_source = current_source
         for imported in _validation_import_sources(
             current,
             import_source,
@@ -871,10 +805,11 @@ def _walk_validation_closure(
                         f"{existing_relative} and {imported.relative_path}"
                     )
                 continue
-            source = overrides.get(imported.path)
+            source = source_cache.get(imported.path)
             if source is None:
                 try:
-                    source = imported.path.read_text(encoding="utf-8")
+                    source = imported.path.read_bytes().decode("utf-8")
+                    source_cache[imported.path] = source
                 except (OSError, UnicodeDecodeError):
                     continue
             queue.append(
@@ -892,155 +827,6 @@ def _containing_import_roots(path: Path, import_roots: tuple[Path, ...]) -> tupl
     roots = tuple(root for root in import_roots if _is_relative_to(path, root))
     assert roots, f"closure member is outside import roots: {path}"
     return tuple(sorted(roots, key=lambda root: len(root.parts)))
-
-
-def _walk_validation_sources(
-    source_root: Path,
-    import_roots: tuple[Path, ...],
-    common_root: Path,
-    overrides: Mapping[Path, str],
-) -> Iterator[tuple[Path, str]]:
-    override_paths = set(overrides)
-    queue: list[tuple[Path, str]] = []
-    for path, source in overrides.items():
-        try:
-            path.relative_to(source_root)
-        except ValueError:
-            continue
-        queue.append((path, source))
-
-    processed: set[Path] = set()
-    while queue:
-        current, current_source = queue.pop()
-        if current in processed:
-            continue
-        processed.add(current)
-        current_source = _standard_json_package_dependency_source(
-            current, current_source, common_root
-        )
-        for imported in _validation_import_sources(
-            current, current_source, source_root, import_roots
-        ):
-            resolved = imported.path
-            if resolved in processed:
-                continue
-            source = overrides.get(resolved)
-            if source is None:
-                try:
-                    source = resolved.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-            queue.append((resolved, source))
-            if resolved in override_paths:
-                continue
-            yield resolved, source
-
-
-def _copy_validation_sources(
-    source_root: Path,
-    import_roots: tuple[Path, ...],
-    common_root: Path,
-    target_root: Path,
-    target_version: str,
-    overrides: Mapping[Path, str],
-    destination: Callable[[Path], Path | None],
-    placed: dict[Path, Path] | None,
-) -> tuple[set[Path], dict[Path, Path]]:
-    search_paths: set[Path] = set()
-    copied: dict[Path, Path] = {}
-    for resolved, source in _walk_validation_sources(
-        source_root, import_roots, common_root, overrides
-    ):
-        target = destination(resolved)
-        if target is None:
-            continue
-        _copy_validation_source(
-            resolved,
-            source,
-            target,
-            common_root,
-            target_version,
-            search_paths,
-            placed,
-        )
-        if resolved.suffix in VALIDATION_SOURCE_SUFFIXES:
-            copied[resolved] = target
-    return search_paths, copied
-
-
-def _copy_validation_source(
-    source_path: Path,
-    source: str,
-    target: Path,
-    common_root: Path,
-    target_version: str,
-    search_paths: set[Path],
-    placed: dict[Path, Path] | None,
-) -> None:
-    if source_path.suffix not in VALIDATION_SOURCE_SUFFIXES:
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if source_path.suffix == ".json":
-        if placed is None or _claim_overlay_destination(placed, target, source_path, source):
-            target.write_text(source, encoding="utf-8")
-        search_paths.add(target.parent)
-        return
-    source = _standard_json_package_dependency_source(source_path, source, common_root)
-    content = _target_validation_source(
-        source,
-        target_version,
-        is_interface=source_path.suffix == ".vyi",
-    )
-    if placed is None or _claim_overlay_destination(placed, target, source_path, content):
-        target.write_text(content, encoding="utf-8")
-    search_paths.add(target.parent)
-    if source_path.name == "create2_address.vy":
-        alias = target.with_name("create2.vy")
-        alias_content = _target_validation_source(
-            _target_validation_create2_alias_source(source),
-            target_version,
-            is_interface=False,
-        )
-        if placed is None or _claim_overlay_destination(placed, alias, source_path, alias_content):
-            alias.write_text(alias_content, encoding="utf-8")
-
-
-def _standard_json_package_dependency_source(
-    source_path: Path, source: str, common_root: Path
-) -> str:
-    source = _local_sibling_import_source(source_path, source)
-    if source_path.parent.name != "src":
-        return source
-    replacements = {
-        name
-        for name in ("auth", "utils")
-        if (common_root / name).exists() and not (source_path.parent / name).exists()
-    }
-    if not replacements:
-        return source
-    names = "|".join(sorted(re.escape(name) for name in replacements))
-    return re.sub(
-        rf"(^[ \t]*from[ \t]+)\.({names})(?=\b)",
-        r"\1..\2",
-        source,
-        flags=re.MULTILINE,
-    )
-
-
-def _local_sibling_import_source(source_path: Path, source: str) -> str:
-    def replacement(match: re.Match[str]) -> str:
-        module = match.group("module")
-        if not (source_path.parent / f"{module}.vy").exists():
-            return match.group(0)
-        alias = match.group("alias") or ""
-        return f"{match.group('indent')}from . import {module}{alias}{match.group('trailing')}"
-
-    return re.sub(
-        r"^(?P<indent>[ \t]*)import[ \t]+(?P<module>[A-Za-z_][A-Za-z0-9_]*)(?P<alias>[ \t]+as[ \t]+[A-Za-z_][A-Za-z0-9_]*)?(?P<trailing>[ \t]*(?:#.*)?)$",
-        replacement,
-        source,
-        flags=re.MULTILINE,
-    )
 
 
 def _validation_import_sources(
@@ -1273,28 +1059,21 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
     """Load rewrite facts without requiring a module to be a deployable entry point."""
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    command, suppress_warnings = _prepare_command(
-        config.source_vyper,
-        source_version or infer_pragma(path.read_text()),
-        config.source_python,
-    )
-    result: CompileResult | None = None
-    for output_format in ("annotated_ast", "ast"):
-        result = _run_compile_with_formats(
-            command,
-            path,
-            config,
-            (output_format,),
-            (),
-            suppress_warnings,
-            allow_unsupported_formats=True,
-            project_compiler=True,
+    with _source_compile_path(path, config) as (staged, compile_config):
+        command, suppress_warnings = _prepare_command(
+            config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
-        artifact = (result.artifacts or {}).get(output_format)
-        if result.status == "passed" and isinstance(artifact, dict):
-            return replace(result, artifacts={"ast": artifact})
-    assert result is not None
-    return result
+        result: CompileResult | None = None
+        for output_format in ("annotated_ast", "ast"):
+            result = _run_compile_with_formats(
+                command, staged, compile_config, (output_format,), (), suppress_warnings,
+                allow_unsupported_formats=True, project_compiler=True, environment_path=path,
+            )
+            artifact = (result.artifacts or {}).get(output_format)
+            if result.status == "passed" and isinstance(artifact, dict):
+                return replace(result, artifacts={"ast": artifact})
+        assert result is not None
+        return result
 
 
 @dataclass(frozen=True)
@@ -1363,185 +1142,6 @@ def compare_artifact_details(
     source: CompileResult, target: CompileResult
 ) -> tuple[list[str], list[str], list[str]]:
     return compare_validation_artifacts(source, target).details
-
-
-def _target_validation_source(
-    source: str, target_version: str, *, is_interface: bool = False
-) -> str:
-    pattern = re.compile(r"^(\s*)#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
-    replaced = False
-
-    def replacement(match: re.Match[str]) -> str:
-        nonlocal replaced
-        if replaced:
-            return ""
-        replaced = True
-        return f"{match.group(1)}#pragma version {target_version}"
-
-    rewritten = pattern.sub(replacement, source)
-    rewritten = re.sub(
-        r"^[ \t]*#[ \t]*pragma[ \t]+solidity\b.*(?:\n|$)",
-        "",
-        rewritten,
-        flags=re.MULTILINE,
-    )
-    rewritten = _target_validation_dependency_source(rewritten)
-    rewritten = _strip_target_validation_docstrings(rewritten)
-    if is_interface:
-        return _target_validation_interface_source(rewritten)
-    return rewritten
-
-
-def _strip_target_validation_docstrings(source: str) -> str:
-    lines = source.splitlines(keepends=True)
-    result: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        stripped = line.lstrip()
-        quote = _standalone_docstring_quote(stripped)
-        if quote is None:
-            result.append(line)
-            index += 1
-            continue
-        if not _target_validation_docstring_context(lines, index):
-            result.append(line)
-            index += 1
-            continue
-        index += 1
-        if stripped.count(quote) >= 2:
-            continue
-        while index < len(lines):
-            current = lines[index]
-            index += 1
-            if quote in current:
-                break
-    return "".join(result)
-
-
-def _standalone_docstring_quote(stripped_line: str) -> str | None:
-    for quote in ('"""', "'''"):
-        if stripped_line.startswith(quote):
-            return quote
-    return None
-
-
-def _target_validation_docstring_context(lines: list[str], index: int) -> bool:
-    indent = len(lines[index]) - len(lines[index].lstrip(" \t"))
-    previous = _previous_significant_line(lines, index)
-    if previous is None:
-        return indent == 0
-    previous_index, previous_line = previous
-    previous_stripped = previous_line.strip()
-    previous_indent = len(previous_line) - len(previous_line.lstrip(" \t"))
-    if indent == 0:
-        return previous_stripped.startswith("#pragma version")
-    if previous_indent >= indent or not previous_stripped.endswith(":"):
-        return False
-    if previous_stripped.startswith("def "):
-        return True
-    return _previous_function_header(lines, previous_index, previous_indent) is not None
-
-
-def _previous_significant_line(lines: list[str], index: int) -> tuple[int, str] | None:
-    cursor = index - 1
-    while cursor >= 0:
-        stripped = lines[cursor].strip()
-        if stripped and not stripped.startswith("#"):
-            return cursor, lines[cursor]
-        cursor -= 1
-    return None
-
-
-def _previous_function_header(lines: list[str], index: int, indent: int) -> int | None:
-    cursor = index
-    while cursor >= 0:
-        line = lines[cursor]
-        stripped = line.strip()
-        current_indent = len(line) - len(line.lstrip(" \t"))
-        if current_indent == indent and stripped.startswith("def "):
-            return cursor
-        if current_indent < indent and stripped.startswith("def "):
-            return cursor
-        if current_indent < indent:
-            return None
-        cursor -= 1
-    return None
-
-
-def _target_validation_dependency_source(source: str) -> str:
-    source = re.sub(
-        r"(^[ \t]*from[ \t]+snekmate\.utils[ \t]+import[ \t]+.*?)\bcreate2_address\b",
-        r"\1create2",
-        source,
-        flags=re.MULTILINE,
-    )
-    source = re.sub(
-        r"(?<![\w.])create2(?:_address)?\._compute_address\b",
-        "create2._compute_create2_address",
-        source,
-    )
-    return source
-
-
-def _target_validation_create2_alias_source(source: str) -> str:
-    if "_compute_create2_address" in source or "_compute_address" not in source:
-        return source
-    return re.sub(r"\b_compute_address\b", "_compute_create2_address", source)
-
-
-def _target_validation_interface_source(source: str) -> str:
-    lines = source.splitlines(keepends=True)
-    output: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        stripped = line.strip()
-        if not re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
-            output.append(line)
-            index += 1
-            continue
-
-        def_indent = len(line) - len(line.lstrip(" \t"))
-        header_lines = [line]
-        index += 1
-        while index < len(lines) and not _interface_header_complete("".join(header_lines)):
-            header_lines.append(lines[index])
-            index += 1
-        output.extend(_interface_header_stub_lines(header_lines))
-        while index < len(lines):
-            next_line = lines[index]
-            if not next_line.strip():
-                index += 1
-                continue
-            next_indent = len(next_line) - len(next_line.lstrip(" \t"))
-            if next_indent <= def_indent:
-                break
-            index += 1
-    return "".join(output)
-
-
-def _interface_header_complete(header: str) -> bool:
-    depth = 0
-    for char in header:
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-    return depth == 0 and bool(re.search(r":[ \t]*(?:\w+\s*)?(?:#.*)?$", header.rstrip()))
-
-
-def _interface_header_stub_lines(header_lines: list[str]) -> list[str]:
-    if not header_lines:
-        return []
-    output = list(header_lines)
-    last = output[-1].rstrip("\n")
-    output[-1] = re.sub(
-        r":[ \t]*(?:view|pure|payable|nonpayable)?([ \t]*(?:#.*)?)$",
-        r": ...\1",
-        last,
-    ) + ("\n" if output[-1].endswith("\n") else "")
-    return output
 
 
 def _canonical_abi(abi: object) -> object:
@@ -1927,6 +1527,7 @@ def _run_compile_with_formats(
     ):
         full.extend(["-W", "none"])
     full.append(str(path))
+    source_text = path.read_bytes().decode("utf-8") if path.is_file() else None
     process = _run_compiler_process(
         full,
         environment_path,
@@ -1934,11 +1535,13 @@ def _run_compile_with_formats(
         python_pin=config.source_python if project_compiler else config.target_python,
         compiler_timeout=config.compiler_timeout,
         network_timeout=config.network_timeout,
+        source_text=source_text,
     )
     if process.compiler_started and path.is_file():
         process = replace(
             process,
-            validated_sources=(_content_identity(environment_path, content_path=path),),
+            validated_sources=(ContentIdentity(str(environment_path.resolve()), hashlib.sha256(source_text.encode()).hexdigest()),)
+            if source_text is not None else (),
         )
     if process.returncode is None:
         return _failed_compile_result(
@@ -2088,7 +1691,11 @@ def _compiler_search_path_args(
         *extra_paths,
         path.parent,
     ]
-    return [argument for search_path in paths for argument in ("-p", str(search_path))]
+    version = parse_version(_command_vyper_version(command))
+    if version is not None and version < Version("0.4.0"):
+        # Legacy argparse accepts one import root; repeated -p silently keeps the last.
+        paths = paths[:1]
+    return [argument for search_path in dict.fromkeys(paths) for argument in ("-p", str(search_path))]
 
 
 def _unsupported_output_format(stderr: str, formats: tuple[str, ...]) -> str | None:
@@ -2144,6 +1751,7 @@ def _run_compiler_process(
     network_timeout: float,
     python_pin: str | None = None,
     cwd: Path | None = None,
+    source_text: str | None = None,
 ) -> _CompilerProcess:
     pyproject = _nearest_pyproject(path.parent)
     marker_environment: Mapping[str, str] | None = None
@@ -2174,18 +1782,20 @@ def _run_compiler_process(
         pyproject,
         marker_environment,
     )
-    source_spec = infer_pragma(path.read_text(encoding="utf-8"))
+    source_spec = infer_pragma(source_text if source_text is not None else path.read_text(encoding="utf-8"))
     authority = _compiler_authority(
         command,
         path,
         project_compiler=project_compiler,
         marker_environment=marker_environment,
+        source_spec=source_spec,
     )
     declarations = _compiler_declarations(
         command,
         path,
         project_compiler=project_compiler,
         marker_environment=marker_environment,
+        source_spec=source_spec,
     )
     coherence = _compiler_coherence(source_spec) if project_declares_vyper else ""
     with _declared_project_environment(
@@ -2632,6 +2242,7 @@ def _compiler_authority(
     path: Path,
     *,
     project_compiler: bool,
+    source_spec: str | None,
     marker_environment: Mapping[str, str] | None = None,
 ) -> CompilerAuthority:
     pyproject = _nearest_pyproject(path.parent)
@@ -2647,7 +2258,6 @@ def _compiler_authority(
         )
     if not project_compiler:
         return "fixed-target"
-    source_spec = infer_pragma(path.read_text(encoding="utf-8"))
     if source_spec is None:
         return "default"
     return "source-exact" if parse_version(source_spec) is not None else "source-range"
@@ -2658,6 +2268,7 @@ def _compiler_declarations(
     path: Path,
     *,
     project_compiler: bool,
+    source_spec: str | None,
     marker_environment: Mapping[str, str] | None = None,
 ) -> tuple[CompilerDeclaration, ...]:
     declarations: list[CompilerDeclaration] = []
@@ -2668,7 +2279,6 @@ def _compiler_declarations(
                 CompilerDeclaration("project", spec, str(pyproject.resolve()))
                 for spec in _project_vyper_specs(pyproject, marker_environment)
             )
-        source_spec = infer_pragma(path.read_text(encoding="utf-8"))
         if source_spec is not None:
             declarations.append(
                 CompilerDeclaration("source-pragma", source_spec, str(path.resolve()))
@@ -3266,5 +2876,10 @@ def _parse_outputs(stdout: str, formats: tuple[str, ...] = FORMATS) -> dict[str,
         raise ValueError(f"expected {len(formats)} compiler outputs, received {len(chunks)}")
     artifacts: dict[str, object] = {}
     for name, raw in zip(formats, chunks, strict=True):
-        artifacts[name] = json.loads(raw)
+        if name == "bytecode":
+            if re.fullmatch(r"0x(?:[0-9a-fA-F]{2})+", raw) is None:
+                raise ValueError("compiler did not produce valid deployment bytecode")
+            artifacts[name] = raw
+        else:
+            artifacts[name] = json.loads(raw)
     return artifacts
