@@ -7,8 +7,7 @@ from pathlib import Path
 
 from .compiler import (
     CompileResult,
-    compare_artifact_details,
-    compare_artifacts,
+    compare_validation_artifacts,
     compile_source_ast,
     compile_source_file,
     compile_target_source,
@@ -299,16 +298,17 @@ def validate_migrations(
                 target_compile,
                 target_declared_spec,
             )
+            comparisons = compare_validation_artifacts(migration.source_compile, target_compile)
             (
                 migration.report.abi_equal,
                 migration.report.method_ids_equal,
                 migration.report.storage_layout_equal,
-            ) = compare_artifacts(migration.source_compile, target_compile)
+            ) = comparisons.equalities
             (
                 migration.report.abi_diff,
                 migration.report.method_id_diff,
                 migration.report.storage_layout_diff,
-            ) = compare_artifact_details(migration.source_compile, target_compile)
+            ) = comparisons.details
             migration.validation_diagnostics.extend(
                 _add_validation_diagnostics(
                     migration.report,

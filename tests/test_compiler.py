@@ -4591,3 +4591,30 @@ def test_compile_target_archive_cleans_temporary_output_on_failure(
 
 def test_archive_target_floor_is_known_version() -> None:
     assert parse_version(ARCHIVE_TARGET_FLOOR) in KNOWN_VERSIONS
+
+
+@pytest.mark.parametrize("shape", ["tuple[]", "tuple[1]", "tuple[2]", "tuple[][2]"])
+def test_return_array_shape_is_not_erased(shape):
+    def result(type_name):
+        return CompileResult("passed", artifacts={"abi": [{
+            "type": "function", "name": "f", "inputs": [],
+            "outputs": [{"type": type_name, "components": [{"type": "uint256"}]}],
+        }]})
+    assert compare_artifacts(result(shape), result("tuple"))[0] is False
+    assert compare_artifact_details(result(shape), result("tuple"))[0]
+
+
+@pytest.mark.parametrize("component", [
+    {"type": "string"}, {"type": "bytes"}, {"type": "uint256[]"},
+    {"type": "tuple", "components": [{"type": "string"}]},
+    {"type": "tuple[2]", "components": [{"type": "bytes"}]},
+])
+def test_dynamic_return_tuple_is_not_flattened(component):
+    def result(outputs):
+        return CompileResult("passed", artifacts={"abi": [{
+            "type": "function", "name": "f", "inputs": [], "outputs": outputs,
+        }]})
+    wrapped = result([{"type": "tuple", "components": [component]}])
+    flat = result([component])
+    assert compare_artifacts(wrapped, flat)[0] is False
+    assert compare_artifact_details(wrapped, flat)[0]

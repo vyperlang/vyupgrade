@@ -27,6 +27,12 @@ uv run --locked pytest
 scripts/smoke-wheel.sh
 ```
 
+The differential suite (`tests/test_differential.py`) compiles source and migrated
+bytecode and executes both in independent local EVMs. It checks return values,
+storage transitions, and reverts; artifact equality alone does not prove runtime
+equivalence. Compiler packages and the locked `eth-tester[py-evm]` development
+dependency are required.
+
 Useful focused checks while iterating:
 
 ```bash

@@ -1062,16 +1062,14 @@ def test_smoke_records_artifact_diff_details_for_mismatches(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(
         corpus.engine,
-        "compare_artifacts",
-        lambda source, target: (False, True, False),
-    )
-    monkeypatch.setattr(
-        corpus.engine,
-        "compare_artifact_details",
-        lambda source, target: (
-            ["changed ABI entry: f(): stateMutability 'view' -> 'nonpayable'"],
-            ["changed selector: f() 0x11111111 -> 0x22222222"],
-            ["changed storage: x slot 0 uint256 -> 1 uint256"],
+        "compare_validation_artifacts",
+        lambda source, target: SimpleNamespace(
+            equalities=(False, True, False),
+            details=(
+                ["changed ABI entry: f(): stateMutability 'view' -> 'nonpayable'"],
+                [],
+                ["changed storage: x slot 0 uint256 -> 1 uint256"],
+            ),
         ),
     )
 
