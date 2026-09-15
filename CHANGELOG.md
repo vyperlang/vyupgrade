@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-09-15
+
 - Share lexical scanning for code masking, argument splitting, and delimiter
   matching; handle escaped quotes, triple-quoted strings, and comments consistently.
 - Parse project defaults into a typed configuration and reject malformed TOML,
@@ -13,12 +15,10 @@
   validation, and export; recheck unchanged dependencies before in-place writes.
 - Remove validation-only dependency repairs. Incompatible dependency pragmas and
   imports now block writes; use closure migration to upgrade dependencies.
-
 - Correct signed constant folding, bound fallback evaluation, and prefer compiler
   constant evidence. Add differential EVM tests for returns, storage, and reverts.
 - Preserve array dimensions and dynamic tuple wrappers in ABI comparison; share
   one typed comparison result between validation and reporting.
-
 - Split compiler environment provisioning from compilation. Each uv-managed
   compiler environment is now provisioned once per process before its first
   compile, so interpreter selection, downloads, and installs are bounded by the
