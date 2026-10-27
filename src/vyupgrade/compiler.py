@@ -1974,8 +1974,7 @@ def _environment_provisioning_commands(
                 "--no-editable",
                 "--no-install-project",
                 *(("--frozen",) if "--frozen" in options else ()),
-                *(("--all-extras",) if "--all-extras" in options else ()),
-                *(("--all-groups",) if "--all-groups" in options else ()),
+                *_uv_dependency_selection(options),
             ]
         )
     install_arguments = [
@@ -2003,6 +2002,14 @@ def _environment_provisioning_commands(
             ]
         )
     return commands
+
+
+def _uv_dependency_selection(options: Sequence[str]) -> list[str]:
+    selection = ["--no-default-groups"] if "--no-default-groups" in options else []
+    for index, option in enumerate(options[:-1]):
+        if option in {"--group", "--extra"}:
+            selection.extend((option, options[index + 1]))
+    return selection
 
 
 def _run_compiler_adapter(
@@ -2298,7 +2305,7 @@ def _project_vyper_specs(
 ) -> tuple[str, ...]:
     return tuple(
         dependency
-        for dependency in _project_dependency_specs(
+        for _selection, dependency in _project_dependency_specs(
             _project_data(pyproject),
             marker_environment,
         )
@@ -2521,8 +2528,7 @@ def _project_environment_command(
         "--project",
         str(root),
         *(("--frozen",) if frozen else ()),
-        "--all-extras",
-        "--all-groups",
+        *_project_dependency_selection(pyproject, marker_environment),
     ]
     if not _is_uv_run_command(command):
         return [*environment, *command]
@@ -2743,6 +2749,8 @@ def _uv_run_command_index(command: Sequence[str]) -> int:
         "--with-requirements",
         "--env-file",
         "--project",
+        "--group",
+        "--extra",
     }
     while index < len(command):
         argument = command[index]
@@ -2763,7 +2771,7 @@ def _is_uv_run_command(command: Sequence[str]) -> bool:
 def _project_has_vyper_requirement(pyproject: Path) -> bool:
     return any(
         _dependency_name(dependency) == "vyper"
-        for dependency in _project_dependency_specs(
+        for _selection, dependency in _project_dependency_specs(
             _project_data(pyproject),
             evaluate_markers=False,
         )
@@ -2777,44 +2785,72 @@ def _project_declares_vyper(
     return pyproject is not None and bool(_project_vyper_specs(pyproject, marker_environment))
 
 
+def _project_dependency_selection(
+    pyproject: Path,
+    marker_environment: Mapping[str, str],
+) -> list[str]:
+    """Select the main dependencies plus every extra or group that declares Vyper.
+
+    A Vyper requirement in an extra or group is the project's compiler declaration, so
+    that table is part of the compile environment. Other groups and extras hold tooling
+    such as test or lint dependencies, which compilation never needs and which may not
+    build on every platform.
+    """
+    selections = dict.fromkeys(
+        selection
+        for selection, dependency in _project_dependency_specs(
+            _project_data(pyproject),
+            marker_environment,
+        )
+        if selection and _dependency_name(dependency) == "vyper"
+    )
+    return ["--no-default-groups", *(option for selection in selections for option in selection)]
+
+
 def _project_dependency_specs(
     data: dict[str, object],
     marker_environment: Mapping[str, str] | None = None,
     *,
     evaluate_markers: bool = True,
-) -> Iterator[str]:
+) -> Iterator[tuple[tuple[str, ...], str]]:
+    """Yield active requirements with the uv options that select their declaring table."""
     project = data.get("project")
     if isinstance(project, dict):
-        yield from _active_string_dependencies(
+        for dependency in _active_string_dependencies(
             project.get("dependencies"),
             marker_environment=marker_environment,
             evaluate_markers=evaluate_markers,
-        )
+        ):
+            yield (), dependency
         optional = project.get("optional-dependencies")
         if isinstance(optional, dict):
             for extra, dependencies in optional.items():
-                yield from _active_string_dependencies(
+                for dependency in _active_string_dependencies(
                     dependencies,
                     marker_environment=marker_environment,
                     evaluate_markers=evaluate_markers,
                     extra=extra if isinstance(extra, str) else None,
-                )
+                ):
+                    yield ("--extra", extra), dependency
     groups = data.get("dependency-groups")
     if isinstance(groups, dict):
-        for dependencies in groups.values():
-            yield from _active_string_dependencies(
+        for group, dependencies in groups.items():
+            for dependency in _active_string_dependencies(
                 dependencies,
                 marker_environment=marker_environment,
                 evaluate_markers=evaluate_markers,
-            )
+            ):
+                yield ("--group", group), dependency
     tool = data.get("tool")
     uv = tool.get("uv") if isinstance(tool, dict) else None
     if isinstance(uv, dict):
-        yield from _active_string_dependencies(
+        # uv installs the legacy `tool.uv.dev-dependencies` table as the `dev` group.
+        for dependency in _active_string_dependencies(
             uv.get("dev-dependencies"),
             marker_environment=marker_environment,
             evaluate_markers=evaluate_markers,
-        )
+        ):
+            yield ("--group", "dev"), dependency
 
 
 def _active_string_dependencies(

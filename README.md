@@ -71,9 +71,12 @@ write decision is independent of diagnostic selection and rule version gating.
 Standalone `.vyi` inputs are target-compiled through a generated import harness.
 
 Compiler subprocesses run through the bundled `uv`. Files in a project use the
-complete nearest declared environment via `uv run --isolated --project`,
-including all dependency groups and extras; an existing `uv.lock` is enforced
-with `--frozen`. An unlocked project is mirrored into a temporary root so
+nearest declared environment via `uv run --isolated --project`: the project's
+main dependencies plus each extra or dependency group that declares its Vyper
+requirement. Other groups and extras, such as test or lint tooling, are not
+installed, so a tool that cannot build on the current platform does not block
+compilation. An existing `uv.lock` is enforced with `--frozen`. An unlocked
+project is mirrored into a temporary root so
 resolution cannot create a lockfile in the source tree. Files without a project
 use an isolated `uv run --no-project --with vyper==<version>` environment.
 Dependencies are never guessed from imports or compiler errors.

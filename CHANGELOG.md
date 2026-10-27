@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Project compiler environments install the project's main dependencies plus
+  only the extras and dependency groups that declare its Vyper requirement,
+  instead of every group and extra. A test or lint tool that cannot build on the
+  current platform no longer blocks source and target compilation.
+
 ## 0.8.0 - 2026-09-15
 
 - Share lexical scanning for code masking, argument splitting, and delimiter
