@@ -29,6 +29,7 @@ from ..source import (
 )
 from .numeric_constant_helpers import integer_constant_values
 from .numeric_scope import vars_for_argument as _vars_for_argument
+from .numeric_shift import integer_expression_type, runtime_shift_replacement
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -445,7 +446,6 @@ def _replace_shift_builtin(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     current = rule_context.source
     all_fixes: list[Fix] = []
-    all_diagnostics: list[Diagnostic] = []
     while True:
         mask = code_mask(current)
         constant_values = integer_constant_values(current, rule_context.config.source_ast)
@@ -488,9 +488,16 @@ def _replace_shift_builtin(
                 ):
                     replacement = f"({value} << convert(-{negative_amount}, uint256))"
                 else:
+                    distance = _unsigned_shift_amount_expr(
+                        negative_amount, vars_for_line, constant_values
+                    )
+                    # `>>` rejects a signed distance, and its sign is unknown here.
                     replacement = (
-                        f"({value} >> "
-                        f"({_unsigned_shift_amount_expr(negative_amount, vars_for_line, constant_values)}))"
+                        runtime_shift_replacement(value, shift_by, vars_for_line, facts)
+                        if _is_signed_integer_type(
+                            integer_expression_type(distance, vars_for_line, facts)
+                        )
+                        else f"({value} >> ({distance}))"
                     )
             elif positive is not None:
                 replacement = f"({value} << {positive.group(1)})"
@@ -518,12 +525,17 @@ def _replace_shift_builtin(
                 )
                 replacement = f"({value} << {amount})"
             else:
+                replacement = runtime_shift_replacement(
+                    value, shift_by, facts.vars_at_line(line_number(current, match.start())), facts
+                )
+            if replacement is None:
                 if rule_context.is_enabled("VYD012"):
                     diagnostics.append(
                         Diagnostic(
                             "VYD012",
                             line_number(current, match.start()),
-                            "shift() with non-literal amount needs manual << or >> review",
+                            "shift() with side-effecting operands or an untyped amount needs"
+                            " manual << or >> review",
                         )
                     )
                 continue
@@ -539,9 +551,9 @@ def _replace_shift_builtin(
                     replacement,
                 )
             )
-        all_diagnostics.extend(diagnostics)
         if not edits:
-            return current, all_fixes, all_diagnostics
+            # Every pass rescans all calls, so the last one reports each call left in place.
+            return current, all_fixes, diagnostics
         selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
         all_fixes.extend(selected_fixes)
         current = apply_edits(current, selected_edits)

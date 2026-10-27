@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `VY111` rewrites `shift()` calls with a runtime amount, which it previously
+  left in place behind `VYD012`. The rewrite dispatches on the amount's sign bit
+  as legacy `shift()` does, including `min_value(int256)` and `uint256` amounts
+  of at least `2**255`. `shift(x, -n)` with a signed runtime `n` now gets the same
+  rewrite instead of a `>>` that the target compiler rejected. `VYD012` remains
+  for operands that make calls other than pure builtins, and for amounts with no
+  inferable integer type. It is now reported once per call.
+
 ## 0.8.0 - 2026-09-15
 
 - Share lexical scanning for code masking, argument splitting, and delimiter

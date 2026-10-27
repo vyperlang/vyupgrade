@@ -105,8 +105,14 @@ modern Python interpreter.
   `math.sqrt(x)` and inserts `import math`.
 - Deprecated bitwise builtins removed: `VY110` rewrites `bitwise_and`,
   `bitwise_or`, `bitwise_xor`, and `bitwise_not` to operators. `VY111`
-  rewrites literal `shift(x, N)` and `shift(x, -N)`. `VYD012` flags
-  non-literal shift amounts for manual `<<` or `>>` review.
+  rewrites `shift(x, N)` with a literal or constant amount to `x << N` or
+  `x >> -N`. A runtime amount becomes a conditional that dispatches on the
+  amount's sign bit, as legacy `shift()` does, so a `min_value(int256)` amount
+  shifts right instead of reverting, and a `uint256` amount of at least `2**255`
+  also shifts right. The conditional evaluates the amount twice and before the
+  shifted value, so `VYD012` flags runtime shifts whose operands make calls other
+  than pure builtins such as `convert`. It also flags amounts whose integer type
+  cannot be inferred from source.
 - `raw_create()` added: no-op. This is new deployment syntax, not a required
   migration.
 - File-level nonreentrancy pragma, `@reentrant`, and
