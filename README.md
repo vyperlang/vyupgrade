@@ -78,7 +78,9 @@ resolution cannot create a lockfile in the source tree. Files without a project
 use an isolated `uv run --no-project --with vyper==<version>` environment.
 Dependencies are never guessed from imports or compiler errors.
 
-For `0.1.0b*` source compilers, `vyupgrade` runs the compiler through a
+Vyper releases before 0.3.1 run under Python 3.8 with a `setuptools` release
+that still provides the `pkg_resources` module those compilers import. For
+`0.1.0b*` source compilers, `vyupgrade` also runs the compiler through a
 `typed-ast` compatibility wrapper so the legacy compiler sees pre-Python-3.8
 AST node classes without requiring a local Python 3.6 or 3.7 interpreter. When
 an old compiler cannot produce a modern validation output format, that format is

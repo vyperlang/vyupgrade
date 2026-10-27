@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix source compilation for Vyper < 0.3.1. The compiler adapter now runs under
+  the Python 3.8 interpreter selected for those compilers, and their
+  environments install a `setuptools` release that still provides
+  `pkg_resources`.
+
 ## 0.8.0 - 2026-09-15
 
 - Share lexical scanning for code masking, argument splitting, and delimiter

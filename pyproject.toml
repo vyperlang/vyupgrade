@@ -48,6 +48,8 @@ source-exclude = [".DS_Store"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Run inside provisioned compiler environments, which use Python 3.8 for Vyper < 0.3.1.
+per-file-target-version = { "src/vyupgrade/compiler_runner.py" = "py38", "src/vyupgrade/legacy_vyper.py" = "py38" }
 
 [tool.ruff.lint]
 select = [
