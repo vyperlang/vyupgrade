@@ -188,6 +188,24 @@ class ImportClosure:
     def files(self) -> tuple[Path, ...]:
         return self.roots + self.dependencies
 
+    def resolve_import(self, consumer: Path, module: str) -> Path | None:
+        """Return the member that dotted ``module`` names when ``consumer`` imports it.
+
+        Leading dots mark a relative import. Candidates are searched in the same
+        order used to capture the closure.
+        """
+        consumer = consumer.resolve()
+        source_root = _containing_import_roots(consumer, self.import_roots)[0]
+        bases, parts = _validation_import_bases(
+            consumer, source_root, module, self.import_roots, None
+        )
+        for base, _root, _relative_base in bases:
+            for candidate in _validation_module_candidates(base.joinpath(*parts)):
+                resolved = candidate.resolve()
+                if resolved in self.contents:
+                    return resolved
+        return None
+
 
 @dataclass(frozen=True)
 class _ResolvedValidationImport:
