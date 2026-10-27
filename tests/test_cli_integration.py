@@ -1377,6 +1377,7 @@ def test_real_explicit_source_compiler_overrides_declared_project(tmp_path: Path
         """[project]
 name = "explicit-source-compiler"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = ["vyper==0.4.3"]
 """,
         encoding="utf-8",
@@ -1431,6 +1432,7 @@ def test_real_explicit_project_compiler_accepts_coherent_source(
         """[project]
 name = "explicit-source-coherence"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = ["vyper==0.4.1"]
 """,
         encoding="utf-8",
