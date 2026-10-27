@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added `VY124` for `0.5.0a2` and later targets: interface `String`, `Bytes`,
+  and `DynArray` return bounds narrower than an implementation's are widened to
+  the widest implementing bound, because vyper#4967 made interface return types
+  covariant.
+
 ## 0.8.0 - 2026-09-15
 
 - Share lexical scanning for code masking, argument splitting, and delimiter

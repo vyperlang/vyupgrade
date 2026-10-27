@@ -31,6 +31,13 @@ modern Python interpreter.
   after the docstring.
 - Wildcard interface lengths and unbounded length spellings added: no-op. This
   is newly accepted source syntax.
+- Interface return-type bounds checked covariantly: `VY124` raises each
+  `String`, `Bytes`, and `DynArray` return bound declared by a `.vyi` module or
+  an implemented inline `interface` block to the widest bound returned by an
+  implementing external function or public getter. Implementers of a `.vyi`
+  module are found in the captured import closure. Only integer-literal bounds
+  are compared; other mismatches are left to target validation. Contracts that
+  call through a widened interface accept return values up to the new bound.
 
 ### v0.5.0a1
 
