@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Preserve internal reentrancy guards. Report incompatible storage layouts when
+  a max-length fixed array becomes a mapping. Array conversion and switching a
+  legacy factory to a different forwarder now require `--aggressive`.
+- Preserve selector padding, literal calldata, bitwise operand grouping,
+  block-local shift types, and precedence when folding boundary constants.
+  Expanded empty comparisons evaluate complex array indexes once.
+- Attest the installed Vyper beta compiler and its distribution when compiling
+  through the Python compatibility wrapper.
+
 ## 0.9.0 - 2026-10-30
 
 - Provision compiler environments from the manifest when `uv.lock` is stale,

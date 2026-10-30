@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import re
+from collections.abc import Iterator
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type
 from ..models import Diagnostic, Fix
@@ -10,12 +12,14 @@ from ..rule_helpers import (
     lhs_assigned_type as _lhs_assigned_type,
     lhs_declared_type as _lhs_declared_type,
     literal_integer as _literal_integer,
+    line_offsets,
 )
 from ..source import (
     TextEdit,
     apply_edits,
     find_matching,
     line_number,
+    logical_statements,
     split_top_level_arg_spans,
     span_is_code,
 )
@@ -89,80 +93,36 @@ def _constant_exponent_literals_context(
     mask = rule_context.code_mask
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    one_base_re = re.compile(r"(?<![\w.])(?:\(\s*1\s*\*\*\s*[0-9][0-9_]*\s*\)|1\s*\*\*\s*[0-9][0-9_]*)")
-    for match in one_base_re.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()):
+    # Fold a whole literal before its children so an intermediate typed
+    # max_value() cannot introduce overflow into a previously constant expression.
+    folded_end = 0
+    for start, end in sorted(_arithmetic_spans(source), key=lambda span: (span[0], -span[1])):
+        if start < folded_end or not span_is_code(mask, start, end):
             continue
-        replacement = "1"
-        edits.append(TextEdit(match.start(), match.end(), replacement))
-        fixes.append(
-            Fix(
-                "VY054",
-                line_number(source, match.start()),
-                "folded one-base exponent expression",
-                match.group(0),
-                replacement,
+        expr = source[start:end]
+        if re.fullmatch(r"1\s*\*\*\s*[0-9][0-9_]*", expr):
+            replacement = "1"
+        else:
+            line_start = source.rfind("\n", 0, start) + 1
+            prefix = source[line_start:start]
+            declared = re.search(rf":\s*({_SIGNED_INTEGER_TYPE})\s*=\s*\(*\s*$", prefix)
+            expected = (
+                declared.group(1) if declared
+                else _signed_boundary_return_context_type(source, start, facts)
             )
-        )
-    max_int128_re = re.compile(r"(?<![\w])(?:\(\s*)?2\s*\*\*\s*127\s*-\s*1(?:\s*\))?")
-    for match in max_int128_re.finditer(source):
-        if not span_is_code(mask, match.start(), match.end()) or not _int128_literal_context(
-            source, match.start(), facts
-        ):
-            continue
-        replacement = "max_value(int128)"
-        edits.append(TextEdit(match.start(), match.end(), replacement))
+            if expected is None and _int128_literal_context(source, start, facts):
+                expected = "int128"
+            if expected is None:
+                continue
+            replacement = _signed_boundary_literal_replacement(expected, expr)
+            if replacement is None:
+                continue
+        folded_end = end
+        edits.append(TextEdit(start, end, replacement))
         fixes.append(
             Fix(
-                "VY054",
-                line_number(source, match.start()),
-                "replaced signed int128 max literal",
-                match.group(0),
-                replacement,
-            )
-        )
-    signed_boundary_expr = (
-        r"(?:\(\s*(?:-\s*)?2\s*\*\*\s*[0-9][0-9_]*\s*(?:-\s*1)?\s*\)"
-        r"|(?:-\s*)?2\s*\*\*\s*[0-9][0-9_]*\s*(?:-\s*1)?)"
-    )
-    signed_boundary_re = re.compile(
-        rf":\s*(?P<type>{_SIGNED_INTEGER_TYPE})\s*=\s*"
-        rf"(?P<expr>{signed_boundary_expr})"
-    )
-    for match in signed_boundary_re.finditer(source):
-        if not span_is_code(mask, match.start("expr"), match.end("expr")):
-            continue
-        replacement = _signed_boundary_literal_replacement(match.group("type"), match.group("expr"))
-        if replacement is None:
-            continue
-        edits.append(TextEdit(match.start("expr"), match.end("expr"), replacement))
-        fixes.append(
-            Fix(
-                "VY054",
-                line_number(source, match.start()),
-                "replaced signed integer boundary literal",
-                match.group("expr"),
-                replacement,
-            )
-        )
-    return_boundary_re = re.compile(rf"(?<![\w.])(?P<expr>{signed_boundary_expr})")
-    for match in return_boundary_re.finditer(source):
-        if not span_is_code(mask, match.start("expr"), match.end("expr")):
-            continue
-        expected_type = _signed_boundary_return_context_type(source, match.start("expr"), facts)
-        if expected_type is None:
-            continue
-        replacement = _signed_boundary_literal_replacement(expected_type, match.group("expr"))
-        if replacement is None:
-            continue
-        edits.append(TextEdit(match.start("expr"), match.end("expr"), replacement))
-        fixes.append(
-            Fix(
-                "VY054",
-                line_number(source, match.start()),
-                "replaced signed integer return boundary literal",
-                match.group("expr"),
-                replacement,
+                "VY054", line_number(source, start), "folded integer exponent literal",
+                expr, replacement,
             )
         )
     for match in re.finditer(r"\bconvert\s*\(", source):
@@ -216,6 +176,39 @@ def _constant_exponent_literals_context(
     return apply_edits(source, selected_edits), selected_fixes, []
 
 
+def _arithmetic_spans(source: str) -> Iterator[tuple[int, int]]:
+    """Match complete arithmetic subexpressions in Python-compatible Vyper statements."""
+    if "**" not in source:
+        return
+    offsets = line_offsets(source)
+    for first, last in logical_statements(source):
+        start = offsets[first.start[0] - 1] + first.start[1]
+        end = offsets[last.end[0] - 1] + last.end[1]
+        statement = source[start:end]
+        if "**" not in statement:
+            continue
+        if last.string == ":":
+            statement += "\n    pass"
+        yield from _statement_arithmetic_spans(statement, start)
+
+
+def _statement_arithmetic_spans(statement: str, start: int) -> Iterator[tuple[int, int]]:
+    try:
+        tree = ast.parse(statement)
+    except (SyntaxError, ValueError, RecursionError):
+        return
+    lines = statement.splitlines(keepends=True)
+    offsets = line_offsets(statement)
+
+    def offset(row: int, byte_column: int) -> int:
+        prefix = lines[row - 1].encode("utf-8")[:byte_column]
+        return start + offsets[row - 1] + len(prefix.decode("utf-8"))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.BinOp, ast.UnaryOp)):
+            yield offset(node.lineno, node.col_offset), offset(node.end_lineno, node.end_col_offset)
+
+
 def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool:
     line_no = line_number(source, index)
     return_type = facts.return_type_at_line(line_no)
@@ -239,14 +232,18 @@ def _signed_boundary_literal_replacement(type_name: str, expr: str) -> str | Non
     if match is None:
         return None
     bits = int(match.group(1))
-    literal = re.sub(r"\s+", "", expr.strip())
-    if literal.startswith("(") and literal.endswith(")"):
-        literal = literal[1:-1]
-    if literal == f"-2**{bits - 1}":
+    if not re.search(rf"\b2\s*\*\*\s*{bits - 1}\b", expr):
+        return None
+    if not re.fullmatch(r"[0-9_()\s+*/%\-]+", expr):
+        return None
+    value = eval_integer_constant_expr(expr, {})
+    if value is None or not _integer_value_fits_type(value, type_name):
+        return None
+    if value == -(2 ** (bits - 1)):
         return f"min_value({type_name})"
-    if literal == f"2**{bits - 1}-1":
+    if value == 2 ** (bits - 1) - 1:
         return f"max_value({type_name})"
-    return None
+    return str(value)
 
 
 def _signed_boundary_return_context_type(source: str, index: int, facts: SourceFacts) -> str | None:

@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 
 from ..models import Diagnostic, Fix
-from .legacy_call_helpers import iter_calls, replace_identifier_call
-from ..rule_registry import Rule, RuleContext, target_floor
+from .legacy_call_helpers import iter_calls
+from ..rule_registry import Rule, RuleContext, crossing, target_floor
 from ..source import (
     TextEdit,
     apply_edits,
+    code_mask,
     line_number,
     split_top_level_arg_spans,
     split_top_level_args,
@@ -20,11 +21,27 @@ def _legacy_builtin_calls(
     source = rule_context.source
     fixes: list[Fix] = []
     current = source
-    if rule_context.is_enabled("VY208"):
-        current, new_fixes = replace_identifier_call(
-            current, "create_with_code_of", "create_copy_of", "VY208"
+    diagnostics: list[Diagnostic] = []
+    if rule_context.migration.crosses("0.1.0b9") and rule_context.any_enabled({"VY208", "VYD021"}):
+        proxy = (
+            "create_minimal_proxy_to" if rule_context.migration.target_at_least("0.3.4")
+            else "create_forwarder_to"
         )
-        fixes.extend(new_fixes)
+        edits: list[TextEdit] = []
+        for match, _open, _close, _args in iter_calls(source, "create_with_code_of"):
+            line = line_number(source, match.start())
+            diagnostics.append(
+                Diagnostic(
+                    "VYD021", line,
+                    f"review proxy bytecode and returndata before switching to {proxy} with --aggressive",
+                )
+            )
+            if rule_context.config.aggressive and rule_context.is_enabled("VY208"):
+                old = "create_with_code_of"
+                edits.append(TextEdit(match.start(), match.start() + len(old), proxy))
+                fixes.append(Fix("VY208", line, "updated legacy forwarder factory", old, proxy))
+        current = apply_edits(source, edits)
+    if rule_context.is_enabled("VY208") and rule_context.migration.target_at_least("0.2.1"):
         current, new_fixes = _replace_call_keyword(
             current, "raw_call", "outsize", "max_outsize", "VY208"
         )
@@ -44,11 +61,15 @@ def _legacy_builtin_calls(
         current, new_fixes = _unwrap_legacy_builtin(current, "as_unitless_number", "VY208")
         fixes.extend(new_fixes)
     if rule_context.is_enabled("VY209"):
-        current, new_fixes = _rewrite_method_id_bytes32_comparisons(current)
+        current, new_fixes = _rewrite_method_id_bytes32(current)
         fixes.extend(new_fixes)
-        current, new_fixes = _rewrite_method_id_shift_output_type(current)
-        fixes.extend(new_fixes)
-    return current, fixes, []
+    return current, fixes, diagnostics
+
+
+def _argument_code(arg: str) -> str:
+    """Keep code offsets while hiding strings, comments and line continuations."""
+    masked = "".join(c if visible else " " for c, visible in zip(arg, code_mask(arg), strict=True))
+    return masked.replace("\\\n", "  ")
 
 
 def _replace_call_keyword(
@@ -61,21 +82,18 @@ def _replace_call_keyword(
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     for match, _open_index, _close, args in iter_calls(source, call_name):
-        keyword_match = re.search(rf"(?<!\w){re.escape(before)}\s*=", args)
-        if keyword_match is None:
-            continue
-        start = match.end() + keyword_match.start()
-        end = start + len(before)
-        edits.append(TextEdit(start, end, after))
-        fixes.append(
-            Fix(
-                rule,
-                line_number(source, start),
-                f"renamed {call_name} keyword {before}",
-                before,
-                after,
+        for start, _end, arg in split_top_level_arg_spans(args) or ():
+            keyword = re.match(rf"\s*({before})\s*=(?!=)", _argument_code(arg))
+            if keyword is None:
+                continue
+            offset = match.end() + start + keyword.start(1)
+            edits.append(TextEdit(offset, offset + len(before), after))
+            fixes.append(
+                Fix(
+                    rule, line_number(source, offset), f"renamed {call_name} keyword {before}",
+                    before, after,
+                )
             )
-        )
     return apply_edits(source, edits), fixes
 
 
@@ -273,139 +291,31 @@ def _remove_call_keyword_arg(
     return apply_edits(source, edits), fixes
 
 
-def _rewrite_method_id_bytes32_comparisons(source: str) -> tuple[str, list[Fix]]:
-    fixes: list[Fix] = []
+def _rewrite_method_id_bytes32(source: str) -> tuple[str, list[Fix]]:
     edits: list[TextEdit] = []
-    for match, open_index, close, raw_args in iter_calls(source, "method_id"):
-        arg_spans = split_top_level_arg_spans(raw_args)
-        if arg_spans is None:
-            continue
-        output_value_span: tuple[int, int] | None = None
-        for arg_start, _arg_end, arg in arg_spans:
-            name, sep, raw_value = arg.partition("=")
-            if not sep or name.strip() != "output_type" or raw_value.strip() != "bytes32":
-                continue
-            value_start = (
-                arg_start + arg.index(raw_value) + len(raw_value) - len(raw_value.lstrip())
-            )
-            value_end = value_start + len(raw_value.strip())
-            output_value_span = (open_index + 1 + value_start, open_index + 1 + value_end)
-            break
-        if output_value_span is None:
-            continue
-        comparison = _method_id_comparison_operand(source, match.start(), close)
-        if comparison is None:
-            continue
-        expr_start, expr_end, expr = comparison
-        replacement = f"convert({expr}, bytes4)"
-        edits.append(TextEdit(expr_start, expr_end, replacement))
-        edits.append(TextEdit(output_value_span[0], output_value_span[1], "bytes4"))
-        fixes.append(
-            Fix(
-                "VY209",
-                line_number(source, match.start()),
-                "converted bytes32 method_id comparison to bytes4",
-                source[expr_start : close + 1],
-                f"{replacement} == {source[match.start() : close + 1].replace('output_type=bytes32', 'output_type=bytes4')}",
-            )
-        )
-    return apply_edits(source, edits), fixes
-
-
-def _rewrite_method_id_shift_output_type(source: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    for match, open_index, close, raw_args in iter_calls(source, "method_id"):
-        line_start = source.rfind("\n", 0, match.start()) + 1
-        line_end = source.find("\n", close)
-        if line_end == -1:
-            line_end = len(source)
-        after_call = source[close:line_end]
-        if "convert(" not in source[line_start : match.start()] or not (
-            re.search(r"\)\s*(?:<<|>>)\s*\d+", after_call)
-            or re.search(r",\s*uint256\s*\)\s*,\s*\d+\s*\)", after_call)
-        ):
-            continue
-        arg_spans = split_top_level_arg_spans(raw_args)
-        if arg_spans is None:
-            continue
-        output_value_span: tuple[int, int] | None = None
-        for arg_start, _arg_end, arg in arg_spans:
-            name, sep, raw_value = arg.partition("=")
-            if not sep or name.strip() != "output_type" or raw_value.strip() != "bytes32":
+    for match, _open, close, args in iter_calls(source, "method_id"):
+        for start, _end, arg in split_top_level_arg_spans(args) or ():
+            keyword = re.fullmatch(r"\s*output_type\s*=\s*(bytes32)\s*", _argument_code(arg))
+            if keyword is None:
                 continue
-            value_start = (
-                arg_start + arg.index(raw_value) + len(raw_value) - len(raw_value.lstrip())
+            type_start = match.end() + start + keyword.start(1)
+            before = source[match.start():close + 1]
+            call = (
+                source[match.start():type_start] + "bytes4"
+                + source[type_start + len("bytes32"):close + 1]
             )
-            value_end = value_start + len(raw_value.strip())
-            output_value_span = (open_index + 1 + value_start, open_index + 1 + value_end)
+            # Legacy method_id(..., output_type=bytes32) left-padded the selector.
+            after = f"convert(convert({call}, uint256), bytes32)"
+            edits.append(TextEdit(match.start(), close + 1, after))
+            fixes.append(
+                Fix(
+                    "VY209", line_number(source, match.start()), "preserved left-padded method ID",
+                    before, after,
+                )
+            )
             break
-        if output_value_span is None:
-            continue
-        edits.append(TextEdit(output_value_span[0], output_value_span[1], "bytes4"))
-        before = source[line_start:line_end].strip()
-        after = before.replace("output_type=bytes32", "output_type=bytes4").replace(
-            "output_type = bytes32", "output_type = bytes4"
-        )
-        fixes.append(
-            Fix(
-                "VY209",
-                line_number(source, match.start()),
-                "changed shifted method_id output type to bytes4",
-                before,
-                after,
-            )
-        )
     return apply_edits(source, edits), fixes
-
-
-def _method_id_comparison_operand(
-    source: str, call_start: int, call_end: int
-) -> tuple[int, int, str] | None:
-    line_start = source.rfind("\n", 0, call_start) + 1
-    line_end = source.find("\n", call_end)
-    if line_end == -1:
-        line_end = len(source)
-    eq_left = source.rfind("==", line_start, call_start)
-    if eq_left != -1:
-        expr_start = _statement_expression_start(source, eq_left, line_start)
-        while expr_start < eq_left and source[expr_start].isspace():
-            expr_start += 1
-        expr_end = eq_left
-        while expr_end > expr_start and source[expr_end - 1].isspace():
-            expr_end -= 1
-        expr = source[expr_start:expr_end]
-        if expr and not expr.startswith("convert("):
-            return expr_start, expr_end, expr
-    eq_right = source.find("==", call_end, line_end)
-    if eq_right != -1:
-        expr_start = eq_right + 2
-        while expr_start < line_end and source[expr_start].isspace():
-            expr_start += 1
-        expr_end = line_end
-        while expr_end > expr_start and source[expr_end - 1].isspace():
-            expr_end -= 1
-        expr = source[expr_start:expr_end]
-        if expr and not expr.startswith("convert("):
-            return expr_start, expr_end, expr
-    return None
-
-
-def _statement_expression_start(source: str, index: int, fallback: int) -> int:
-    prefix = source[:index]
-    starts = list(re.finditer(r"(?m)^[ \t]*(?:assert|return)\s+", prefix))
-    if not starts:
-        return fallback
-    start = starts[-1].end()
-    while start < index and source[start].isspace():
-        start += 1
-    if start < index and source[start] == "(":
-        close = source.find(")", start + 1, index)
-        if close == -1:
-            start += 1
-            while start < index and source[start].isspace():
-                start += 1
-    return start
 
 
 RULES = (
@@ -413,8 +323,9 @@ RULES = (
         "legacy_builtin_calls",
         runner=_legacy_builtin_calls,
         changes=(
-            target_floor("VY208", (0, 2, 1)),
-            target_floor("VY209", (0, 2, 1)),
+            target_floor("VY208", "0.1.0b9"),
+            crossing("VYD021", "0.1.0b9"),
+            target_floor("VY209", (0, 3, 4)),
         ),
     ),
 )

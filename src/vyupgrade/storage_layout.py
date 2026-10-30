@@ -23,7 +23,6 @@ __all__ = (
 )
 
 
-UINT256_MAX_DECIMAL = str(2**256 - 1)
 UINT256_LIMIT = 2**256
 LAYOUT_WRAPPER_KEYS = frozenset({"storage_layout", "transient_storage_layout", "code_layout"})
 STORAGE_LEAF_KEYS = frozenset({"slot", "type", "location", "n_slots"})
@@ -559,7 +558,6 @@ def _canonical_storage_type(type_name: str) -> tuple[str, bool]:
         r"\1",
         type_name,
     )
-    type_name = _canonical_max_value_arrays(type_name)
     type_name = _strip_legacy_hashmap_storage_suffixes(type_name)
     return type_name, True
 
@@ -680,18 +678,6 @@ def _valid_storage_type_delimiters(type_name: str) -> bool:
         if commas != 1:
             return False
     return True
-
-
-def _canonical_max_value_arrays(type_name: str) -> str:
-    pattern = re.compile(
-        rf"\b(?P<element>[A-Za-z_][A-Za-z0-9_]*|u?int(?:\d+)?|bytes(?:\d+)?|address|bool)"
-        rf"\[{UINT256_MAX_DECIMAL}\]"
-    )
-    while True:
-        updated = pattern.sub(r"HashMap[uint256, \g<element>]", type_name)
-        if updated == type_name:
-            return type_name
-        type_name = updated
 
 
 def _strip_legacy_hashmap_storage_suffixes(type_name: str) -> str:

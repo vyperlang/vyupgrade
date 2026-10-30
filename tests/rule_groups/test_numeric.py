@@ -470,7 +470,7 @@ def f(price: uint256, packed: uint256) -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert "return (price + (packed & 2 ** 128 - 1)) // 2" in result.source
+    assert "return (price + (packed & (2 ** 128 - 1))) // 2" in result.source
 
 
 def test_isqrt_integer_division_operand(config) -> None:

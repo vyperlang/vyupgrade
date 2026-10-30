@@ -2,6 +2,36 @@ from __future__ import annotations
 
 import re
 
+from ..analysis import SourceFacts
+from ..source import logical_statements
+
+
+def shift_call_bindings(source: str, facts: SourceFacts) -> dict[int, dict[str, str]]:
+    """Resolve locals at shift calls, including calls on continuation lines."""
+    lines = source.splitlines()
+    scopes = [(0, {**facts.global_vars, **facts.storage_vars})]
+    pending: dict[str, str] = {}
+    calls: dict[int, dict[str, str]] = {}
+    for first, last in logical_statements(source):
+        line, indent = first.start
+        while scopes[-1][0] > indent:
+            scopes.pop()
+        if indent > scopes[-1][0]:
+            scopes.append((indent, pending))
+        pending = {}
+        if first.string == "def" and line in facts.function_names:
+            pending = facts.function_params[facts.function_names[line]].copy()
+        elif line in facts.local_declarations:
+            name, typ = facts.local_declarations[line]
+            if first.string == "for":
+                pending = {name: typ}
+            else:
+                scopes[-1][1][name] = typ
+        for row in range(line, last.end[0] + 1):
+            if "shift" in lines[row - 1]:
+                calls[row] = {name: typ for _, scope in scopes for name, typ in scope.items()}
+    return calls
+
 
 def vars_for_argument(
     source: str, arg_start: int, arg: str, vars_for_line: dict[str, str]

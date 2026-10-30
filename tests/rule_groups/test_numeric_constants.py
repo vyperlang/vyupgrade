@@ -45,8 +45,8 @@ def neg(i: int128) -> int128:
 
     result = apply_rules(source, config())
 
-    assert "return max_value(int128) + i" in result.source
-    assert "return i - max_value(int128)" in result.source
+    assert "return (max_value(int128)) + i" in result.source
+    assert "return i - (max_value(int128))" in result.source
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
@@ -60,7 +60,7 @@ def f(lower: int256=-2**255, upper: int256 = (2 ** 255 - 1)) -> int256:
     result = apply_rules(source, config())
 
     assert "lower: int256=min_value(int256)" in result.source
-    assert "upper: int256 = max_value(int256)" in result.source
+    assert "upper: int256 = (max_value(int256))" in result.source
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 
@@ -75,7 +75,7 @@ def f() -> int128:
 
     result = apply_rules(source, config())
 
-    assert "lower: int128 = min_value(int128)" in result.source
+    assert "lower: int128 = (min_value(int128))" in result.source
     assert "upper: int128 = max_value(int128)" in result.source
 
 
@@ -118,7 +118,7 @@ RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * (1 ** 10)
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert "RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * 1" in result.source
+    assert "RATE_REDUCTION_COEFFICIENT: constant(uint256) = 135_998_912 * (1)" in result.source
     assert any(fix.rule == "VY054" for fix in result.fixes)
 
 

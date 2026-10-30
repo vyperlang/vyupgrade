@@ -35,6 +35,22 @@ def _tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def test_beta_wrapper_attests_vyper_distribution(tmp_path: Path) -> None:
+    path = tmp_path / "entry.vy"
+    path.write_text("# @version 0.1.0b8\n@public\ndef f():\n    pass\n")
+    report_path = tmp_path / "report.json"
+    # Legacy output formats can be unavailable, but the compiler identity is known.
+    assert main([str(path), "--allow-unvalidated-source", "--report-json", str(report_path)]) == 0
+    validation = json.loads(report_path.read_text())["files"][0]["validation"]
+    attestation = validation["source_attestation"]
+    identity = attestation["resolved_compiler"]
+    assert identity["version"] == "0.1.0b8"
+    assert identity["executable"]["path"] == "vyper"
+    packages = attestation["dependency_context"]["resolved_packages"]
+    vyper = next(package for package in packages if package["name"] == "vyper")
+    assert identity["artifact"]["sha256"] == vyper["artifact_sha256"]
+
+
 def test_real_compiler_nested_module_layout_is_comparable(tmp_path: Path) -> None:
     module = tmp_path / "ledger.vy"
     module.write_text(
