@@ -55,6 +55,7 @@ FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = (*FORMATS, "bytecode", "ast")
 TARGET_FORMATS = SOURCE_FORMATS
 ADAPTER_TIMEOUT_GRACE_SECONDS = 30
+PKG_RESOURCES_REQUIREMENT = "setuptools<82"
 ARCHIVE_TARGET_FLOOR = "0.4.0"
 OVERLAY_EXCLUDED_PARTS = {
     ".git",
@@ -1419,6 +1420,10 @@ def _compiler_command(explicit: str | None, version: str | None, python: str | N
         "--with",
         f"vyper=={normalized}",
     ]
+    if _predates_vyper_0_3_1(normalized):
+        # These compilers import pkg_resources at startup, but uv environments do
+        # not seed setuptools and setuptools 82 removed pkg_resources.
+        command += ["--with", PKG_RESOURCES_REQUIREMENT]
     if legacy_prerelease_version(normalized) is not None:
         return [
             *command,
@@ -1448,15 +1453,19 @@ def _normalize_version(version: str | None) -> str | None:
 
 
 def _default_python(version: str) -> str:
-    if legacy_prerelease_version(version) is not None:
-        return "3.8"
-    parsed = parse_version(version)
-    if parsed is not None and parsed < VyperVersion("0.3.1"):
+    if _predates_vyper_0_3_1(version):
         return "3.8"
     # Modern Vyper releases run cleanly on Python 3.11. Pinning the subprocess
     # interpreter avoids accidentally using a bleeding-edge project venv, where
     # old compiler dependencies can break.
     return "3.11"
+
+
+def _predates_vyper_0_3_1(version: str) -> bool:
+    if legacy_prerelease_version(version) is not None:
+        return True
+    parsed = parse_version(version)
+    return parsed is not None and parsed < VyperVersion("0.3.1")
 
 
 def _supports_warning_policy(version: str | None) -> bool:
@@ -1985,7 +1994,7 @@ def _environment_provisioning_commands(
         if option == "--with"
     ]
     assert all(
-        requirement == "typed-ast"
+        requirement in {"typed-ast", PKG_RESOURCES_REQUIREMENT}
         or (
             requirement.startswith("vyper==")
             and parse_version(requirement.removeprefix("vyper==")) is not None

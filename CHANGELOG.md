@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix source compilation for Vyper < 0.3.1. The compiler adapter now runs under
+  the Python 3.8 interpreter selected for those compilers, and their
+  environments install a `setuptools` release that still provides
+  `pkg_resources`.
 - Provision a project's compiler environment from its manifest when the
   committed `uv.lock` no longer matches it (`uv lock --check` fails), instead of
   installing the stale lock with `--frozen`. A lock written before a dependency
