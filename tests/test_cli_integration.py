@@ -1277,6 +1277,40 @@ version = "0.1.0"
     }
 
 
+def test_real_stale_lock_provisions_from_manifest_without_rewriting_lock(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    manifest = project / "pyproject.toml"
+    unpinned = '[project]\nname = "stale-lock"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
+    manifest.write_text(unpinned, encoding="utf-8")
+    subprocess.run(
+        [find_uv_bin(), "lock", "--project", str(project)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # The compiler pin lands in the manifest after the lock was committed.
+    manifest.write_text(
+        f'{unpinned}\n[dependency-groups]\ntest = ["vyper==0.4.1"]\n', encoding="utf-8"
+    )
+    stale_lock = (project / "uv.lock").read_bytes()
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\nvalue: public(uint256)\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.1"),
+        "0.4.1",
+    )
+
+    assert result.status == "passed", result.stderr
+    assert result.compiler_authority == "project-manifest"
+    assert result.dependency_context is not None
+    assert result.dependency_context.lockfile is None
+    assert (project / "uv.lock").read_bytes() == stale_lock
+
+
+
 def test_real_unlocked_project_preserves_sibling_path_sources(tmp_path: Path) -> None:
     project = tmp_path / "project"
     helper = tmp_path / "helper"
