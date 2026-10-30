@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added `VY124` for `0.5.0a2` and later targets: interface `String`, `Bytes`,
+  and `DynArray` return bounds narrower than an implementation's are widened with
+  `--aggressive` to the widest implementing bound, because vyper#4967 made interface return types
+  covariant. Default mode emits `VYD019` for manual review because widening also
+  broadens the return values accepted by callers through that interface.
 - Fix source compilation for Vyper < 0.3.1. The compiler adapter now runs under
   the Python 3.8 interpreter selected for those compilers, and their
   environments install a `setuptools` release that still provides

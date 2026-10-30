@@ -6,6 +6,7 @@ from collections.abc import Callable
 from ..analysis import SourceFacts, infer_expr_type, normalize_type
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
+    implemented_interface_names,
     line_match_starts_outside_string as _line_match_starts_outside_string,
     line_offsets as _line_offsets,
     nested_under_config_path as _nested_under_config_path,
@@ -481,19 +482,9 @@ def _implemented_interface_methods(
     source: str, facts: SourceFacts, mutability: str
 ) -> set[str]:
     names: set[str] = set()
-    for interface_name in _implemented_interface_names(source):
+    for interface_name in implemented_interface_names(source):
         methods = facts.interfaces.get(interface_name, {})
         names.update(name for name, method_mutability in methods.items() if method_mutability == mutability)
-    return names
-
-
-def _implemented_interface_names(source: str) -> set[str]:
-    mask = code_mask(source)
-    names: set[str] = set()
-    for match in re.finditer(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
-        if not span_is_code(mask, match.start(1), match.end(1)):
-            continue
-        names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group(1)))
     return names
 
 
@@ -799,7 +790,7 @@ def _interface_imports(
     requested_rewrites: dict[str, str] = {}
     taken = code_identifiers(source)
     mask = rule_context.code_mask
-    implemented_names = _implemented_interface_names(source)
+    implemented_names = implemented_interface_names(source)
     offset = 0
 
     for i, line in enumerate(lines):

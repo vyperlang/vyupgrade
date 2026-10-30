@@ -12,6 +12,7 @@ from .rule_groups.data_lifecycle import (
 )
 from .rule_groups.diagnostics import RULES as DIAGNOSTIC_RULES
 from .rule_groups.external_calls import RULES as EXTERNAL_CALL_RULES
+from .rule_groups.interface_return_bounds import RULES as INTERFACE_RETURN_BOUND_RULES
 from .rule_groups.interfaces import RULES as INTERFACE_RULES
 from .rule_groups.legacy import (
     EARLY_RULES as LEGACY_EARLY_RULES,
@@ -114,6 +115,7 @@ RULES = (
     *NUMERIC_OPERATOR_RULES,
     *DATA_CONSTRUCTOR_RULES,
     *INTERFACE_RULES,
+    *INTERFACE_RETURN_BOUND_RULES,
     *DATA_ENUM_RULES,
     *NUMERIC_RANGE_RULES,
     *EXTERNAL_CALL_RULES,
