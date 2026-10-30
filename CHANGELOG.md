@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `VY111` rewrites `shift()` calls with a runtime amount, which it previously
+  left in place behind `VYD012`. The rewrite dispatches on the amount's sign bit
+  as legacy `shift()` does, including `min_value(int256)` and `uint256` amounts
+  of at least `2**255`. `shift(x, -n)` with a signed runtime `n` now gets the same
+  rewrite instead of a `>>` that the target compiler rejected. `VYD012` remains
+  for operands that make calls other than pure builtins, and for amounts with no
+  inferable integer type. It is now reported once per call.
+- Preserve the original checked casts and arithmetic in shift amounts instead
+  of assuming a sign or dropping conversion reverts. Constant amounts use the
+  same signed-word direction as runtime amounts, and conditional values retain
+  their grouping.
+
+
 - Added `VY124` for `0.5.0a2` and later targets: interface `String`, `Bytes`,
   and `DynArray` return bounds narrower than an implementation's are widened with
   `--aggressive` to the widest implementing bound, because vyper#4967 made interface return types

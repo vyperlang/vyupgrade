@@ -144,7 +144,9 @@ def _mixed_signed_unsigned_arithmetic(
                     or inside_convert_call(source, start)
                     or _inside_loop_declaration(source, start, end)
                     or _inside_range_header(source, start)
-                    or (name in constant_values and _inside_shift_amount(source, start))
+                    # VY111 preserves the signed amount expression, including its
+                    # checked arithmetic and conversions, before choosing direction.
+                    or _inside_shift_amount(source, start)
                     or _inside_type_subscript(source, start)
                     or (
                         name in constant_values

@@ -29,9 +29,9 @@ from ..source import (
 )
 from .numeric_constant_helpers import integer_constant_values
 from .numeric_scope import vars_for_argument as _vars_for_argument
+from .numeric_shift import constant_shift_replacement, runtime_shift_replacement
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
-    is_unsigned_integer_type as _is_unsigned_integer_type,
 )
 
 
@@ -445,7 +445,6 @@ def _replace_shift_builtin(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     current = rule_context.source
     all_fixes: list[Fix] = []
-    all_diagnostics: list[Diagnostic] = []
     while True:
         mask = code_mask(current)
         constant_values = integer_constant_values(current, rule_context.config.source_ast)
@@ -464,66 +463,34 @@ def _replace_shift_builtin(
                 continue
             value = args[0].strip()
             shift_by = args[1].strip()
-            negative = re.fullmatch(r"-\s*((?:\d|_)+)", shift_by)
+            negative = re.fullmatch(r"-\s*(\d[\d_]*)", shift_by)
             negative_constant = re.fullmatch(r"-\s*([A-Za-z_][A-Za-z0-9_]*)", shift_by)
-            negative_expr = re.fullmatch(r"-\s*(.+)", shift_by)
-            positive = re.fullmatch(r"\+?\s*((?:\d|_)+)", shift_by)
+            positive = re.fullmatch(r"\+?\s*(\d[\d_]*)", shift_by)
             positive_constant = re.fullmatch(r"\+?\s*([A-Za-z_][A-Za-z0-9_]*)", shift_by)
-            convert_constant = re.fullmatch(
-                r"convert\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*u?int(?:\d+)?\s*\)",
-                shift_by,
-            )
-            positive_convert = re.fullmatch(r"convert\s*\((.+),\s*int128\s*\)", shift_by)
+            amount = None
             if negative is not None:
-                replacement = f"({value} >> {negative.group(1)})"
+                amount = -int(negative.group(1).replace("_", ""))
             elif negative_constant is not None and negative_constant.group(1) in constant_values:
                 amount = -constant_values[negative_constant.group(1)]
-                operator = "<<" if amount >= 0 else ">>"
-                replacement = f"({value} {operator} {abs(amount)})"
-            elif negative_expr is not None:
-                vars_for_line = facts.vars_at_line(line_number(current, match.start()))
-                negative_amount = negative_expr.group(1).strip()
-                if _local_name_assigned_negative_integer(
-                    current, match.start(), negative_amount, vars_for_line
-                ):
-                    replacement = f"({value} << convert(-{negative_amount}, uint256))"
-                else:
-                    replacement = (
-                        f"({value} >> "
-                        f"({_unsigned_shift_amount_expr(negative_amount, vars_for_line, constant_values)}))"
-                    )
             elif positive is not None:
-                replacement = f"({value} << {positive.group(1)})"
+                amount = int(positive.group(1).replace("_", ""))
             elif positive_constant is not None and positive_constant.group(1) in constant_values:
                 amount = constant_values[positive_constant.group(1)]
-                operator = "<<" if amount >= 0 else ">>"
-                replacement = f"({value} {operator} {abs(amount)})"
-            elif _local_name_assigned_negative_integer(
-                current,
-                match.start(),
-                shift_by,
-                facts.vars_at_line(line_number(current, match.start())),
-            ):
-                replacement = f"({value} >> convert(-{shift_by}, uint256))"
-            elif convert_constant is not None and convert_constant.group(1) in constant_values:
-                amount = constant_values[convert_constant.group(1)]
-                operator = "<<" if amount >= 0 else ">>"
-                replacement = f"({value} {operator} {abs(amount)})"
-            elif positive_convert is not None and not positive_convert.group(1).lstrip().startswith(
-                "-"
-            ):
-                vars_for_line = facts.vars_at_line(line_number(current, match.start()))
-                amount = _unsigned_shift_convert_replacement(
-                    positive_convert.group(1).strip(), vars_for_line
+            replacement = (
+                constant_shift_replacement(value, amount)
+                if amount is not None else runtime_shift_replacement(
+                    value, shift_by, facts.vars_at_line(line_number(current, match.start())), facts,
+                    constant_values,
                 )
-                replacement = f"({value} << {amount})"
-            else:
+            )
+            if replacement is None:
                 if rule_context.is_enabled("VYD012"):
                     diagnostics.append(
                         Diagnostic(
                             "VYD012",
                             line_number(current, match.start()),
-                            "shift() with non-literal amount needs manual << or >> review",
+                            "shift() with side-effecting operands or an untyped amount needs"
+                            " manual << or >> review",
                         )
                     )
                 continue
@@ -539,80 +506,12 @@ def _replace_shift_builtin(
                     replacement,
                 )
             )
-        all_diagnostics.extend(diagnostics)
         if not edits:
-            return current, all_fixes, all_diagnostics
+            # Every pass rescans all calls, so the last one reports each call left in place.
+            return current, all_fixes, diagnostics
         selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
         all_fixes.extend(selected_fixes)
         current = apply_edits(current, selected_edits)
-
-
-def _unsigned_shift_amount_expr(
-    expr: str, vars_for_line: dict[str, str], constant_values: dict[str, int]
-) -> str:
-    nonnegative_constants = [
-        name
-        for name, value in sorted(
-            constant_values.items(), key=lambda item: len(item[0]), reverse=True
-        )
-        if value >= 0
-    ]
-    if nonnegative_constants:
-        constant_re = re.compile(
-            rf"\b({'|'.join(re.escape(name) for name in nonnegative_constants)})\b"
-        )
-        expr = constant_re.sub(lambda match: str(constant_values[match.group(1)]), expr)
-    return re.sub(
-        r"\bconvert\s*\(([^,\n]+),\s*int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?\s*\)",
-        lambda match: _unsigned_shift_convert_replacement(match.group(1).strip(), vars_for_line),
-        expr,
-    )
-
-
-def _local_name_assigned_negative_integer(
-    source: str, index: int, name: str, vars_for_line: dict[str, str]
-) -> bool:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-        return False
-    if not _is_signed_integer_type(vars_for_line.get(name)):
-        return False
-    line_start = source.rfind("\n", 0, index) + 1
-    current_line = source[
-        line_start : source.find("\n", line_start)
-        if source.find("\n", line_start) != -1
-        else len(source)
-    ]
-    current_indent = len(current_line) - len(current_line.lstrip(" \t"))
-    for line in reversed(source[:line_start].splitlines()):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" \t"))
-        if indent < current_indent and re.match(r"(?:@|def\s+)", stripped):
-            return False
-        if indent > current_indent:
-            continue
-        if re.match(rf"{re.escape(name)}\s*(?::\s*int\d+)?\s*=\s*-", stripped):
-            return True
-        if re.match(rf"{re.escape(name)}\s*(?::[^=]+)?\s*=", stripped):
-            return False
-    return False
-
-
-def _unsigned_shift_convert_replacement(expr: str, vars_for_line: dict[str, str]) -> str:
-    if _unsigned_integer_expression(expr, vars_for_line):
-        return f"({expr})" if re.search(r"[-+*/%<>=|&]", expr) else expr
-    return f"convert({expr}, uint256)"
-
-
-def _unsigned_integer_expression(expr: str, vars_for_line: dict[str, str]) -> bool:
-    identifiers = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr)
-    if not identifiers:
-        return _integerish_expression(expr, vars_for_line)
-    return all(
-        _is_unsigned_integer_type(infer_expr_type(identifier, vars_for_line))
-        for identifier in identifiers
-    )
 
 
 def _name_is_user_defined(facts: SourceFacts, name: str) -> bool:
