@@ -137,17 +137,28 @@ def test_compiler_command_allows_python_override(monkeypatch) -> None:
     ]
 
 
-def test_compiler_command_uses_older_python_for_legacy_vyper(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("version", "python", "pkg_resources"),
+    [
+        ("0.2.16", "3.8", ["--with", "setuptools<82"]),
+        ("0.3.0", "3.8", ["--with", "setuptools<82"]),
+        ("0.3.1", "3.11", []),
+    ],
+)
+def test_compiler_command_provisions_python38_and_pkg_resources_before_0_3_1(
+    monkeypatch, version, python, pkg_resources
+) -> None:
     monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
 
-    assert _compiler_command(None, "0.2.16", None) == [
+    assert _compiler_command(None, version, None) == [
         "/tmp/uv",
         "run",
         "--no-project",
         "--python",
-        "3.8",
+        python,
         "--with",
-        "vyper==0.2.16",
+        f"vyper=={version}",
+        *pkg_resources,
         "vyper",
     ]
 
@@ -157,7 +168,7 @@ def test_compiler_command_uses_typed_ast_runner_for_legacy_prerelease(monkeypatc
 
     command = _compiler_command(None, "0.1.0b4", None)
 
-    assert command[:9] == [
+    assert command[:11] == [
         "/tmp/uv",
         "run",
         "--no-project",
@@ -166,10 +177,12 @@ def test_compiler_command_uses_typed_ast_runner_for_legacy_prerelease(monkeypatc
         "--with",
         "vyper==0.1.0b4",
         "--with",
+        "setuptools<82",
+        "--with",
         "typed-ast",
     ]
-    assert command[9] == "python"
-    assert command[10].endswith("legacy_vyper.py")
+    assert command[11] == "python"
+    assert command[12].endswith("legacy_vyper.py")
 
 
 def test_compiler_command_falls_back_when_uv_lookup_is_broken(monkeypatch) -> None:
@@ -560,8 +573,8 @@ dependencies = ["vyper==0.4.1"]
 """,
         encoding="utf-8",
     )
+    subprocess.run([_uv_bin(), "lock", "--project", str(project)], check=True, capture_output=True)
     lockfile = project / "uv.lock"
-    lockfile.write_text("version = 1\n", encoding="utf-8")
 
     with _declared_project_environment(
         [_uv_bin(), "run", "--no-project", "--with", "vyper==0.4.1", "vyper"],
