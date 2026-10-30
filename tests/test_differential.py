@@ -260,3 +260,21 @@ def read(other: address) -> uint256:
     with pytest.raises(TransactionFailed):
         _call(original, "read(address)", int(original[2], 16))
     assert _call(migrated, "read(address)", int(migrated[2], 16)) == 5
+
+
+def test_shift_preserves_legacy_constant_coercion(tmp_path):
+    source = """# @version 0.2.12
+WIDTH: constant(int128) = 8
+
+@external
+@pure
+def f(x: uint256, n: uint256) -> uint256:
+    return shift(x, -WIDTH * convert(n, int256))
+"""
+    rewritten = apply_rules(source, Config(paths=(tmp_path,), target_version="0.4.3"))
+    path = tmp_path / "entry.vy"
+    original = _deploy(path, source, "0.2.12")
+    migrated = _deploy(path, rewritten.source, "0.4.3")
+    for n in (0, 1, 7, 31, 32, 2**255 - 1, 2**255):
+        actual = [_outcome(d, "f(uint256,uint256)", 2**256 - 1, n) for d in (original, migrated)]
+        assert actual[0] == actual[1], (n, actual)
