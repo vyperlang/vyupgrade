@@ -463,9 +463,9 @@ def _replace_shift_builtin(
                 continue
             value = args[0].strip()
             shift_by = args[1].strip()
-            negative = re.fullmatch(r"-\s*((?:\d|_)+)", shift_by)
+            negative = re.fullmatch(r"-\s*(\d[\d_]*)", shift_by)
             negative_constant = re.fullmatch(r"-\s*([A-Za-z_][A-Za-z0-9_]*)", shift_by)
-            positive = re.fullmatch(r"\+?\s*((?:\d|_)+)", shift_by)
+            positive = re.fullmatch(r"\+?\s*(\d[\d_]*)", shift_by)
             positive_constant = re.fullmatch(r"\+?\s*([A-Za-z_][A-Za-z0-9_]*)", shift_by)
             amount = None
             if negative is not None:

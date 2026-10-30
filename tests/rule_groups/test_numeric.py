@@ -1105,6 +1105,16 @@ def f(x: uint256, i: int128) -> uint256:
     assert "else (x << convert(convert(i * 8, int128), uint256))" in result.source
 
 
+def test_shift_builtin_does_not_parse_underscore_name_as_literal(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f(x: uint256, _: int256) -> uint256:
+    return shift(x, _)
+"""
+    result = apply_rules(source, config(target_version="0.4.3"))
+    assert "if _ < 0 else (x << convert(_, uint256))" in result.source
+
+
 def test_shift_builtin_rewrites_negative_dynamic_amount(config) -> None:
     source = """# @version 0.4.1
 @external
