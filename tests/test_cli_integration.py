@@ -623,6 +623,58 @@ def sqrt_plus_zero(x: uint256) -> uint256:
     )
 
 
+@pytest.mark.parametrize("aggressive", [False, True])
+def test_alpha_target_widens_vyi_return_bound_to_widest_implementation(
+    tmp_path: Path, aggressive: bool
+) -> None:
+    interface = tmp_path / "IVersioned.vyi"
+    interface.write_text(
+        """#pragma version ~=0.4.3
+@external
+@view
+def version() -> String[1]: ...
+""",
+        encoding="utf-8",
+    )
+    for name, version in (("Short", "1.0.0"), ("Long", "1.0.0-beta")):
+        (tmp_path / f"{name}.vy").write_text(
+            f"""#pragma version ~=0.4.3
+from . import IVersioned
+
+implements: IVersioned
+
+@external
+@view
+def version() -> String[{len(version)}]:
+    return "{version}"
+""",
+            encoding="utf-8",
+        )
+    report = tmp_path / "report.json"
+
+    originals = {path: path.read_bytes() for path in tmp_path.iterdir()}
+    code = main(
+        [str(tmp_path), "--write", "--target-version", "0.5.0a3", "--report-json", str(report),
+         *(["--aggressive"] if aggressive else [])]
+    )
+
+    if not aggressive:
+        assert code != 0
+        assert all(path.read_bytes() == content for path, content in originals.items())
+        files = json.loads(report.read_text())["files"]
+        assert any(d["rule"] == "VYD019" for file in files for d in file["diagnostics"])
+        return
+    assert code == 0
+    assert "def version() -> String[10]: ..." in interface.read_text(encoding="utf-8")
+    files = {Path(file["path"]).name: file for file in json.loads(report.read_text())["files"]}
+    assert {file["validation"]["decision"]["status"] for file in files.values()} == {"passed"}
+    assert [
+        (fix["before"], fix["after"])
+        for fix in files["IVersioned.vyi"]["fixes"]
+        if fix["rule"] == "VY124"
+    ] == [("String[1]", "String[10]")]
+
+
 def test_standalone_interface_receives_target_validation(tmp_path: Path) -> None:
     interface = tmp_path / "IToken.vyi"
     interface.write_text(

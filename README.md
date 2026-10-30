@@ -125,7 +125,8 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--diff` — print a unified diff instead of the report.
 - `--write` — apply changes in place only after the validation decision passes.
 - `--check` — exit non-zero if any file would change; write nothing.
-- `--aggressive` — enable rewrites that change behavior or are not provably safe (e.g. `enum` → `flag`).
+- `--aggressive` — enable rewrites that change behavior or are not provably safe
+  (e.g. `enum` → `flag`, or widening interface return bounds for Vyper 0.5).
 - `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency modules are analyzed with compiler ASTs but validated through their consumer roots, and dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
 - `--closure-output DIR` — write the validated upgraded closure (project + dependencies, laid out import-root-relative so `vyper -p DIR` resolves every import) into DIR; requires `--include-dependencies`; overwrites files inside DIR, never deletes extras, never modifies dependency sources in place.
 - `--closure-archive OUT.vyz` — emit the validated upgraded closure (dependencies bundled) as a single Vyper archive via the target compiler; requires `--include-dependencies`, a target >= 0.4.0, and exactly one entry contract.
