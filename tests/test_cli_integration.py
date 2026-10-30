@@ -1455,6 +1455,135 @@ version = "0.1.0"
     }
 
 
+@pytest.mark.parametrize("locked", [True, False], ids=["locked", "unlocked"])
+def test_real_project_compiles_without_groups_and_extras_that_do_not_declare_vyper(
+    tmp_path: Path,
+    locked: bool,
+) -> None:
+    project = tmp_path / "project"
+    _write_unbuildable_package(project / "unbuildable")
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "tooling-groups"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.1"]
+
+[project.optional-dependencies]
+native = ["unbuildable"]
+
+[dependency-groups]
+dev = ["unbuildable"]
+
+[tool.uv.sources]
+unbuildable = { path = "unbuildable" }
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\nvalue: public(uint256)\n", encoding="utf-8")
+    if locked:
+        subprocess.run(
+            [find_uv_bin(), "lock", "--project", str(project)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    report = tmp_path / "report.json"
+
+    assert main(["--target-version", "0.4.3", "--report-json", str(report), str(contract)]) == 0
+
+    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
+    assert validation["source_compile"] == "passed"
+    assert validation["target_compile"] == "passed"
+    assert validation["decision"]["status"] == "passed"
+    source = validation["source_attestation"]
+    assert source["authority_rule"] == ("project-lock" if locked else "project-manifest")
+    assert source["resolved_compiler"]["version"] == "0.4.1"
+    for attestation in (source, validation["target_attestation"]):
+        packages = {
+            package["name"].lower()
+            for package in attestation["dependency_context"]["resolved_packages"]
+        }
+        assert "vyper" in packages
+        assert "unbuildable" not in packages
+
+
+@pytest.mark.parametrize(
+    "compiler_table",
+    [
+        '[dependency-groups]\ntest = ["vyper==0.4.1"]\nlint = ["unbuildable"]',
+        '[project.optional-dependencies]\ncompile = ["vyper==0.4.1"]\nlint = ["unbuildable"]',
+        '[tool.uv]\ndev-dependencies = ["vyper==0.4.1"]\n\n'
+        '[dependency-groups]\nlint = ["unbuildable"]',
+    ],
+    ids=["group", "extra", "legacy-dev-dependencies"],
+)
+def test_real_compiler_declared_outside_main_dependencies_installs_its_table(
+    tmp_path: Path,
+    compiler_table: str,
+) -> None:
+    project = tmp_path / "project"
+    _write_unbuildable_package(project / "unbuildable")
+    (project / "pyproject.toml").write_text(
+        f"""[project]
+name = "table-compiler"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+{compiler_table}
+
+[tool.uv.sources]
+unbuildable = {{ path = "unbuildable" }}
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version >=0.4.0\nvalue: public(uint256)\n", encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    assert main(["--target-version", "0.4.3", "--report-json", str(report), str(contract)]) == 0
+
+    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
+    attestation = validation["source_attestation"]
+    # The range alone would select 0.4.3; 0.4.1 can only come from the declaring table.
+    assert attestation["authority_rule"] == "project-manifest"
+    assert attestation["resolved_compiler"]["version"] == "0.4.1"
+    assert validation["source_compile"] == "passed"
+    assert validation["target_compile"] == "passed"
+    packages = {
+        package["name"].lower()
+        for package in attestation["dependency_context"]["resolved_packages"]
+    }
+    assert "unbuildable" not in packages
+
+
+def _write_unbuildable_package(root: Path) -> None:
+    """Write a local package whose build always fails, like a native extension missing headers."""
+    root.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        """[build-system]
+requires = []
+build-backend = "backend"
+backend-path = ["."]
+
+[project]
+name = "unbuildable"
+version = "0.1.0"
+""",
+        encoding="utf-8",
+    )
+    (root / "backend.py").write_text(
+        """def build_wheel(*_args, **_kwargs):
+    raise RuntimeError("fatal error: leveldb/c.h: No such file or directory")
+
+
+build_editable = build_sdist = build_wheel
+""",
+        encoding="utf-8",
+    )
+
 
 def test_real_explicit_source_compiler_overrides_declared_project(tmp_path: Path) -> None:
     project = tmp_path / "project"

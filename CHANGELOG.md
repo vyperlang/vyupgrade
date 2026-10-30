@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Project compiler environments install the project's main dependencies plus
+  only the extras and dependency groups that declare its Vyper requirement,
+  instead of every group and extra. A test or lint tool that cannot build on the
+  current platform no longer blocks source and target compilation.
 - `VY111` rewrites `shift()` calls with a runtime amount, which it previously
   left in place behind `VYD012`. The rewrite dispatches on the amount's sign bit
   as legacy `shift()` does, including `min_value(int256)` and `uint256` amounts
@@ -13,8 +17,6 @@
   of assuming a sign or dropping conversion reverts. Constant amounts use the
   same signed-word direction as runtime amounts, and conditional values retain
   their grouping.
-
-
 - Added `VY124` for `0.5.0a2` and later targets: interface `String`, `Bytes`,
   and `DynArray` return bounds narrower than an implementation's are widened with
   `--aggressive` to the widest implementing bound, because vyper#4967 made interface return types

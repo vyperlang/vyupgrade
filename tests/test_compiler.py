@@ -438,7 +438,9 @@ def test_target_compile_fails_when_compiler_omits_requested_output(monkeypatch) 
     )
 
 
-def test_declared_project_environment_uses_full_project_and_project_compiler(tmp_path) -> None:
+def test_declared_project_environment_uses_main_dependencies_and_project_compiler(
+    tmp_path,
+) -> None:
     project = tmp_path / "project"
     contract = project / "contracts" / "AMM.vy"
     contract.parent.mkdir(parents=True)
@@ -472,8 +474,8 @@ dependencies = ["vyper==0.4.1", "snekmate==0.1.1", "requests==2.32.4"]
         assert prepared[:3] == [_uv_bin(), "run", "--isolated"]
         assert environment_root != project.resolve()
         assert (environment_root / "pyproject.toml").is_file()
-        assert "--all-extras" in prepared
-        assert "--all-groups" in prepared
+        assert "--no-default-groups" in prepared
+        assert not {"--all-extras", "--all-groups", "--extra", "--group"} & set(prepared)
         assert "--no-project" not in prepared
         assert "--python" not in prepared
         assert not any(argument.startswith("vyper==") for argument in prepared)
@@ -486,6 +488,73 @@ dependencies = ["vyper==0.4.1", "snekmate==0.1.1", "requests==2.32.4"]
                 sha256(pyproject.read_bytes()).hexdigest(),
             ),
         )
+
+
+def test_project_environment_installs_only_tables_that_declare_vyper(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    contract = project / "contract.vy"
+    project.mkdir()
+    contract.write_text("#pragma version 0.4.1\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "compile-tables"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["snekmate==0.1.1"]
+
+[project.optional-dependencies]
+compile = ["vyper==0.4.1"]
+docs = ["sphinx"]
+
+[dependency-groups]
+test = ["vyper==0.4.1", "pytest"]
+lint = ["ruff"]
+other-platform = ["vyper==0.4.1; sys_platform == 'never'"]
+
+[tool.uv]
+dev-dependencies = ["vyper==0.4.1"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("vyupgrade.compiler._COMPILER_ENVIRONMENT_ROOT", tmp_path / "environments")
+    monkeypatch.setattr("vyupgrade.compiler._PROVISIONED_ENVIRONMENTS", set())
+    monkeypatch.setattr("vyupgrade.compiler._PROVISIONING_LOCKS", {})
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with _declared_project_environment(
+        _managed_command(contract),
+        contract,
+        project_compiler=True,
+    ) as (prepared, context):
+        monkeypatch.setattr("vyupgrade.compiler.subprocess.run", fake_run)
+        _provision_environment(prepared, context=context, network_timeout=5.0, cwd=None)
+        environment_root = prepared[prepared.index("--project") + 1]
+
+    selection = ["--no-default-groups", "--extra", "compile", "--group", "test", "--group", "dev"]
+    assert prepared[: 5 + len(selection)] == [
+        _uv_bin(),
+        "run",
+        "--isolated",
+        "--project",
+        environment_root,
+        *selection,
+    ]
+    assert [call for call in calls if call[1] == "sync"] == [
+        [
+            _uv_bin(),
+            "sync",
+            "--project",
+            environment_root,
+            "--active",
+            "--no-editable",
+            "--no-install-project",
+            *selection,
+        ]
+    ]
 
 
 def test_declared_project_environment_uses_existing_lock_without_mutating_project(
