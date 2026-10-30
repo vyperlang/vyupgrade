@@ -7,6 +7,10 @@
   `--aggressive` to the widest implementing bound, because vyper#4967 made interface return types
   covariant. Default mode emits `VYD019` for manual review because widening also
   broadens the return values accepted by callers through that interface.
+- Fix source compilation for Vyper < 0.3.1. The compiler adapter now runs under
+  the Python 3.8 interpreter selected for those compilers, and their
+  environments install a `setuptools` release that still provides
+  `pkg_resources`.
 - Provision a project's compiler environment from its manifest when the
   committed `uv.lock` no longer matches it (`uv lock --check` fails), instead of
   installing the stale lock with `--frozen`. A lock written before a dependency

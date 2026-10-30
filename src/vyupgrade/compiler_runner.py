@@ -1,3 +1,5 @@
+# This adapter runs inside provisioned compiler environments, which use Python 3.8
+# for Vyper < 0.3.1. Keep it compatible with Python 3.8 syntax and standard library.
 from __future__ import annotations
 
 import contextlib
@@ -165,10 +167,9 @@ def _managed_compiler_worker(command: list[str]) -> None:
 
 
 def _managed_compiler_result(command: list[str]) -> dict[str, object]:
-    with (
-        tempfile.TemporaryFile("w+", encoding="utf-8") as stdout,
-        tempfile.TemporaryFile("w+", encoding="utf-8") as stderr,
-    ):
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as stdout, tempfile.TemporaryFile(
+        "w+", encoding="utf-8"
+    ) as stderr:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             error_type = None
             try:
@@ -186,7 +187,7 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
                     error_type = type(exc).__name__
                 else:
                     origin = "compiler-internal"
-                traceback.print_exception(exc, file=stderr)
+                traceback.print_exception(type(exc), exc, exc.__traceback__, file=stderr)
                 returncode = 1
         stdout.seek(0)
         stderr.seek(0)
