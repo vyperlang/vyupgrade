@@ -112,7 +112,10 @@ modern Python interpreter.
   also shifts right. The conditional evaluates the amount twice and before the
   shifted value, so `VYD012` flags runtime shifts whose operands make calls other
   than pure builtins such as `convert`. It also flags amounts whose integer type
-  cannot be inferred from source.
+  cannot be inferred from source. The rewrite retains checked conversions and
+  arithmetic in the amount; it does not infer a runtime sign from an assignment
+  beginning with a minus. Constant amounts also dispatch on their signed word,
+  and conditional shifted values keep their grouping.
 - `raw_create()` added: no-op. This is new deployment syntax, not a required
   migration.
 - File-level nonreentrancy pragma, `@reentrant`, and

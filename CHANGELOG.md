@@ -9,6 +9,10 @@
   rewrite instead of a `>>` that the target compiler rejected. `VYD012` remains
   for operands that make calls other than pure builtins, and for amounts with no
   inferable integer type. It is now reported once per call.
+- Preserve the original checked casts and arithmetic in shift amounts instead
+  of assuming a sign or dropping conversion reverts. Constant amounts use the
+  same signed-word direction as runtime amounts, and conditional values retain
+  their grouping.
 - Provision a project's compiler environment from its manifest when the
   committed `uv.lock` no longer matches it (`uv lock --check` fails), instead of
   installing the stale lock with `--frozen`. A lock written before a dependency

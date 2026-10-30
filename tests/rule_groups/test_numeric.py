@@ -1101,19 +1101,21 @@ def f(x: uint256, i: int128) -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.2"))
 
-    assert "return (x << convert(i * 8, uint256))" in result.source
+    assert "if convert(i * 8, int128) < 0" in result.source
+    assert "else (x << convert(convert(i * 8, int128), uint256))" in result.source
 
 
 def test_shift_builtin_rewrites_negative_dynamic_amount(config) -> None:
     source = """# @version 0.4.1
 @external
-def f(x: uint256, i: uint256) -> uint256:
+def f(x: uint256, i: int128) -> uint256:
     return shift(x, -8 * i)
 """
 
     result = apply_rules(source, config(target_version="0.4.2"))
 
-    assert "return (x >> (8 * i))" in result.source
+    assert "if (-8 * i) < 0" in result.source
+    assert "convert(convert(-8 * i, bytes32), uint256)" in result.source
 
 
 def test_shift_builtin_casts_signed_dynamic_amount_before_rewrite(config) -> None:
@@ -1128,7 +1130,8 @@ def f(x: uint256) -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert "total += (x >> (8 * convert(i, uint256)))" in result.source
+    assert "if (-8 * i) < 0" in result.source
+    assert "convert(i, uint256)" not in result.source
 
 
 def test_shift_builtin_rewrites_negative_signed_convert_amount_to_unsigned(config) -> None:
@@ -1141,7 +1144,8 @@ def f(x: uint256, i: uint256) -> uint256:
     result = apply_rules(source, config(target_version="0.4.2"))
 
     assert "return (x >> (128 * i - 1))" not in result.source
-    assert "return (x >> (128 * (i - 1)))" in result.source
+    assert "if (-128 * convert(i - 1, int256)) < 0" in result.source
+    assert "convert(-128 * convert(i - 1, int256), uint256)" in result.source
 
 
 def test_shift_builtin_rewrites_local_negative_offset(config) -> None:
@@ -1155,11 +1159,11 @@ def f(x: uint256, i: int128) -> uint256:
     result = apply_rules(source, config(target_version="0.4.2"))
 
     assert "shift(" not in result.source
-    assert "(x >> convert(-offset, uint256))" in result.source
+    assert "if offset < 0 else (x << convert(offset, uint256))" in result.source
     assert "<< convert(-offset, uint256)" in result.source
 
 
-def test_shift_builtin_folds_constants_inside_dynamic_amount(config) -> None:
+def test_shift_builtin_preserves_typed_constants_inside_dynamic_amount(config) -> None:
     source = """# @version 0.3.10
 N_COINS: constant(int128) = 3
 PRICE_SIZE: constant(int128) = 256 // (N_COINS - 1)
@@ -1174,11 +1178,12 @@ def f(x: uint256) -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert "total += (x >> (128 * convert(i - 1, uint256)))" in result.source
+    assert "if (-PRICE_SIZE * convert(i - 1, int256)) < 0" in result.source
+    assert "convert(i - 1, uint256)" not in result.source
     assert "PRICE_SIZE * (i - 1)" not in result.source
 
 
-def test_shift_builtin_removes_unsigned_amount_convert(config) -> None:
+def test_shift_builtin_keeps_side_effecting_value_and_checked_amount_for_review(config) -> None:
     source = """# @version 0.3.10
 MAX_COINS: constant(uint256) = 8
 interface ERC20:
@@ -1195,7 +1200,8 @@ def f(coins: address[MAX_COINS]) -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert "decimals += (staticcall ERC20(coin).decimals() << (i*8))" in result.source
+    assert "shift(staticcall ERC20(coin).decimals(), convert(i*8, int128))" in result.source
+    assert any(diag.rule == "VYD012" for diag in result.diagnostics)
     assert "convert(i*8, uint256)" not in result.source
 
 
@@ -1219,7 +1225,8 @@ def unpack_converted(x: uint256) -> uint256:
     result = apply_rules(source, config(target_version="0.4.2"))
 
     assert "return (x << 16)" in result.source
-    assert result.source.count("return (x >> 16)") == 2
+    assert result.source.count("return (x >> 16)") == 1
+    assert "convert(BAL_SHIFT, uint256)" in result.source
 
 
 def test_shift_amount_constants_are_not_cast_before_shift_rewrite(config) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import keyword
+import ast
 import re
 
 from ..analysis import SourceFacts, infer_expr_type, is_integer_type, normalize_type
@@ -26,13 +26,19 @@ _PURE_BUILTINS = frozenset(
         "unsafe_sub",
     }
 )
-_CALLEE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*\(")
-_IMPURE_TEXT = re.compile(r"#|\b(?:extcall|staticcall)\b|\bmsg\.gas\b")
 _INTEGER_LITERAL = re.compile(r"0x[0-9A-Fa-f_]+|\d[\d_]*")
 
 
+def constant_shift_replacement(value: str, amount: int) -> str:
+    word = amount % 2**256
+    signed_amount = word - 2**256 if word >= 2**255 else word
+    operator = "<<" if signed_amount >= 0 else ">>"
+    return f"({_operand(value)} {operator} {abs(signed_amount)})"
+
+
 def runtime_shift_replacement(
-    value: str, amount: str, vars_for_line: dict[str, str], facts: SourceFacts
+    value: str, amount: str, vars_for_line: dict[str, str], facts: SourceFacts,
+    constant_values: dict[str, int] | None = None,
 ) -> str | None:
     """Return ``<<``/``>>`` source equal to ``shift(value, amount)``, or None.
 
@@ -45,7 +51,7 @@ def runtime_shift_replacement(
     """
     if not (_pure(value) and _pure(amount)):
         return None
-    amount_type = integer_expression_type(amount, vars_for_line, facts)
+    amount_type = integer_expression_type(amount, vars_for_line, facts, constant_values)
     shifted, distance = _operand(value), _operand(amount)
     if is_signed_integer_type(amount_type):
         magnitude = f"unsafe_sub(0, convert(convert({amount}, bytes32), uint256))"
@@ -64,7 +70,8 @@ def runtime_shift_replacement(
 
 
 def integer_expression_type(
-    expr: str, vars_for_line: dict[str, str], facts: SourceFacts
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts,
+    constant_values: dict[str, int] | None = None,
 ) -> str | None:
     """Return the integer type of ``expr``, or None when source text does not determine it.
 
@@ -79,21 +86,35 @@ def integer_expression_type(
     if operands == [expr]:
         return None
     operand_types = {
-        integer_expression_type(operand, vars_for_line, facts)
+        integer_expression_type(operand, vars_for_line, facts, constant_values)
         for operand in operands
         if not _INTEGER_LITERAL.fullmatch(operand)
+        and operand not in (constant_values or {})
     }
     return operand_types.pop() if len(operand_types) == 1 else None
 
 
 def _pure(expr: str) -> bool:
     """True when ``expr`` can be copied as text and evaluated repeatedly, in any order."""
-    if _IMPURE_TEXT.search(expr):
+    if "#" in expr:
         return False
-    return all(
-        match.group(1) in _PURE_BUILTINS or keyword.iskeyword(match.group(1))
-        for match in _CALLEE.finditer(expr)
-    )
+    try:
+        expression = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return False
+    for node in ast.walk(expression):
+        if isinstance(node, ast.Call) and (
+            not isinstance(node.func, ast.Name) or node.func.id not in _PURE_BUILTINS
+        ):
+            return False
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "msg"
+            and node.attr == "gas"
+        ):
+            return False
+    return True
 
 
 def _operand(expr: str) -> str:
