@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Provision a project's compiler environment from its manifest when the
+  committed `uv.lock` no longer matches it (`uv lock --check` fails), instead of
+  installing the stale lock with `--frozen`. A lock written before a dependency
+  such as `vyper` was added to `pyproject.toml` previously yielded an
+  environment without that dependency. The lock is never rewritten, and such
+  compiles report the `project-manifest` authority rule.
+
 ## 0.8.0 - 2026-09-15
 
 - Share lexical scanning for code masking, argument splitting, and delimiter
