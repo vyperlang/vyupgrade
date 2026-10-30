@@ -3,10 +3,12 @@ from pathlib import Path
 
 import pytest
 from eth_tester import EthereumTester
+from eth_tester.exceptions import TransactionFailed
 from eth_utils import keccak
 
 from vyupgrade import compiler, engine
 from vyupgrade.models import Config
+from vyupgrade.rules import apply_rules
 
 
 def _deploy(path: Path, source: str, version: str) -> tuple[EthereumTester, str, str]:
@@ -93,3 +95,34 @@ def step(x: int128) -> int128:
         assert states[0] == states[1]
         assert states[0][0] == int(value != 0)
     assert _call(original, "counter()") == 3
+
+
+def test_interface_widening_changes_accepted_returns_and_requires_aggressive(tmp_path):
+    source = """#pragma version 0.4.3
+interface IFoo:
+    def data() -> Bytes[1]: view
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+@view
+def read(other: address) -> uint256:
+    return len(staticcall IFoo(other).data())
+"""
+    default = apply_rules(source, Config(paths=(tmp_path,), target_version="0.5.0a3"))
+    assert "def data() -> Bytes[1]: view" in default.source
+    assert any(diag.rule == "VYD019" for diag in default.diagnostics)
+    aggressive = apply_rules(
+        source, Config(paths=(tmp_path,), target_version="0.5.0a3", aggressive=True)
+    )
+    path = tmp_path / "entry.vy"
+    original = _deploy(path, source, "0.4.3")
+    migrated = _deploy(path, aggressive.source, "0.5.0a3")
+    with pytest.raises(TransactionFailed):
+        _call(original, "read(address)", int(original[2], 16))
+    assert _call(migrated, "read(address)", int(migrated[2], 16)) == 5

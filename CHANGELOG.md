@@ -3,9 +3,10 @@
 ## Unreleased
 
 - Added `VY124` for `0.5.0a2` and later targets: interface `String`, `Bytes`,
-  and `DynArray` return bounds narrower than an implementation's are widened to
-  the widest implementing bound, because vyper#4967 made interface return types
-  covariant.
+  and `DynArray` return bounds narrower than an implementation's are widened with
+  `--aggressive` to the widest implementing bound, because vyper#4967 made interface return types
+  covariant. Default mode emits `VYD019` for manual review because widening also
+  broadens the return values accepted by callers through that interface.
 - Provision a project's compiler environment from its manifest when the
   committed `uv.lock` no longer matches it (`uv lock --check` fails), instead of
   installing the stale lock with `--frozen`. A lock written before a dependency

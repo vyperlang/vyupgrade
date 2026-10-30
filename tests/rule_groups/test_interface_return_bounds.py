@@ -39,7 +39,9 @@ def _migrate(
     snapshot = resolve_import_closure(sources, (tmp_path,))
     path = tmp_path / target
     return apply_rules(
-        sources[path], config(target_version=target_version, source_snapshot=snapshot), path
+        sources[path],
+        config(target_version=target_version, source_snapshot=snapshot, aggressive=True),
+        path,
     )
 
 
@@ -292,7 +294,7 @@ def ids() -> DynArray[uint256, 4]:
     return [1, 2, 3, 4]
 """
 
-    result = apply_rules(source, config(target_version="0.5.0a3"))
+    result = apply_rules(source, config(target_version="0.5.0a3", aggressive=True))
 
     assert "    def version() -> String[5]: view\n" in result.source
     assert "    def data() -> Bytes[3]: view\n" in result.source
@@ -319,3 +321,27 @@ def version() -> String[5]:
 
     assert "    def version() -> String[1]: view\n" in result.source
     assert _widenings(result) == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"aggressive": True, "select": ("VYD019",)},
+     {"aggressive": True, "ignore": ("VY124",)}],
+)
+def test_interface_widening_requires_aggressive_and_enabled_fix(config, options) -> None:
+    source = """#pragma version 0.4.3
+interface IFoo:
+    def version() -> String[1]: view
+
+implements: IFoo
+
+@external
+@view
+def version() -> String[5]:
+    return "1.0.0"
+"""
+    result = apply_rules(source, config(target_version="0.5.0a3", **options))
+
+    assert "def version() -> String[1]: view" in result.source
+    assert _widenings(result) == []
+    assert [diag.rule for diag in result.diagnostics] == ["VYD019"]

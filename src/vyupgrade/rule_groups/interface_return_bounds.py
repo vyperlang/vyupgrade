@@ -3,7 +3,8 @@
 Vyper 0.4 accepted an implementation whose ``String``/``Bytes``/``DynArray``
 return bound was at least the interface's. Since 0.5.0a2 (vyper#4967) the bound
 must be at most the interface's. Raising each declared bound to the widest
-implementing bound satisfies the new check and leaves implementations untouched.
+implementing bound satisfies the new check, but also broadens callers' accepted
+return values. Diagnose by default and require aggressive mode for the rewrite.
 """
 
 from __future__ import annotations
@@ -79,6 +80,7 @@ def _widen_interface_return_bounds(
     implementations = _implementation_returns_by_interface(rule_context)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
     for declaration in declarations:
         declared = source[declaration.start : declaration.end]
         implemented = [
@@ -88,6 +90,17 @@ def _widen_interface_return_bounds(
         ]
         widened = _widest_type(declared, implemented)
         if widened == declared:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                "VYD019",
+                line_number(source, declaration.start),
+                f"interface return bound {declared} needs widening to {widened}; "
+                "this broadens accepted external return values; review callers "
+                "and use --aggressive to apply VY124",
+            )
+        )
+        if not rule_context.config.aggressive or not rule_context.is_enabled("VY124"):
             continue
         edits.append(TextEdit(declaration.start, declaration.end, widened))
         fixes.append(
@@ -99,7 +112,7 @@ def _widen_interface_return_bounds(
                 widened,
             )
         )
-    return apply_edits(source, edits), fixes, []
+    return apply_edits(source, edits), fixes, diagnostics
 
 
 def _return_declarations(rule_context: RuleContext) -> list[_ReturnDeclaration]:
@@ -287,6 +300,6 @@ RULES = (
     Rule(
         "interface_return_bounds",
         runner=_widen_interface_return_bounds,
-        changes=(crossing("VY124", "0.5.0a2"),),
+        changes=(crossing("VY124", "0.5.0a2"), crossing("VYD019", "0.5.0a2")),
     ),
 )
