@@ -718,6 +718,52 @@ def value() -> uint256:
     assert json.loads(second_report.read_text())["files"][0]["changed"] is False
 
 
+# Vyper < 0.3.1 runs the compiler adapter under Python 3.8 and imports
+# pkg_resources at startup; 0.2.16 is the oldest of those releases that emits
+# every validation output format.
+def test_real_python38_compiler_validates_legacy_source(tmp_path: Path) -> None:
+    contract = tmp_path / "Owned.vy"
+    contract.write_text(
+        """# @version 0.2.16
+
+owner: public(address)
+
+@external
+def __init__():
+    self.owner = msg.sender
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--report-json", str(report)])
+
+    assert code == 0
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "passed"
+    assert validation["decision"]["status"] == "passed"
+
+
+def test_real_python38_compiler_reports_vyper_exception(tmp_path: Path) -> None:
+    contract = tmp_path / "Broken.vy"
+    contract.write_text(
+        """# @version 0.2.16
+
+@external
+def value() -> uint256:
+    return undefined
+""",
+        encoding="utf-8",
+    )
+
+    result = compile_source_file(contract, Config(paths=(contract,)), "0.2.16")
+
+    assert result.status == "failed"
+    assert result.completion_status == "completed"
+    assert result.failure_origin == "compiler"
+    assert result.error_type == "UndeclaredDefinition"
+
+
 def test_real_compiler_include_dependencies_upgrades_closure(
     tmp_path: Path,
 ) -> None:
@@ -1365,6 +1411,7 @@ def test_real_explicit_source_compiler_overrides_declared_project(tmp_path: Path
         """[project]
 name = "explicit-source-compiler"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = ["vyper==0.4.3"]
 """,
         encoding="utf-8",
@@ -1419,6 +1466,7 @@ def test_real_explicit_project_compiler_accepts_coherent_source(
         """[project]
 name = "explicit-source-coherence"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = ["vyper==0.4.1"]
 """,
         encoding="utf-8",
