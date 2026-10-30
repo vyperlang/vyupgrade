@@ -504,8 +504,8 @@ dependencies = ["vyper==0.4.1"]
 """,
         encoding="utf-8",
     )
+    subprocess.run([_uv_bin(), "lock", "--project", str(project)], check=True, capture_output=True)
     lockfile = project / "uv.lock"
-    lockfile.write_text("version = 1\n", encoding="utf-8")
 
     with _declared_project_environment(
         [_uv_bin(), "run", "--no-project", "--with", "vyper==0.4.1", "vyper"],

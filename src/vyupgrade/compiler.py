@@ -1792,13 +1792,6 @@ def _run_compiler_process(
         marker_environment,
     )
     source_spec = infer_pragma(source_text if source_text is not None else path.read_text(encoding="utf-8"))
-    authority = _compiler_authority(
-        command,
-        path,
-        project_compiler=project_compiler,
-        marker_environment=marker_environment,
-        source_spec=source_spec,
-    )
     declarations = _compiler_declarations(
         command,
         path,
@@ -1815,6 +1808,14 @@ def _run_compiler_process(
         python_pin=python_pin,
         network_timeout=network_timeout,
     ) as (full, context):
+        authority = _compiler_authority(
+            command,
+            path,
+            project_compiler=project_compiler,
+            locked=context.lockfile is not None,
+            marker_environment=marker_environment,
+            source_spec=source_spec,
+        )
         try:
             adapter_python = _provision_environment(
                 full,
@@ -2251,6 +2252,7 @@ def _compiler_authority(
     path: Path,
     *,
     project_compiler: bool,
+    locked: bool,
     source_spec: str | None,
     marker_environment: Mapping[str, str] | None = None,
 ) -> CompilerAuthority:
@@ -2258,13 +2260,7 @@ def _compiler_authority(
     if not _is_uv_run_command(command):
         return "explicit-executable"
     if project_compiler and _project_declares_vyper(pyproject, marker_environment):
-        assert pyproject is not None
-        workspace_manifest = _owning_uv_workspace(pyproject)
-        return (
-            "project-lock"
-            if (workspace_manifest.parent / "uv.lock").is_file()
-            else "project-manifest"
-        )
+        return "project-lock" if locked else "project-manifest"
     if not project_compiler:
         return "fixed-target"
     if source_spec is None:
@@ -2453,6 +2449,9 @@ def _declared_project_environment(
     root = workspace_manifest.parent.resolve()
     selected_root = pyproject.parent.resolve()
     lockfile = root / "uv.lock"
+    # A lock that no longer matches its manifest cannot provision what the manifest declares, so
+    # it is resolved like an unlocked project: from the manifest, in a mirror without the lock.
+    locked = lockfile.is_file() and _lock_matches_manifest(root, timeout=network_timeout)
     selected_data = _project_data(pyproject)
     root_data = _project_data(workspace_manifest)
     project = selected_data.get("project")
@@ -2468,7 +2467,7 @@ def _declared_project_environment(
         mode="project",
         project_root=str(root),
         manifest=_content_identity(workspace_manifest),
-        lockfile=_content_identity(lockfile) if lockfile.is_file() else None,
+        lockfile=_content_identity(lockfile) if locked else None,
         python_constraint=python_constraint if isinstance(python_constraint, str) else None,
         declared_sources=tuple(
             sorted(
@@ -2477,7 +2476,7 @@ def _declared_project_environment(
             )
         ),
     )
-    if lockfile.is_file():
+    if locked:
         yield (
             _project_environment_command(
                 command,
@@ -2511,6 +2510,19 @@ def _declared_project_environment(
             ),
             context,
         )
+
+
+def _lock_matches_manifest(root: Path, *, timeout: float) -> bool:
+    try:
+        process = subprocess.run(
+            [_uv_bin(), "lock", "--check", "--project", str(root)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return process.returncode == 0
 
 
 def _project_environment_command(

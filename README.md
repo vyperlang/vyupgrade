@@ -72,10 +72,12 @@ Standalone `.vyi` inputs are target-compiled through a generated import harness.
 
 Compiler subprocesses run through the bundled `uv`. Files in a project use the
 complete nearest declared environment via `uv run --isolated --project`,
-including all dependency groups and extras; an existing `uv.lock` is enforced
-with `--frozen`. An unlocked project is mirrored into a temporary root so
-resolution cannot create a lockfile in the source tree. Files without a project
-use an isolated `uv run --no-project --with vyper==<version>` environment.
+including all dependency groups and extras; an existing `uv.lock` that still
+matches its manifest (`uv lock --check`) is enforced with `--frozen`. An
+unlocked project, or one whose lock is stale, is mirrored into a temporary root
+without the lock so resolution cannot create or rewrite a lockfile in the source
+tree. Files without a project use an isolated
+`uv run --no-project --with vyper==<version>` environment.
 Dependencies are never guessed from imports or compiler errors.
 
 Vyper releases before 0.3.1 run under Python 3.8 with a `setuptools` release
