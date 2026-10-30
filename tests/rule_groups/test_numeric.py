@@ -1188,7 +1188,7 @@ def f(x: uint256) -> uint256:
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
-    assert "if (-PRICE_SIZE * convert(i - 1, int256)) < 0" in result.source
+    assert "if (-128 * convert(i - 1, int256)) < 0" in result.source
     assert "convert(i - 1, uint256)" not in result.source
     assert "PRICE_SIZE * (i - 1)" not in result.source
 
@@ -1236,7 +1236,24 @@ def unpack_converted(x: uint256) -> uint256:
 
     assert "return (x << 16)" in result.source
     assert result.source.count("return (x >> 16)") == 1
-    assert "convert(BAL_SHIFT, uint256)" in result.source
+    assert "convert((-16), uint256)" in result.source
+
+
+def test_shift_constant_coercion_preserves_comments_and_string_contents(config) -> None:
+    source = '''# @version 0.2.12
+WIDTH: constant(int128) = 8
+@external
+@pure
+def f(x: uint256, n: int256) -> uint256:
+    """WIDTH stays in documentation."""
+    # WIDTH stays in this comment.
+    return shift(x, convert(len("WIDTH"), int256) + WIDTH * n)
+'''
+    result = apply_rules(source, config(target_version="0.4.3"))
+    assert '"""WIDTH stays in documentation."""' in result.source
+    assert "# WIDTH stays in this comment." in result.source
+    assert 'convert(len("WIDTH"), int256) + 8 * n' in result.source
+    assert "shift(" not in result.source
 
 
 def test_shift_amount_constants_are_not_cast_before_shift_rewrite(config) -> None:

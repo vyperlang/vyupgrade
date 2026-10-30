@@ -6,7 +6,7 @@ import ast
 import re
 
 from ..analysis import SourceFacts, infer_expr_type, is_integer_type, normalize_type
-from ..source import find_matching
+from ..source import TextEdit, apply_edits, find_matching
 from .numeric_types import is_signed_integer_type, is_unsigned_integer_type
 
 # Builtins without side effects. The sign-dispatching rewrite evaluates the amount
@@ -52,6 +52,7 @@ def runtime_shift_replacement(
     if not (_pure(value) and _pure(amount)):
         return None
     amount_type = integer_expression_type(amount, vars_for_line, facts, constant_values)
+    amount = _inline_integer_constants(amount, constant_values or {})
     shifted, distance = _operand(value), _operand(amount)
     if is_signed_integer_type(amount_type):
         magnitude = f"unsafe_sub(0, convert(convert({amount}, bytes32), uint256))"
@@ -67,6 +68,23 @@ def runtime_shift_replacement(
     if is_unsigned_integer_type(amount_type):
         return f"({shifted} << {distance})"
     return None
+
+
+def _inline_integer_constants(expr: str, constants: dict[str, int]) -> str:
+    """Preserve legacy constant coercion without removing checked casts or arithmetic."""
+    lines = expr.splitlines(keepends=True)
+    edits: list[TextEdit] = []
+    # _pure already parsed this expression. AST names exclude attributes and text
+    # inside literals; Python's column offsets count UTF-8 bytes, not characters.
+    for node in ast.walk(ast.parse(expr, mode="eval")):
+        if not isinstance(node, ast.Name) or node.id not in constants:
+            continue
+        prefix = lines[node.lineno - 1].encode("utf-8")[:node.col_offset].decode("utf-8")
+        start = sum(map(len, lines[:node.lineno - 1])) + len(prefix)
+        value = constants[node.id]
+        replacement = f"({value})" if value < 0 else str(value)
+        edits.append(TextEdit(start, start + len(node.id), replacement))
+    return apply_edits(expr, edits)
 
 
 def integer_expression_type(

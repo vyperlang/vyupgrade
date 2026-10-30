@@ -122,7 +122,8 @@ modern Python interpreter.
   than pure builtins such as `convert`. It also flags amounts whose integer type
   cannot be inferred from source. The rewrite retains checked conversions and
   arithmetic in the amount; it does not infer a runtime sign from an assignment
-  beginning with a minus. Constant amounts also dispatch on their signed word,
+  beginning with a minus. Integer constants in runtime amounts are emitted as
+  values to preserve legacy constant coercion. Constant amounts also dispatch on their signed word,
   and conditional shifted values keep their grouping.
 - `raw_create()` added: no-op. This is new deployment syntax, not a required
   migration.
