@@ -61,22 +61,14 @@ _FROM_IMPORT_RE = re.compile(
     r"^[ \t]*from[ \t]+(?P<package>[.\w]+)[ \t]+import[ \t]+(?P<names>[^#\n]+)", re.MULTILINE
 )
 _IMPORTED_NAME_RE = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\s+as\s+(?P<alias>[A-Za-z_]\w*))?")
-_METHOD_CALL_RE = re.compile(r"\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
-# The name called right before a receiver's `(`: an interface cast or `self.f` internal call.
-_RECEIVER_CALL_RE = re.compile(r"(?<![\w.])(?:(?P<self>self)\.)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$")
-_TARGET_RE = re.compile(
-    r"(?<![\w.\]])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*"
-    r"(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)*)$"
-)
-_CAST_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)", re.DOTALL)
-_CALL_KEYWORD_RE = re.compile(r"\b(?:staticcall|extcall)\s+$")
+_METHOD_CALL_RE = re.compile(r"\.\s*(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_CALL_KEYWORDS = frozenset({"staticcall", "extcall"})
 _ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
 _BOUND_FUNCTION = "__vyupgrade_return_bound"
-_WRAPPED_RE = re.compile(rf"\bself\.{_BOUND_FUNCTION}\w*\s*\(\s*$")
-# Types a caller can name without the declaring module's scope.
-_BUILTIN_TYPE_RE = re.compile(
-    r"(?:String|Bytes|DynArray|bool|address|decimal|bytes[0-9]*|u?int[0-9]*"
-    r"|[0-9]+|[\[\](), ])+"
+# A type name, possibly qualified by a module, and the names every module can use.
+_TYPE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*")
+_BUILTIN_TYPE_NAME_RE = re.compile(
+    r"String|Bytes|DynArray|bool|address|decimal|bytes[0-9]*|u?int[0-9]*"
 )
 
 
@@ -291,16 +283,18 @@ def _module_implementation_returns(
         if member.suffix != ".vy" or b"implements" not in content:
             continue
         source = content.decode("utf-8")
-        if interface in _implemented_modules(snapshot, member, source):
+        binding = _implemented_modules(snapshot, member, source).get(interface)
+        if binding is not None:
             yield _implementation_returns(
-                parse_source_facts(source), integer_constant_values(source)
+                parse_source_facts(source), integer_constant_values(source), binding
             )
 
 
-def _implemented_modules(snapshot: ImportClosure, consumer: Path, source: str) -> set[Path]:
+def _implemented_modules(snapshot: ImportClosure, consumer: Path, source: str) -> dict[Path, str]:
+    """The implemented `.vyi` modules of ``consumer``, with the name it imports each as."""
     imports = _imported_modules(source)
     return {
-        path
+        path: name
         for name in implemented_interface_names(source)
         if name in imports and (path := snapshot.resolve_import(consumer, imports[name]))
     }
@@ -323,8 +317,14 @@ def _imported_modules(source: str) -> dict[str, str]:
     return modules
 
 
-def _implementation_returns(facts: SourceFacts, constants: dict[str, int]) -> dict[str, _Shape]:
-    """Return shapes of external functions and public getters, by name."""
+def _implementation_returns(
+    facts: SourceFacts, constants: dict[str, int], interface_binding: str | None = None
+) -> dict[str, _Shape]:
+    """Return shapes of external functions and public getters, by name.
+
+    Types qualified by ``interface_binding``, the implemented `.vyi` module's
+    own, are compared as the module writes them: unqualified.
+    """
     returns = {
         facts.function_names[line]: return_type
         for line, return_type in facts.function_returns.items()
@@ -335,7 +335,12 @@ def _implementation_returns(facts: SourceFacts, constants: dict[str, int]) -> di
         if getter is not None:
             returns.setdefault(name, getter)
     shapes: dict[str, _Shape] = {}
-    for name, return_type in returns.items():
+    for name, declared in returns.items():
+        return_type = (
+            declared
+            if interface_binding is None
+            else re.sub(rf"(?<![\w.]){re.escape(interface_binding)}\s*\.\s*", "", declared)
+        )
         shape, bounds = _bounded_shape(return_type, constants)
         shapes[name] = (shape, [bound.length for bound in bounds])
     return shapes
@@ -416,7 +421,9 @@ def _bound_untyped_calls(
     facts = rule_context.facts
     mask = rule_context.code_mask
     constants = integer_constant_values(source, rule_context.config.source_ast)
+    modules = _imported_modules(source)
     taken_names = code_identifiers(source)
+    parameter: str | None = None
     bound_functions: dict[str, str] = {}
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -426,27 +433,37 @@ def _bound_untyped_calls(
         method = match.group("method")
         if method not in methods or not span_is_code(mask, match.start(), match.end()):
             continue
-        target = _call_target(source, match.start(), facts)
-        if target is None:
+        target = _call_target(source, mask, match.start(), facts, modules)
+        method_close = find_matching(source, match.end() - 1)
+        if target is None or method_close is None:
             continue
         start, target_type = target
         old = rewritten.get((target_type, method))
-        method_close = find_matching(source, match.end() - 1)
-        if old is None or method_close is None:
+        if old is None and target_type:
+            continue
+        keyword_start, keyword = _word_before(source, mask, start)
+        call_start = keyword_start if keyword in _CALL_KEYWORDS else start
+        call_end = method_close + 1
+        if _is_wrapped(source, mask, call_start):
+            continue
+        call = source[call_start:call_end]
+        line = line_number(source, start)
+        if old is None:
+            diagnostics.append(
+                Diagnostic(
+                    "VYD020",
+                    line,
+                    f"cannot resolve the receiver of {call}; if it is an interface whose "
+                    f"{method}() return bound became the wildcard, give the result its old type",
+                )
+            )
             continue
         old_type, nameable = old
-        line = line_number(source, start)
-        keyword = _CALL_KEYWORD_RE.search(source, max(0, start - 64), start)
-        call_start = keyword.start() if keyword is not None else start
-        call_end = method_close + 1
-        if _WRAPPED_RE.search(source, max(0, call_start - 128), call_start):
-            continue
         expected = _expected_type(source, call_start, call_end, facts)
         if expected is not None and _literal_type(expected, constants) == _literal_type(
             old_type, {}
         ):
             continue
-        call = source[call_start:call_end]
         if not nameable:
             diagnostics.append(
                 Diagnostic(
@@ -473,9 +490,10 @@ def _bound_untyped_calls(
             )
         )
     if bound_functions:
+        parameter = _unique_name("returned", taken_names)
         definitions = "".join(
-            f"\n\n@internal\n@pure\ndef {name}(returned: {old_type}) -> {old_type}:\n"
-            "    return returned\n"
+            f"\n\n@internal\n@pure\ndef {name}({parameter}: {old_type}) -> {old_type}:\n"
+            f"    return {parameter}\n"
             for old_type, name in bound_functions.items()
         )
         separator = "" if source.endswith("\n") else "\n"
@@ -483,35 +501,103 @@ def _bound_untyped_calls(
     return edits, fixes, diagnostics
 
 
-def _call_target(source: str, dot: int, facts: SourceFacts) -> tuple[int, str] | None:
-    """Start and interface type of the call receiver that ends at ``dot``."""
-    line_start = source.rfind("\n", 0, dot) + 1
-    if source[dot - 1] != ")":
-        target = _TARGET_RE.search(source, line_start, dot)
-        if target is None:
+def _call_target(
+    source: str, mask: list[bool], dot: int, facts: SourceFacts, modules: dict[str, str]
+) -> tuple[int, str] | None:
+    """Start and interface type ("" if unknown) of the receiver of the method call at ``dot``.
+
+    None for a call that is not external: an internal or module function call.
+    """
+    end = _skip_back(source, mask, dot)
+    if source[end - 1 : end] != ")":
+        start, name = _dotted_name(source, mask, end)
+        if name == "self" or name in modules:
             return None
-        return target.start(), _expression_type(target.group("target"), dot, source, facts)
-    receiver_open = find_matching_open(source, dot - 1)
+        return start, _expression_type(name, end, source, facts)
+    return _receiver_type(source, mask, end, facts)
+
+
+def _receiver_type(
+    source: str, mask: list[bool], end: int, facts: SourceFacts
+) -> tuple[int, str]:
+    """Start and type ("" if unknown) of the expression that ends at ``end``."""
+    if source[end - 1 : end] != ")":
+        start, name = _dotted_name(source, mask, end)
+        return start, _expression_type(name, end, source, facts)
+    receiver_open = find_matching_open(source, end - 1)
     if receiver_open is None:
-        return None
-    called = _RECEIVER_CALL_RE.search(source, line_start, receiver_open)
-    if called is not None and called.group("name") not in {"staticcall", "extcall"}:
-        if called.group("self") is None:
-            return called.start(), called.group("name")
-        returned = facts.function_return_names.get(called.group("name"))
-        return called.start(), normalize_type(returned or "")
-    before = source[line_start:receiver_open].rstrip()
-    if called is None and before and (before[-1].isalnum() or before[-1] in "_.])"):
-        # A call of something other than a plain name, e.g. a module-qualified cast.
-        return None
-    inner = source[receiver_open + 1 : dot - 1].strip()
-    cast = _CAST_RE.fullmatch(inner)
-    if cast is not None:
-        return receiver_open, cast.group("name")
-    return receiver_open, _expression_type(inner, dot, source, facts)
+        return end, ""
+    start, callee = _dotted_name(source, mask, receiver_open)
+    if callee in {"", *_CALL_KEYWORDS}:
+        # A parenthesized expression.
+        _inner_start, inner_type = _receiver_type(
+            source, mask, _skip_back(source, mask, end - 1), facts
+        )
+        return receiver_open, inner_type
+    if callee.startswith("self."):
+        return start, normalize_type(facts.function_return_names.get(callee[5:]) or "")
+    # An interface cast, possibly qualified by its module.
+    return start, callee
+
+
+def _dotted_name(source: str, mask: list[bool], end: int) -> tuple[int, str]:
+    """Start and text of the dotted, indexed name that ends at ``end``, without spacing.
+
+    The text starts with ``.`` or ``[`` when the name is not rooted in an identifier.
+    """
+    parts: list[str] = []
+    start = end
+    while True:
+        position = _skip_back(source, mask, start)
+        while source[position - 1 : position] == "]":
+            index_open = find_matching_open(source, position - 1, "[", "]")
+            if index_open is None:
+                break
+            parts.append(" ".join(source[index_open:position].split()))
+            position = _skip_back(source, mask, index_open)
+        name_start = position
+        while name_start > 0 and (source[name_start - 1].isalnum() or source[name_start - 1] == "_"):
+            name_start -= 1
+        if name_start == position:
+            break
+        parts.append(source[name_start:position])
+        start = name_start
+        dot = _skip_back(source, mask, start)
+        if source[dot - 1 : dot] != ".":
+            break
+        parts.append(".")
+        start = dot - 1
+    return start, "".join(reversed(parts))
+
+
+def _word_before(source: str, mask: list[bool], end: int) -> tuple[int, str]:
+    """Start and text of the identifier right before ``end``, skipping spacing and comments."""
+    word_end = _skip_back(source, mask, end)
+    word_start = word_end
+    while word_start > 0 and (source[word_start - 1].isalnum() or source[word_start - 1] == "_"):
+        word_start -= 1
+    return word_start, source[word_start:word_end]
+
+
+def _skip_back(source: str, mask: list[bool], end: int) -> int:
+    """Offset right after the last code character before ``end`` that is not spacing."""
+    while end > 0 and (source[end - 1].isspace() or not mask[end - 1]):
+        end -= 1
+    return end
+
+
+def _is_wrapped(source: str, mask: list[bool], call_start: int) -> bool:
+    """Whether the call starting at ``call_start`` is already the bound function's argument."""
+    open_paren = _skip_back(source, mask, call_start)
+    if source[open_paren - 1 : open_paren] != "(":
+        return False
+    _start, callee = _dotted_name(source, mask, open_paren - 1)
+    return callee.startswith(f"self.{_BOUND_FUNCTION}")
 
 
 def _expression_type(expression: str, offset: int, source: str, facts: SourceFacts) -> str:
+    if not expression or expression[0] in ".[":
+        return ""
     target_type = (
         facts.storage_vars.get(expression[5:]) if expression.startswith("self.") else None
     ) or infer_expr_type(expression, facts.vars_at_line(line_number(source, offset)), facts)
@@ -524,7 +610,9 @@ def _rewritten_returns(
     """Old return type, and whether this file can name it, by (interface, function).
 
     Covers this file's inline interfaces, whose types are in scope, and the
-    `.vyi` modules it imports, whose own declarations are not.
+    interfaces of the modules it imports: a `.vyi` module's functions under its
+    binding, a contract's inline interfaces under ``binding.Name``. Their types
+    are written as this file names them.
     """
     rewritten = {
         (exceeded.declaration.interface, exceeded.declaration.function): (
@@ -538,20 +626,62 @@ def _rewritten_returns(
     path = rule_context.path
     if snapshot is None or path is None or path.resolve() not in snapshot.contents:
         return rewritten
-    for binding, module in _imported_modules(rule_context.source).items():
-        module_path = snapshot.resolve_import(path, module)
-        if module_path is None or not _is_interface_module(module_path):
-            continue
+    modules = _imported_modules(rule_context.source)
+    bindings = {
+        module_path: binding
+        for binding, module in modules.items()
+        if (module_path := snapshot.resolve_import(path, module)) is not None
+    }
+    for module_path, binding in bindings.items():
         module_source = snapshot.contents[module_path].decode("utf-8")
         for exceeded in _exceeded_returns(
             module_source, module_path, snapshot, integer_constant_values(module_source)
         ):
-            old_type = exceeded.literal()
-            rewritten[(binding, exceeded.declaration.function)] = (
-                old_type,
-                _BUILTIN_TYPE_RE.fullmatch(old_type) is not None,
+            interface = exceeded.declaration.interface
+            key = binding if interface is None else f"{binding}.{interface}"
+            rewritten[(key, exceeded.declaration.function)] = _caller_type(
+                exceeded.literal(), binding, module_source, module_path, snapshot, bindings
             )
     return rewritten
+
+
+def _caller_type(
+    type_text: str,
+    binding: str,
+    module_source: str,
+    module_path: Path,
+    snapshot: ImportClosure,
+    bindings: dict[Path, str],
+) -> tuple[str, bool]:
+    """``type_text`` of an imported module as its importer names it, and whether it can.
+
+    The module's own structs and flags are qualified by ``binding``; a type it
+    imports is nameable when the importer imports the same module, under its own
+    binding.
+    """
+    module_facts = parse_source_facts(module_source)
+    own_types = module_facts.structs | module_facts.flags_or_enums
+    module_bindings = {
+        name: snapshot.resolve_import(module_path, module)
+        for name, module in _imported_modules(module_source).items()
+    }
+    nameable = True
+
+    def rename(match: re.Match[str]) -> str:
+        nonlocal nameable
+        name = re.sub(r"\s+", "", match.group())
+        qualifier, _dot, member = name.partition(".")
+        if not member and _BUILTIN_TYPE_NAME_RE.fullmatch(name):
+            return name
+        if not member and name in own_types:
+            return f"{binding}.{name}"
+        imported = module_bindings.get(qualifier)
+        if imported is not None and imported in bindings:
+            return bindings[imported] + (f".{member}" if member else "")
+        nameable = False
+        return name
+
+    return _TYPE_NAME_RE.sub(rename, type_text), nameable
 
 
 def _expected_type(

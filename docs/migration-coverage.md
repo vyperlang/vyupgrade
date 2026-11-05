@@ -44,7 +44,9 @@ modern Python interpreter.
   `len()` or comparison operand, a wider target) would resolve it to a wider or
   unbounded length, so `VY125` passes it through an internal function typed
   with the old bound; `VYD020` diagnoses such calls whose old type the caller
-  cannot name.
+  cannot name, and calls of a rewritten method whose receiver it cannot
+  resolve. A type the caller can name through an import is qualified with the
+  caller's import name.
   With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to
   the widest implementing bound, and `VYD019` diagnoses bounds that need it.
   Contracts that call through a widened interface accept return values up to
