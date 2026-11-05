@@ -65,6 +65,10 @@ _METHOD_CALL_RE = re.compile(r"\.\s*(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _CALL_KEYWORDS = frozenset({"staticcall", "extcall"})
 _ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
 _BOUND_FUNCTION = "__vyupgrade_return_bound"
+_BOUND_FUNCTION_RE = re.compile(
+    rf"^def[ \t]+(?P<name>{_BOUND_FUNCTION}\w*)\s*\(\s*\w+\s*:\s*(?P<type>.+?)\)\s*->",
+    re.MULTILINE,
+)
 # A type name, possibly qualified by a module, and the names every module can use.
 _TYPE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*")
 _BUILTIN_TYPE_NAME_RE = re.compile(
@@ -422,6 +426,16 @@ def _bound_untyped_calls(
     mask = rule_context.code_mask
     constants = integer_constant_values(source, rule_context.config.source_ast)
     modules = _imported_modules(source)
+    module_casts = {
+        f"{binding}.{interface}"
+        for binding, (_path, module_source) in _imported_sources(rule_context).items()
+        for interface in _declared_interfaces(module_source)
+    }
+    existing_functions = {
+        match.group("name"): _literal_type(match.group("type"), {})
+        for match in _BOUND_FUNCTION_RE.finditer(source)
+    }
+    code = "".join(char if in_code else " " for char, in_code in zip(source, mask, strict=True))
     taken_names = code_identifiers(source)
     parameter: str | None = None
     bound_functions: dict[str, str] = {}
@@ -429,11 +443,12 @@ def _bound_untyped_calls(
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     methods = {method for _interface, method in rewritten}
-    for match in _METHOD_CALL_RE.finditer(source):
+    # Comments and strings are blanked so a comment can sit anywhere in the call.
+    for match in _METHOD_CALL_RE.finditer(code):
         method = match.group("method")
-        if method not in methods or not span_is_code(mask, match.start(), match.end()):
+        if method not in methods or not span_is_code(mask, match.start(), match.start() + 1):
             continue
-        target = _call_target(source, mask, match.start(), facts, modules)
+        target = _call_target(source, mask, match.start(), facts, modules, module_casts)
         method_close = find_matching(source, match.end() - 1)
         if target is None or method_close is None:
             continue
@@ -444,8 +459,6 @@ def _bound_untyped_calls(
         keyword_start, keyword = _word_before(source, mask, start)
         call_start = keyword_start if keyword in _CALL_KEYWORDS else start
         call_end = method_close + 1
-        if _is_wrapped(source, mask, call_start):
-            continue
         call = source[call_start:call_end]
         line = line_number(source, start)
         if old is None:
@@ -459,6 +472,9 @@ def _bound_untyped_calls(
             )
             continue
         old_type, nameable = old
+        wrapper = _wrapping_function(source, mask, call_start)
+        if wrapper is not None and existing_functions.get(wrapper) == _literal_type(old_type, {}):
+            continue
         expected = _expected_type(source, call_start, call_end, facts)
         if expected is not None and _literal_type(expected, constants) == _literal_type(
             old_type, {}
@@ -502,7 +518,12 @@ def _bound_untyped_calls(
 
 
 def _call_target(
-    source: str, mask: list[bool], dot: int, facts: SourceFacts, modules: dict[str, str]
+    source: str,
+    mask: list[bool],
+    dot: int,
+    facts: SourceFacts,
+    modules: dict[str, str],
+    module_casts: set[str],
 ) -> tuple[int, str] | None:
     """Start and interface type ("" if unknown) of the receiver of the method call at ``dot``.
 
@@ -514,13 +535,16 @@ def _call_target(
         if name == "self" or name in modules:
             return None
         return start, _expression_type(name, end, source, facts)
-    return _receiver_type(source, mask, end, facts)
+    return _receiver_type(source, mask, end, facts, module_casts)
 
 
 def _receiver_type(
-    source: str, mask: list[bool], end: int, facts: SourceFacts
+    source: str, mask: list[bool], end: int, facts: SourceFacts, module_casts: set[str]
 ) -> tuple[int, str]:
-    """Start and type ("" if unknown) of the expression that ends at ``end``."""
+    """Start and type ("" if unknown) of the expression that ends at ``end``.
+
+    ``module_casts`` holds the ``binding.Name`` interfaces of imported modules.
+    """
     if source[end - 1 : end] != ")":
         start, name = _dotted_name(source, mask, end)
         return start, _expression_type(name, end, source, facts)
@@ -531,11 +555,14 @@ def _receiver_type(
     if callee in {"", *_CALL_KEYWORDS}:
         # A parenthesized expression.
         _inner_start, inner_type = _receiver_type(
-            source, mask, _skip_back(source, mask, end - 1), facts
+            source, mask, _skip_back(source, mask, end - 1), facts, module_casts
         )
         return receiver_open, inner_type
     if callee.startswith("self."):
         return start, normalize_type(facts.function_return_names.get(callee[5:]) or "")
+    if "." in callee and callee not in module_casts:
+        # A function of an imported module.
+        return start, ""
     # An interface cast, possibly qualified by its module.
     return start, callee
 
@@ -586,13 +613,13 @@ def _skip_back(source: str, mask: list[bool], end: int) -> int:
     return end
 
 
-def _is_wrapped(source: str, mask: list[bool], call_start: int) -> bool:
-    """Whether the call starting at ``call_start`` is already the bound function's argument."""
+def _wrapping_function(source: str, mask: list[bool], call_start: int) -> str | None:
+    """The internal function whose sole argument starts at ``call_start``, if any."""
     open_paren = _skip_back(source, mask, call_start)
     if source[open_paren - 1 : open_paren] != "(":
-        return False
+        return None
     _start, callee = _dotted_name(source, mask, open_paren - 1)
-    return callee.startswith(f"self.{_BOUND_FUNCTION}")
+    return callee[5:] if callee.startswith("self.") else None
 
 
 def _expression_type(expression: str, offset: int, source: str, facts: SourceFacts) -> str:
@@ -623,17 +650,11 @@ def _rewritten_returns(
         if exceeded.declaration.interface is not None
     }
     snapshot = rule_context.config.source_snapshot
-    path = rule_context.path
-    if snapshot is None or path is None or path.resolve() not in snapshot.contents:
+    imported = _imported_sources(rule_context)
+    if snapshot is None or not imported:
         return rewritten
-    modules = _imported_modules(rule_context.source)
-    bindings = {
-        module_path: binding
-        for binding, module in modules.items()
-        if (module_path := snapshot.resolve_import(path, module)) is not None
-    }
-    for module_path, binding in bindings.items():
-        module_source = snapshot.contents[module_path].decode("utf-8")
+    bindings = {module_path: binding for binding, (module_path, _source) in imported.items()}
+    for binding, (module_path, module_source) in imported.items():
         for exceeded in _exceeded_returns(
             module_source, module_path, snapshot, integer_constant_values(module_source)
         ):
@@ -643,6 +664,31 @@ def _rewritten_returns(
                 exceeded.literal(), binding, module_source, module_path, snapshot, bindings
             )
     return rewritten
+
+
+def _imported_sources(rule_context: RuleContext) -> dict[str, tuple[Path, str]]:
+    """Path and source of each closure module this file imports, by binding."""
+    snapshot = rule_context.config.source_snapshot
+    path = rule_context.path
+    if snapshot is None or path is None or path.resolve() not in snapshot.contents:
+        return {}
+    return {
+        binding: (module_path, snapshot.contents[module_path].decode("utf-8"))
+        for binding, module in _imported_modules(rule_context.source).items()
+        if (module_path := snapshot.resolve_import(path, module)) is not None
+    }
+
+
+def _declared_interfaces(source: str) -> set[str]:
+    mask = code_mask(source)
+    names: set[str] = set()
+    offset = 0
+    for line in source.split("\n"):
+        line_offset, offset = offset, offset + len(line) + 1
+        header = INTERFACE_RE.match(line.split("#", 1)[0].rstrip())
+        if header is not None and line_starts_in_code(source, mask, line_offset):
+            names.add(header.group(1))
+    return names
 
 
 def _caller_type(
@@ -655,12 +701,14 @@ def _caller_type(
 ) -> tuple[str, bool]:
     """``type_text`` of an imported module as its importer names it, and whether it can.
 
-    The module's own structs and flags are qualified by ``binding``; a type it
+    The module's own structs, flags and interfaces are qualified by ``binding``; a type it
     imports is nameable when the importer imports the same module, under its own
     binding.
     """
     module_facts = parse_source_facts(module_source)
-    own_types = module_facts.structs | module_facts.flags_or_enums
+    own_types = (
+        module_facts.structs | module_facts.flags_or_enums | _declared_interfaces(module_source)
+    )
     module_bindings = {
         name: snapshot.resolve_import(module_path, module)
         for name, module in _imported_modules(module_source).items()

@@ -436,6 +436,7 @@ def symbol() -> String[SYMBOL_MAX_LEN]: ...
 def name() -> String[SYMBOL_MAX_LEN]: ...
 """,
             "Vault.vy": """#pragma version 0.4.3
+#pragma nonreentrancy on
 from interfaces import IERC20
 
 implements: IERC20
@@ -702,14 +703,62 @@ def measured(a: address) -> uint256:
     )
 
 
-def test_call_with_an_unresolved_receiver_is_diagnosed(tmp_path: Path, config) -> None:
+def test_comment_between_receiver_and_method_is_wrapped(tmp_path: Path, config) -> None:
     caller = """#pragma version 0.4.3
 from . import IFoo
 
 @external
 @view
 def measured(a: address) -> uint256:
+    return len(staticcall IFoo(a).  # the version
+        version())
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert (
+        "    return len(self.__vyupgrade_return_bound(staticcall IFoo(a).  # the version\n"
+        "        version()))\n"
+    ) in result.source
+
+
+def test_call_inside_another_function_named_like_the_bound_is_wrapped(
+    tmp_path: Path, config
+) -> None:
+    caller = """#pragma version 0.4.3
+from . import IFoo
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(self.__vyupgrade_return_bound_custom(staticcall IFoo(a).version()))
+
+@internal
+@pure
+def __vyupgrade_return_bound_custom(returned: String[10]) -> String[10]:
+    return returned
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert (
+        "self.__vyupgrade_return_bound_custom("
+        "self.__vyupgrade_return_bound(staticcall IFoo(a).version()))"
+    ) in result.source
+
+
+def test_call_with_an_unresolved_receiver_is_diagnosed(tmp_path: Path, config) -> None:
+    caller = """#pragma version 0.4.3
+from . import IFoo
+import lib
+
+@external
+@view
+def measured(a: address) -> uint256:
     return len(staticcall self.tokens(a)[0].version()) + len(self.version())
+
+@external
+@view
+def read(a: address) -> String[10]:
+    return staticcall lib.tok(a).version()
 
 @internal
 @view
@@ -721,10 +770,30 @@ def tokens(a: address) -> DynArray[IFoo, 1]:
 def version() -> String[1]:
     return "1"
 """
-    result = _migrate_caller(tmp_path, config, caller)
+    result = _migrate(
+        tmp_path,
+        config,
+        {
+            "IFoo.vyi": INTERFACE.format(return_type="String[1]"),
+            "Foo.vy": IMPLEMENTATION.format(return_type="String[5]"),
+            "lib.vy": """#pragma version 0.4.3
+import IFoo
+
+@internal
+@pure
+def tok(a: address) -> IFoo:
+    return IFoo(a)
+""",
+            "Caller.vy": caller,
+        },
+        "Caller.vy",
+    )
 
     assert "__vyupgrade" not in result.source
-    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [("VYD020", 7)]
+    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
+        ("VYD020", 8),
+        ("VYD020", 13),
+    ]
 
 
 def test_calls_through_a_module_qualified_inline_interface_are_wrapped(
@@ -735,8 +804,12 @@ def test_calls_through_a_module_qualified_inline_interface_are_wrapped(
         config,
         {
             "Foo.vy": """#pragma version 0.4.3
+interface IToken:
+    def decimals() -> uint8: view
+
 interface IFoo:
     def version() -> String[1]: view
+    def tokens() -> DynArray[IToken, 1]: view
 
 implements: IFoo
 
@@ -744,6 +817,11 @@ implements: IFoo
 @view
 def version() -> String[5]:
     return "1.0.0"
+
+@external
+@view
+def tokens() -> DynArray[IToken, 2]:
+    return []
 """,
             "Caller.vy": """#pragma version 0.4.3
 import Foo
@@ -752,6 +830,11 @@ import Foo
 @view
 def read(a: address) -> String[10]:
     return staticcall Foo.IFoo(a).version()
+
+@external
+@view
+def count(a: address) -> uint256:
+    return len(staticcall Foo.IFoo(a).tokens())
 """,
         },
         "Caller.vy",
@@ -761,6 +844,14 @@ def read(a: address) -> String[10]:
         result.source
     )
     assert "def __vyupgrade_return_bound(returned: String[1]) -> String[1]:" in result.source
+    assert "    return len(self.__vyupgrade_return_bound_2(staticcall Foo.IFoo(a).tokens()))\n" in (
+        result.source
+    )
+    assert (
+        "def __vyupgrade_return_bound_2(returned: DynArray[Foo.IToken, 1])"
+        " -> DynArray[Foo.IToken, 1]:"
+    ) in result.source
+    assert result.diagnostics == []
 
 
 def test_call_wrapping_is_idempotent(tmp_path: Path, config) -> None:
