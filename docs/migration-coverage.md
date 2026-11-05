@@ -20,6 +20,16 @@ modern Python interpreter.
 
 ## v0.5.x prereleases
 
+### v0.5.0b1
+
+- Immutable access through `self`: no-op. This is newly accepted source;
+  bare-name access still compiles with a deprecation warning.
+- `unreachable` reserved: validation-only. An identifier named `unreachable`
+  is left for target validation to reject.
+- Flag to `bytes32` conversion added: no-op. This is newly accepted source.
+- Over-long string-literal revert reasons rejected: validation-only.
+- `implements` return-presence mismatch rejected: validation-only.
+
 ### v0.5.0a3
 
 - Custom errors added: no-op. This is newly accepted revert declaration and

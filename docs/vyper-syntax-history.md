@@ -1,6 +1,6 @@
 # Vyper Syntax History
 
-This document tracks Vyper source syntax changes from `v0.5.0a3` back through
+This document tracks Vyper source syntax changes from `v0.5.0b1` back through
 the installable `v0.1.0-beta.*` prereleases. It is intended as upgrade source
 material for `vyupgrade`.
 
@@ -11,6 +11,68 @@ backend-only, ABI-layout-only, optimizer-only, EVM-default, CLI-only, and pure
 runtime semantic changes unless they require source text to change.
 
 ## v0.5.x prereleases
+
+### v0.5.0b1
+
+Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0b1>
+
+- Immutables are accessed through `self`; bare-name access still compiles but
+  emits a deprecation warning. [#5035](https://github.com/vyperlang/vyper/pull/5035)
+
+  Before:
+
+  ```vyper
+  OWNER: public(immutable(address))
+
+  @deploy
+  def __init__():
+      OWNER = msg.sender
+
+  @external
+  def owner_is_sender() -> bool:
+      return OWNER == msg.sender
+  ```
+
+  After:
+
+  ```vyper
+  OWNER: public(immutable(address))
+
+  @deploy
+  def __init__():
+      self.OWNER = msg.sender
+
+  @external
+  def owner_is_sender() -> bool:
+      return self.OWNER == msg.sender
+  ```
+
+- `unreachable` is a reserved keyword and can no longer be used as an
+  identifier. [#5159](https://github.com/vyperlang/vyper/pull/5159)
+
+  Before:
+
+  ```vyper
+  unreachable: uint256 = 5
+  ```
+
+  After:
+
+  ```vyper
+  not_reached: uint256 = 5
+  ```
+
+- Flag values can be converted to `bytes32`. [#5160](https://github.com/vyperlang/vyper/pull/5160)
+
+  ```vyper
+  x: bytes32 = convert(Roles.ADMIN, bytes32)
+  ```
+
+- String-literal revert reasons longer than 1024 bytes are rejected, matching
+  the existing limit for `String` variables. [#5203](https://github.com/vyperlang/vyper/pull/5203)
+
+- `implements` rejects a function without a return type for an interface
+  function that returns a value. [#5149](https://github.com/vyperlang/vyper/pull/5149)
 
 ### v0.5.0a3
 

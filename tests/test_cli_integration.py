@@ -1680,6 +1680,40 @@ print('{"ast_type": "Module", "body": []}')
     assert result.compiler_authority == "explicit-executable"
 
 
+def test_real_project_compiler_0_5_0b1_satisfies_broad_pragma(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "beta-project-compiler"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.5.0b1"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text(
+        """# pragma version >=0.4.3
+
+@external
+def answer() -> uint256:
+    return 1
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [str(contract), "--check", "--target-version", "0.5.0a3", "--report-json", str(report)]
+    )
+
+    assert code == 1
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "passed"
+    assert validation["decision"]["status"] == "passed"
+
+
 def test_real_compiler_overlay_uses_project_interpreter(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
