@@ -461,15 +461,30 @@ def test_wildcard_is_idempotent(tmp_path: Path, config) -> None:
         "IFoo.vyi": INTERFACE.format(return_type="String[1]"),
         "Foo.vy": IMPLEMENTATION.format(return_type="String[5]"),
     }
-    first = _migrate(tmp_path, config, files, "IFoo.vyi")
+    # Only VY125 is selected, so the version pragma stays and the rerun applies it again.
+    first = _migrate(tmp_path, config, files, "IFoo.vyi", select=frozenset({"VY125"}))
 
-    second = _migrate(tmp_path, config, {**files, "IFoo.vyi": first.source}, "IFoo.vyi")
+    second = _migrate(
+        tmp_path, config, {**files, "IFoo.vyi": first.source}, "IFoo.vyi",
+        select=frozenset({"VY125"}),
+    )
 
+    assert first.fixes
     assert second.source == first.source
     assert second.fixes == []
 
 
-def test_wildcard_requires_0_5_target(tmp_path: Path, config) -> None:
+@pytest.mark.parametrize(
+    ("target_version", "options", "rule"),
+    [
+        (version, options, rule)
+        for version in ("0.4.3", "0.5.0a1", "0.5.0a2")
+        for options, rule in (({}, "VY125"), (WIDEN, "VY124"))
+    ],
+)
+def test_return_bound_rules_cross_at_0_5_0a2(
+    tmp_path: Path, config, target_version: str, options: dict, rule: str
+) -> None:
     result = _migrate(
         tmp_path,
         config,
@@ -478,11 +493,13 @@ def test_wildcard_requires_0_5_target(tmp_path: Path, config) -> None:
             "Foo.vy": IMPLEMENTATION.format(return_type="String[5]"),
         },
         "IFoo.vyi",
-        target_version="0.4.3",
+        target_version=target_version,
+        **options,
     )
 
-    assert "def version() -> String[1]: ..." in result.source
-    assert result.fixes == []
+    rewritten = target_version == "0.5.0a2"
+    assert ("def version() -> String[1]: ..." in result.source) is not rewritten
+    assert any(fix.rule == rule for fix in result.fixes) is rewritten
 
 
 CALLER = """#pragma version 0.4.3
@@ -683,7 +700,7 @@ def measured(a: address) -> uint256:
     )
 
 
-@pytest.mark.parametrize("spacing", ["\n        ", "  # the version\n        "])
+@pytest.mark.parametrize("spacing", ["\n        ", "  # the version\n        ", " \\\n        "])
 def test_keyword_on_a_previous_line_is_wrapped_with_the_call(
     tmp_path: Path, config, spacing: str
 ) -> None:
@@ -793,6 +810,48 @@ def tok(a: address) -> IFoo:
     assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
         ("VYD020", 8),
         ("VYD020", 13),
+    ]
+
+
+def test_calls_through_an_interface_only_imported_indirectly_are_diagnosed(
+    tmp_path: Path, config
+) -> None:
+    caller = """#pragma version 0.4.3
+import lib
+
+@external
+@view
+def read(a: address) -> String[10]:
+    return staticcall lib.IFoo(a).version()
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall lib.tok(a).version())
+"""
+    result = _migrate(
+        tmp_path,
+        config,
+        {
+            "IFoo.vyi": INTERFACE.format(return_type="String[1]"),
+            "Foo.vy": IMPLEMENTATION.format(return_type="String[5]"),
+            "lib.vy": """#pragma version 0.4.3
+import IFoo
+
+@internal
+@pure
+def tok(a: address) -> IFoo:
+    return IFoo(a)
+""",
+            "Caller.vy": caller,
+        },
+        "Caller.vy",
+    )
+
+    assert "__vyupgrade" not in result.source
+    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
+        ("VYD020", 7),
+        ("VYD020", 12),
     ]
 
 

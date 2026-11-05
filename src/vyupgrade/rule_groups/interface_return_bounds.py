@@ -420,7 +420,11 @@ def _bound_untyped_calls(
     """
     source = rule_context.source
     rewritten = _rewritten_returns(rule_context, local_exceeded)
-    if not rewritten:
+    # A receiver that is not resolved may be any rewritten interface in the closure.
+    methods = {method for _interface, method in rewritten} | _closure_rewritten_methods(
+        rule_context.config.source_snapshot
+    )
+    if not methods:
         return [], [], []
     facts = rule_context.facts
     mask = rule_context.code_mask
@@ -442,7 +446,6 @@ def _bound_untyped_calls(
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
-    methods = {method for _interface, method in rewritten}
     # Comments and strings are blanked so a comment can sit anywhere in the call.
     for match in _METHOD_CALL_RE.finditer(code):
         method = match.group("method")
@@ -607,8 +610,15 @@ def _word_before(source: str, mask: list[bool], end: int) -> tuple[int, str]:
 
 
 def _skip_back(source: str, mask: list[bool], end: int) -> int:
-    """Offset right after the last code character before ``end`` that is not spacing."""
-    while end > 0 and (source[end - 1].isspace() or not mask[end - 1]):
+    """Offset right after the last code character before ``end`` that is not spacing.
+
+    Comments and line continuations count as spacing.
+    """
+    while end > 0 and (
+        source[end - 1].isspace()
+        or not mask[end - 1]
+        or (source[end - 1] == "\\" and source[end : end + 1] == "\n")
+    ):
         end -= 1
     return end
 
@@ -664,6 +674,24 @@ def _rewritten_returns(
                 exceeded.literal(), binding, module_source, module_path, snapshot, bindings
             )
     return rewritten
+
+
+def _closure_rewritten_methods(snapshot: ImportClosure | None) -> set[str]:
+    """Functions of every interface in the closure whose return bound becomes the wildcard."""
+    if snapshot is None:
+        return set()
+    methods: set[str] = set()
+    for member, content in snapshot.contents.items():
+        if member.suffix != ".vyi" and b"interface" not in content:
+            continue
+        source = content.decode("utf-8")
+        methods.update(
+            exceeded.declaration.function
+            for exceeded in _exceeded_returns(
+                source, member, snapshot, integer_constant_values(source)
+            )
+        )
+    return methods
 
 
 def _imported_sources(rule_context: RuleContext) -> dict[str, tuple[Path, str]]:
