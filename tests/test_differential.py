@@ -231,7 +231,7 @@ def conditional_value(x: uint256, n: uint256) -> uint256:
         ]
 
 
-def test_interface_widening_changes_accepted_returns_and_requires_aggressive(tmp_path):
+def test_interface_wildcard_keeps_and_widening_changes_accepted_returns(tmp_path):
     source = """#pragma version 0.4.3
 interface IFoo:
     def data() -> Bytes[1]: view
@@ -248,18 +248,38 @@ def data() -> Bytes[5]:
 def read(other: address) -> uint256:
     return len(staticcall IFoo(other).data())
 """
-    default = apply_rules(source, Config(paths=(tmp_path,), target_version="0.5.0a3"))
-    assert "def data() -> Bytes[1]: view" in default.source
-    assert any(diag.rule == "VYD019" for diag in default.diagnostics)
-    aggressive = apply_rules(
-        source, Config(paths=(tmp_path,), target_version="0.5.0a3", aggressive=True)
+    # Widening breaks this narrower caller at compile time, so only the wildcard
+    # migration gets it.
+    assigned = """
+@external
+@view
+def assigned(other: address) -> uint256:
+    value: Bytes[1] = staticcall IFoo(other).data()
+    return len(value)
+"""
+    wildcard = apply_rules(
+        source + assigned, Config(paths=(tmp_path,), target_version="0.5.0a3")
     )
+    assert "def data() -> Bytes[...]: view" in wildcard.source
+    widened = apply_rules(
+        source,
+        Config(
+            paths=(tmp_path,),
+            target_version="0.5.0a3",
+            aggressive=True,
+            ignore=frozenset({"VY125"}),
+        ),
+    )
+    assert "def data() -> Bytes[5]: view" in widened.source
     path = tmp_path / "entry.vy"
-    original = _deploy(path, source, "0.4.3")
-    migrated = _deploy(path, aggressive.source, "0.5.0a3")
-    with pytest.raises(TransactionFailed):
-        _call(original, "read(address)", int(original[2], 16))
-    assert _call(migrated, "read(address)", int(migrated[2], 16)) == 5
+    original = _deploy(path, source + assigned, "0.4.3")
+    kept = _deploy(path, wildcard.source, "0.5.0a3")
+    changed = _deploy(path, widened.source, "0.5.0a3")
+    for deployment in (original, kept):
+        for signature in ("read(address)", "assigned(address)"):
+            with pytest.raises(TransactionFailed):
+                _call(deployment, signature, int(deployment[2], 16))
+    assert _call(changed, "read(address)", int(changed[2], 16)) == 5
 
 
 def test_shift_preserves_legacy_constant_coercion(tmp_path):

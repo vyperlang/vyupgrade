@@ -31,14 +31,22 @@ modern Python interpreter.
   after the docstring.
 - Wildcard interface lengths and unbounded length spellings added: no-op. This
   is newly accepted source syntax.
-- Interface return-type bounds checked covariantly: `VYD019` diagnoses bounds
-  that need manual review. With `--aggressive`, `VY124` raises each
+- Interface return-type bounds checked covariantly: `VY125` replaces each
   `String`, `Bytes`, and `DynArray` return bound declared by a `.vyi` module or
-  an implemented inline `interface` block to the widest bound returned by an
-  implementing external function or public getter. Implementers of a `.vyi`
-  module are found in the captured import closure. Only integer-literal bounds
-  are compared; other mismatches are left to target validation. Contracts that
-  call through a widened interface accept return values up to the new bound.
+  an implemented inline `interface` block with the wildcard `...` when an
+  implementing external function or public getter returns a wider bound.
+  Implementers of a `.vyi` module are found in the captured import closure.
+  Integer-literal bounds and bounds named by an integer constant of the same
+  file are compared; other mismatches are left to target validation. The
+  wildcard resolves at each call site to the expected type, so typed callers
+  decode and check returns as before. A call with no expected type (a discarded
+  result, a `len()` or comparison operand) would resolve it to an unbounded
+  length, so `VY125` passes it through an internal function typed with the old
+  bound; `VYD020` diagnoses such calls whose old type the caller cannot name.
+  With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to
+  the widest implementing bound, and `VYD019` diagnoses bounds that need it.
+  Contracts that call through a widened interface accept return values up to
+  the new bound.
 
 ### v0.5.0a1
 
