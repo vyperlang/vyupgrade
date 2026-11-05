@@ -435,18 +435,21 @@ def _bound_untyped_calls(
         for binding, (_path, module_source) in _imported_sources(rule_context).items()
         for interface in _declared_interfaces(module_source)
     }
+    # Interfaces this file names; a receiver of any other type is not resolved.
+    known_interfaces = _declared_interfaces(source) | set(modules) | module_casts
+    # Comments, strings and line continuations are blanked so they can sit anywhere in a call.
+    code = "".join(
+        char if in_code else " " for char, in_code in zip(source, mask, strict=True)
+    ).replace("\\\n", " \n")
     existing_functions = {
         match.group("name"): _literal_type(match.group("type"), {})
-        for match in _BOUND_FUNCTION_RE.finditer(source)
+        for match in _BOUND_FUNCTION_RE.finditer(code)
     }
-    code = "".join(char if in_code else " " for char, in_code in zip(source, mask, strict=True))
     taken_names = code_identifiers(source)
-    parameter: str | None = None
     bound_functions: dict[str, str] = {}
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
-    # Comments and strings are blanked so a comment can sit anywhere in the call.
     for match in _METHOD_CALL_RE.finditer(code):
         method = match.group("method")
         if method not in methods or not span_is_code(mask, match.start(), match.start() + 1):
@@ -457,11 +460,9 @@ def _bound_untyped_calls(
             continue
         start, target_type = target
         old = rewritten.get((target_type, method))
-        if old is None and target_type:
+        if old is None and target_type in known_interfaces:
             continue
-        keyword_start, keyword = _word_before(source, mask, start)
-        call_start = keyword_start if keyword in _CALL_KEYWORDS else start
-        call_end = method_close + 1
+        call_start, call_end = _call_span(source, mask, start, method_close + 1)
         call = source[call_start:call_end]
         line = line_number(source, start)
         if old is None:
@@ -518,6 +519,26 @@ def _bound_untyped_calls(
         separator = "" if source.endswith("\n") else "\n"
         edits.append(TextEdit(len(source), len(source), separator + definitions))
     return edits, fixes, diagnostics
+
+
+def _call_span(source: str, mask: list[bool], start: int, end: int) -> tuple[int, int]:
+    """Span of the external call whose receiver starts at ``start`` and that ends at ``end``.
+
+    It takes in the call keyword, and the parentheses between the keyword and
+    the call, as in ``staticcall (I(a).f())``.
+    """
+    span_start, span_end = start, end
+    while True:
+        keyword_start, keyword = _word_before(source, mask, span_start)
+        if keyword in _CALL_KEYWORDS:
+            return keyword_start, span_end
+        open_paren = _skip_back(source, mask, span_start) - 1
+        if open_paren < 0 or source[open_paren] != "(":
+            return start, end
+        close_paren = find_matching(source, open_paren)
+        if close_paren is None or _skip_forward(source, mask, span_end) != close_paren:
+            return start, end
+        span_start, span_end = open_paren, close_paren + 1
 
 
 def _call_target(
@@ -609,6 +630,17 @@ def _word_before(source: str, mask: list[bool], end: int) -> tuple[int, str]:
     return word_start, source[word_start:word_end]
 
 
+def _skip_forward(source: str, mask: list[bool], start: int) -> int:
+    """Offset of the first code character from ``start`` on that is not spacing."""
+    while start < len(source) and (
+        source[start].isspace()
+        or not mask[start]
+        or (source[start] == "\\" and source[start + 1 : start + 2] == "\n")
+    ):
+        start += 1
+    return start
+
+
 def _skip_back(source: str, mask: list[bool], end: int) -> int:
     """Offset right after the last code character before ``end`` that is not spacing.
 
@@ -638,7 +670,7 @@ def _expression_type(expression: str, offset: int, source: str, facts: SourceFac
     target_type = (
         facts.storage_vars.get(expression[5:]) if expression.startswith("self.") else None
     ) or infer_expr_type(expression, facts.vars_at_line(line_number(source, offset)), facts)
-    return normalize_type(target_type or "")
+    return normalize_type(target_type or "").strip("() ")
 
 
 def _rewritten_returns(

@@ -720,22 +720,42 @@ def measured(a: address) -> uint256:
     )
 
 
-def test_comment_between_receiver_and_method_is_wrapped(tmp_path: Path, config) -> None:
+@pytest.mark.parametrize("spacing", ["  # the version\n        ", " \\\n        "])
+def test_spacing_between_receiver_and_method_is_wrapped(
+    tmp_path: Path, config, spacing: str
+) -> None:
+    caller = f"""#pragma version 0.4.3
+from . import IFoo
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall IFoo(a).{spacing}version())
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert (
+        f"    return len(self.__vyupgrade_return_bound(staticcall IFoo(a).{spacing}version()))\n"
+    ) in result.source
+
+
+def test_parenthesized_call_after_the_keyword_is_wrapped_with_it(
+    tmp_path: Path, config
+) -> None:
     caller = """#pragma version 0.4.3
 from . import IFoo
 
 @external
 @view
 def measured(a: address) -> uint256:
-    return len(staticcall IFoo(a).  # the version
-        version())
+    return len(staticcall (IFoo(a).version()))
 """
     result = _migrate_caller(tmp_path, config, caller)
 
     assert (
-        "    return len(self.__vyupgrade_return_bound(staticcall IFoo(a).  # the version\n"
-        "        version()))\n"
-    ) in result.source
+        "    return len(self.__vyupgrade_return_bound(staticcall (IFoo(a).version())))\n"
+        in result.source
+    )
 
 
 def test_call_inside_another_function_named_like_the_bound_is_wrapped(
@@ -828,6 +848,21 @@ def read(a: address) -> String[10]:
 @view
 def measured(a: address) -> uint256:
     return len(staticcall lib.tok(a).version())
+
+@external
+@view
+def passed(token: lib.IFoo) -> String[10]:
+    return staticcall token.version()
+
+@external
+@view
+def returned(a: address) -> String[10]:
+    return staticcall self.tok(a).version()
+
+@internal
+@pure
+def tok(a: address) -> lib.IFoo:
+    return lib.IFoo(a)
 """
     result = _migrate(
         tmp_path,
@@ -852,6 +887,8 @@ def tok(a: address) -> IFoo:
     assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
         ("VYD020", 7),
         ("VYD020", 12),
+        ("VYD020", 17),
+        ("VYD020", 22),
     ]
 
 
