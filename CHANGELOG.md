@@ -5,10 +5,10 @@
 - Add `VY125` to replace interface return bounds that an implementation exceeds
   with the Vyper 0.5 wildcard (`String[...]`, `Bytes[...]`,
   `DynArray[T, ...]`), by default for targets from 0.5.0a2. Calls through the
-  interface with no expected return type pass through an internal function
-  typed with the old bound, so callers keep their return bounds; `VYD020`
-  diagnoses those whose type the caller cannot name. Bounds written as integer
-  constants are compared too. `VY124` widening now needs `--aggressive` with
+  interface that do not expect exactly the old return type pass through an
+  internal function typed with the old bound, so callers keep their return
+  bounds; `VYD020` diagnoses those whose type the caller cannot name. Bounds
+  written as integer constants are compared too. `VY124` widening now needs `--aggressive` with
   `VY125` ignored.
 
 ## 0.9.0 - 2026-10-30

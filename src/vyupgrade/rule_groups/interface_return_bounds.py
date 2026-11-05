@@ -4,9 +4,9 @@ Vyper 0.4 accepted an implementation whose ``String``/``Bytes``/``DynArray``
 return bound was at least the interface's. Since 0.5.0a2 (vyper#4967) the bound
 must be at most the interface's. Each exceeded bound becomes the wildcard ``...``
 (VY125), which the implementations satisfy and which resolves at each call site
-to the type the context expects, so callers decode and check returns as before.
-A call with no expected type would resolve it to an unbounded length; VY125 passes
-such calls through an internal function typed with the old bound. Raising the
+to the type the context expects. VY125 passes each call that does not expect
+the old type through an internal function typed with the old bound, so callers
+decode and check returns as before. Raising the
 bound to the widest implementation instead (VY124) broadens callers' accepted
 return values and needs aggressive mode with VY125 ignored.
 """
@@ -62,18 +62,21 @@ _FROM_IMPORT_RE = re.compile(
 )
 _IMPORTED_NAME_RE = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\s+as\s+(?P<alias>[A-Za-z_]\w*))?")
 _METHOD_CALL_RE = re.compile(r"\.(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
-_CAST_NAME_RE = re.compile(r"(?<![\w.])(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$")
+# The name called right before a receiver's `(`: an interface cast or `self.f` internal call.
+_RECEIVER_CALL_RE = re.compile(r"(?<![\w.])(?:(?P<self>self)\.)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$")
 _TARGET_RE = re.compile(
     r"(?<![\w.\]])(?P<target>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*"
     r"(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)*)$"
 )
+_CAST_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)", re.DOTALL)
 _CALL_KEYWORD_RE = re.compile(r"\b(?:staticcall|extcall)\s+$")
-# A statement prefix that assigns the call result, giving it the target's type.
-_ASSIGNMENT_PREFIX_RE = re.compile(r"[^=]*[^=!<>]=")
+_ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
+_BOUND_FUNCTION = "__vyupgrade_return_bound"
+_WRAPPED_RE = re.compile(rf"\bself\.{_BOUND_FUNCTION}\w*\s*\(\s*$")
 # Types a caller can name without the declaring module's scope.
-_NAMEABLE_TYPE_RE = re.compile(
+_BUILTIN_TYPE_RE = re.compile(
     r"(?:String|Bytes|DynArray|bool|address|decimal|bytes[0-9]*|u?int[0-9]*"
-    r"|[0-9]+|[\[\], ])+"
+    r"|[0-9]+|[\[\](), ])+"
 )
 
 
@@ -401,10 +404,10 @@ def _length_bound(
 def _bound_untyped_calls(
     rule_context: RuleContext, local_exceeded: list[_ExceededReturn]
 ) -> tuple[list[TextEdit], list[Fix], list[Diagnostic]]:
-    """Pass calls with no expected return type through a function typed with the old bound.
+    """Pass calls through a function typed with the old bound unless they expect that type.
 
-    Without an expected type the wildcard resolves to an unbounded length, which
-    would drop the old decode bound.
+    The wildcard resolves to the type the call site expects: an unbounded length
+    where there is none, and a wider bound where the site expects a wider type.
     """
     source = rule_context.source
     rewritten = _rewritten_returns(rule_context, local_exceeded)
@@ -412,6 +415,7 @@ def _bound_untyped_calls(
         return [], [], []
     facts = rule_context.facts
     mask = rule_context.code_mask
+    constants = integer_constant_values(source, rule_context.config.source_ast)
     taken_names = code_identifiers(source)
     bound_functions: dict[str, str] = {}
     edits: list[TextEdit] = []
@@ -426,31 +430,36 @@ def _bound_untyped_calls(
         if target is None:
             continue
         start, target_type = target
-        old_type = rewritten.get((target_type, method))
+        old = rewritten.get((target_type, method))
         method_close = find_matching(source, match.end() - 1)
-        if old_type is None or method_close is None:
+        if old is None or method_close is None:
             continue
+        old_type, nameable = old
         line = line_number(source, start)
-        keyword = _CALL_KEYWORD_RE.search(source, source.rfind("\n", 0, start) + 1, start)
+        keyword = _CALL_KEYWORD_RE.search(source, max(0, start - 64), start)
         call_start = keyword.start() if keyword is not None else start
         call_end = method_close + 1
-        if _has_expected_type(source, mask, call_start, call_end):
+        if _WRAPPED_RE.search(source, max(0, call_start - 128), call_start):
+            continue
+        expected = _expected_type(source, call_start, call_end, facts)
+        if expected is not None and _literal_type(expected, constants) == _literal_type(
+            old_type, {}
+        ):
             continue
         call = source[call_start:call_end]
-        if not _NAMEABLE_TYPE_RE.fullmatch(old_type):
+        if not nameable:
             diagnostics.append(
                 Diagnostic(
                     "VYD020",
                     line,
-                    f"{call} has no expected return type, so the wildcard bound resolves "
-                    f"to an unbounded length; give it an expected type of {old_type} "
-                    "to keep the old return bound",
+                    f"{call} does not expect its old return type {old_type}, so the "
+                    "wildcard bound no longer checks it; give the result that type",
                 )
             )
             continue
         name = bound_functions.get(old_type)
         if name is None:
-            name = _unique_name("__vyupgrade_return_bound", taken_names)
+            name = _unique_name(_BOUND_FUNCTION, taken_names)
             bound_functions[old_type] = name
         edits.append(TextEdit(call_start, call_start, f"self.{name}("))
         edits.append(TextEdit(call_end, call_end, ")"))
@@ -458,7 +467,7 @@ def _bound_untyped_calls(
             Fix(
                 "VY125",
                 line,
-                f"kept the {old_type} return bound of a call with no expected type",
+                f"kept the {old_type} return bound of a call that does not expect it",
                 call,
                 f"self.{name}({call})",
             )
@@ -475,34 +484,53 @@ def _bound_untyped_calls(
 
 
 def _call_target(source: str, dot: int, facts: SourceFacts) -> tuple[int, str] | None:
-    """Start and interface type of the call target that ends at ``dot``."""
-    if source[dot - 1] == ")":
-        cast_open = find_matching_open(source, dot - 1)
-        cast = (
-            None
-            if cast_open is None
-            else _CAST_NAME_RE.search(source, source.rfind("\n", 0, cast_open) + 1, cast_open)
-        )
-        return None if cast is None else (cast.start(), cast.group("name"))
-    target = _TARGET_RE.search(source, source.rfind("\n", 0, dot) + 1, dot)
-    if target is None:
+    """Start and interface type of the call receiver that ends at ``dot``."""
+    line_start = source.rfind("\n", 0, dot) + 1
+    if source[dot - 1] != ")":
+        target = _TARGET_RE.search(source, line_start, dot)
+        if target is None:
+            return None
+        return target.start(), _expression_type(target.group("target"), dot, source, facts)
+    receiver_open = find_matching_open(source, dot - 1)
+    if receiver_open is None:
         return None
-    expression = target.group("target")
+    called = _RECEIVER_CALL_RE.search(source, line_start, receiver_open)
+    if called is not None and called.group("name") not in {"staticcall", "extcall"}:
+        if called.group("self") is None:
+            return called.start(), called.group("name")
+        returned = facts.function_return_names.get(called.group("name"))
+        return called.start(), normalize_type(returned or "")
+    before = source[line_start:receiver_open].rstrip()
+    if called is None and before and (before[-1].isalnum() or before[-1] in "_.])"):
+        # A call of something other than a plain name, e.g. a module-qualified cast.
+        return None
+    inner = source[receiver_open + 1 : dot - 1].strip()
+    cast = _CAST_RE.fullmatch(inner)
+    if cast is not None:
+        return receiver_open, cast.group("name")
+    return receiver_open, _expression_type(inner, dot, source, facts)
+
+
+def _expression_type(expression: str, offset: int, source: str, facts: SourceFacts) -> str:
     target_type = (
         facts.storage_vars.get(expression[5:]) if expression.startswith("self.") else None
-    ) or infer_expr_type(expression, facts.vars_at_line(line_number(source, dot)), facts)
-    return None if target_type is None else (target.start(), normalize_type(target_type))
+    ) or infer_expr_type(expression, facts.vars_at_line(line_number(source, offset)), facts)
+    return normalize_type(target_type or "")
 
 
 def _rewritten_returns(
     rule_context: RuleContext, local_exceeded: list[_ExceededReturn]
-) -> dict[tuple[str, str], str]:
-    """Old return type of each (interface name, function) whose bound VY125 replaces.
+) -> dict[tuple[str, str], tuple[str, bool]]:
+    """Old return type, and whether this file can name it, by (interface, function).
 
-    Covers this file's inline interfaces and the `.vyi` modules it imports.
+    Covers this file's inline interfaces, whose types are in scope, and the
+    `.vyi` modules it imports, whose own declarations are not.
     """
     rewritten = {
-        (exceeded.declaration.interface, exceeded.declaration.function): exceeded.literal()
+        (exceeded.declaration.interface, exceeded.declaration.function): (
+            exceeded.literal(),
+            True,
+        )
         for exceeded in local_exceeded
         if exceeded.declaration.interface is not None
     }
@@ -518,34 +546,37 @@ def _rewritten_returns(
         for exceeded in _exceeded_returns(
             module_source, module_path, snapshot, integer_constant_values(module_source)
         ):
-            rewritten[(binding, exceeded.declaration.function)] = exceeded.literal()
+            old_type = exceeded.literal()
+            rewritten[(binding, exceeded.declaration.function)] = (
+                old_type,
+                _BUILTIN_TYPE_RE.fullmatch(old_type) is not None,
+            )
     return rewritten
 
 
-def _has_expected_type(source: str, mask: list[bool], call_start: int, call_end: int) -> bool:
-    """True when the call is the whole value of a statement's assignment or return."""
+def _expected_type(
+    source: str, call_start: int, call_end: int, facts: SourceFacts
+) -> str | None:
+    """The declared type a call takes when it is a whole annotated value or return value."""
     line_start = source.rfind("\n", 0, call_start) + 1
     line_end = source.find("\n", call_end)
-    if line_end == -1:
-        line_end = len(source)
-    if any(mask[index] and not source[index].isspace() for index in range(call_end, line_end)):
-        return False
-    if _bracket_depth(source, mask, line_start) != 0:
-        return False
+    rest = source[call_end : len(source) if line_end == -1 else line_end]
+    if rest.split("#", 1)[0].strip():
+        return None
     prefix = source[line_start:call_start].strip()
-    return prefix == "return" or _ASSIGNMENT_PREFIX_RE.fullmatch(prefix) is not None
+    if prefix == "return":
+        return facts.return_type_at_line(line_number(source, call_start))
+    annotated = _ANNOTATED_ASSIGNMENT_RE.fullmatch(prefix)
+    return None if annotated is None else annotated.group("type")
 
 
-def _bracket_depth(source: str, mask: list[bool], end: int) -> int:
-    depth = 0
-    for index in range(end):
-        if not mask[index]:
-            continue
-        if source[index] in "([{":
-            depth += 1
-        elif source[index] in ")]}" and depth > 0:
-            depth -= 1
-    return depth
+def _literal_type(type_text: str, constants: dict[str, int]) -> str:
+    """``type_text`` with its bounds as integer literals, without spaces."""
+    _shape, bounds = _bounded_shape(type_text, constants)
+    literal = apply_edits(
+        type_text, [TextEdit(bound.start, bound.end, str(bound.length)) for bound in bounds]
+    )
+    return re.sub(r"\s+", "", literal)
 
 
 def _unique_name(base: str, taken_names: set[str]) -> str:

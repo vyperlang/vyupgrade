@@ -560,19 +560,156 @@ def test_untyped_calls_through_wildcard_keep_the_old_bound(tmp_path: Path, confi
 
 
 def test_discarded_extcall_through_wildcard_keeps_the_old_bound(tmp_path: Path, config) -> None:
-    caller = """#pragma version 0.4.3
+    result = _migrate(
+        tmp_path,
+        config,
+        {
+            "IFoo.vyi": """#pragma version 0.4.3
+@external
+def bump() -> String[1]: ...
+""",
+            "Foo.vy": """#pragma version 0.4.3
+from . import IFoo
+
+implements: IFoo
+
+@external
+def bump() -> String[5]:
+    return "1.0.0"
+""",
+            "Caller.vy": """#pragma version 0.4.3
 from . import IFoo
 
 @external
 def poke(a: address):
-    extcall IFoo(a).version()  # result unused
+    extcall IFoo(a).bump()  # result unused
+""",
+        },
+        "Caller.vy",
+    )
+
+    assert (
+        "    self.__vyupgrade_return_bound(extcall IFoo(a).bump())  # result unused\n"
+        in result.source
+    )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "wide: String[10] = staticcall IFoo(a).version()",
+        "wide: String[10] = empty(String[10])\n    wide = staticcall IFoo(a).version()",
+    ],
+)
+def test_call_expecting_a_wider_type_keeps_the_old_bound(
+    tmp_path: Path, config, statement: str
+) -> None:
+    caller = f"""#pragma version 0.4.3
+from . import IFoo
+
+@external
+@view
+def wide(a: address) -> String[10]:
+    {statement}
+    return wide
+
+@external
+@view
+def returned(a: address) -> String[10]:
+    return staticcall IFoo(a).version()
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert "self.__vyupgrade_return_bound(staticcall IFoo(a).version())\n    return wide" in (
+        result.source
+    )
+    assert "    return self.__vyupgrade_return_bound(staticcall IFoo(a).version())\n" in (
+        result.source
+    )
+
+
+def test_call_expecting_the_old_type_by_named_constant_is_unchanged(
+    tmp_path: Path, config
+) -> None:
+    caller = """#pragma version 0.4.3
+from . import IFoo
+
+ONE: constant(uint256) = 1
+
+@external
+@view
+def narrow(a: address) -> String[ONE]:
+    narrow: String[ONE] = staticcall IFoo(a).version()
+    return staticcall IFoo(a).version()
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert "__vyupgrade" not in result.source
+
+
+@pytest.mark.parametrize(
+    ("receiver", "extra"),
+    [
+        ("(IFoo(a))", ""),
+        ("(self.token)", ""),
+        ("self.tok(a)", "\n@internal\n@view\ndef tok(a: address) -> IFoo:\n    return IFoo(a)\n"),
+    ],
+)
+def test_parenthesized_and_internal_call_receivers_are_wrapped(
+    tmp_path: Path, config, receiver: str, extra: str
+) -> None:
+    caller = f"""#pragma version 0.4.3
+from . import IFoo
+
+token: IFoo
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall {receiver}.version())
+{extra}"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert (
+        f"    return len(self.__vyupgrade_return_bound(staticcall {receiver}.version()))\n"
+        in result.source
+    )
+
+
+def test_keyword_on_a_previous_line_is_wrapped_with_the_call(tmp_path: Path, config) -> None:
+    caller = """#pragma version 0.4.3
+from . import IFoo
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall
+        IFoo(a).version())
 """
     result = _migrate_caller(tmp_path, config, caller)
 
     assert (
-        "    self.__vyupgrade_return_bound(extcall IFoo(a).version())  # result unused\n"
+        "    return len(self.__vyupgrade_return_bound(staticcall\n        IFoo(a).version()))\n"
         in result.source
     )
+
+
+def test_call_wrapping_is_idempotent(tmp_path: Path, config) -> None:
+    files = {
+        "IFoo.vyi": INTERFACE.format(return_type="String[1]"),
+        "Foo.vy": IMPLEMENTATION.format(return_type="String[5]"),
+        "Caller.vy": CALLER,
+    }
+    first = _migrate(tmp_path, config, files, "Caller.vy", select=frozenset({"VY125"}))
+
+    second = _migrate(
+        tmp_path, config, {**files, "Caller.vy": first.source}, "Caller.vy",
+        select=frozenset({"VY125"}),
+    )
+
+    assert first.fixes
+    assert second.source == first.source
+    assert second.fixes == []
 
 
 def test_calls_are_left_alone_without_the_wildcard(tmp_path: Path, config) -> None:
@@ -583,26 +720,84 @@ def test_calls_are_left_alone_without_the_wildcard(tmp_path: Path, config) -> No
 
 
 def test_untyped_call_with_unnameable_return_type_is_diagnosed(tmp_path: Path, config) -> None:
+    # `Point` is the interface module's own struct, which the caller can't name.
     result = _migrate(
         tmp_path,
         config,
         {
-            "IFoo.vyi": INTERFACE.format(return_type="(String[1], uint256)"),
-            "Foo.vy": IMPLEMENTATION.format(return_type="(String[5], uint256)"),
+            "IFoo.vyi": """#pragma version 0.4.3
+struct Point:
+    x: uint256
+
+@external
+@view
+def points() -> DynArray[Point, 1]: ...
+""",
+            "Foo.vy": """#pragma version 0.4.3
+from . import IFoo
+
+implements: IFoo
+
+struct Point:
+    x: uint256
+
+@external
+@view
+def points() -> DynArray[Point, 2]:
+    return []
+""",
             "Caller.vy": """#pragma version 0.4.3
 from . import IFoo
 
 @external
-def poke(a: address):
-    extcall IFoo(a).version()
+@view
+def count(a: address) -> uint256:
+    return len(staticcall IFoo(a).points())
 """,
         },
         "Caller.vy",
     )
 
-    assert "    extcall IFoo(a).version()\n" in result.source
+    assert "    return len(staticcall IFoo(a).points())\n" in result.source
     assert _wildcards(result) == []
-    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [("VYD020", 6)]
+    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [("VYD020", 7)]
+
+
+def test_inline_interface_return_types_are_nameable_by_their_file(config) -> None:
+    source = """#pragma version 0.4.3
+struct Point:
+    x: uint256
+
+interface IFoo:
+    def points() -> (DynArray[Point, 1], uint256): view
+
+implements: IFoo
+
+@external
+@view
+def points() -> (DynArray[Point, 2], uint256):
+    return [], 0
+
+@external
+@view
+def count(a: address) -> uint256:
+    points: DynArray[Point, 1] = []
+    n: uint256 = 0
+    points, n = staticcall IFoo(a).points()
+    return len(points)
+"""
+
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def points() -> (DynArray[Point, ...], uint256): view\n" in result.source
+    assert "    points, n = self.__vyupgrade_return_bound(staticcall IFoo(a).points())\n" in (
+        result.source
+    )
+    assert (
+        "def __vyupgrade_return_bound(returned: (DynArray[Point, 1], uint256))"
+        " -> (DynArray[Point, 1], uint256):"
+    ) in result.source
+    assert result.diagnostics == []
 
 
 def test_inline_interface_wildcard_and_call_sites(config) -> None:

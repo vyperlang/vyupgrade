@@ -256,6 +256,12 @@ def read(other: address) -> uint256:
 def assigned(other: address) -> uint256:
     value: Bytes[1] = staticcall IFoo(other).data()
     return len(value)
+
+@external
+@view
+def wide(other: address) -> uint256:
+    value: Bytes[10] = staticcall IFoo(other).data()
+    return len(value)
 """
     wildcard = apply_rules(
         source + assigned, Config(paths=(tmp_path,), target_version="0.5.0a3")
@@ -276,7 +282,7 @@ def assigned(other: address) -> uint256:
     kept = _deploy(path, wildcard.source, "0.5.0a3")
     changed = _deploy(path, widened.source, "0.5.0a3")
     for deployment in (original, kept):
-        for signature in ("read(address)", "assigned(address)"):
+        for signature in ("read(address)", "assigned(address)", "wide(address)"):
             with pytest.raises(TransactionFailed):
                 _call(deployment, signature, int(deployment[2], 16))
     assert _call(changed, "read(address)", int(changed[2], 16)) == 5

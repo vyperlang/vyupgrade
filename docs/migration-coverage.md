@@ -38,11 +38,13 @@ modern Python interpreter.
   Implementers of a `.vyi` module are found in the captured import closure.
   Integer-literal bounds and bounds named by an integer constant of the same
   file are compared; other mismatches are left to target validation. The
-  wildcard resolves at each call site to the expected type, so typed callers
-  decode and check returns as before. A call with no expected type (a discarded
-  result, a `len()` or comparison operand) would resolve it to an unbounded
-  length, so `VY125` passes it through an internal function typed with the old
-  bound; `VYD020` diagnoses such calls whose old type the caller cannot name.
+  wildcard resolves at each call site to the expected type, so a call that
+  expects the old type (an annotated assignment or `return` of that type)
+  decodes and checks returns as before. Any other call (a discarded result, a
+  `len()` or comparison operand, a wider target) would resolve it to a wider or
+  unbounded length, so `VY125` passes it through an internal function typed
+  with the old bound; `VYD020` diagnoses such calls whose old type the caller
+  cannot name.
   With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to
   the widest implementing bound, and `VYD019` diagnoses bounds that need it.
   Contracts that call through a widened interface accept return values up to

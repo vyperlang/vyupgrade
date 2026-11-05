@@ -688,6 +688,9 @@ VERSION_LEN: constant(uint256) = 1
 @external
 @view
 def version() -> String[VERSION_LEN]: ...
+
+@external
+def bump() -> String[VERSION_LEN]: ...
 """,
         encoding="utf-8",
     )
@@ -698,6 +701,10 @@ from . import IVersioned
 implements: IVersioned
 
 version: public(String[10])
+
+@external
+def bump() -> String[10]:
+    return self.version
 """,
         encoding="utf-8",
     )
@@ -716,6 +723,15 @@ def narrow(a: address) -> String[1]:
 @view
 def measured(a: address) -> uint256:
     return len(staticcall IVersioned(a).version())
+
+@external
+@view
+def wide(a: address) -> String[10]:
+    return staticcall IVersioned(a).version()
+
+@external
+def poke(a: address):
+    extcall IVersioned(a).bump()
 """,
         encoding="utf-8",
     )
@@ -732,6 +748,8 @@ def measured(a: address) -> uint256:
     migrated = reader.read_text(encoding="utf-8")
     assert "    v: String[1] = staticcall IVersioned(a).version()\n" in migrated
     assert "len(self.__vyupgrade_return_bound(staticcall IVersioned(a).version()))" in migrated
+    assert "return self.__vyupgrade_return_bound(staticcall IVersioned(a).version())" in migrated
+    assert "    self.__vyupgrade_return_bound(extcall IVersioned(a).bump())\n" in migrated
     files = json.loads(report.read_text())["files"]
     assert {file["validation"]["decision"]["status"] for file in files} == {"passed"}
 
