@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Added opt-in support for Vyper `0.5.0b1` as a source and target compiler.
-  Projects that pin `vyper==0.5.0b1` no longer fail the source compile with a
-  compiler coherence error when their pragma admits it.
+- Added opt-in support for Vyper `0.5.0b1` and `0.5.0b2` as source and target
+  compilers. Projects that pin either release no longer fail the source
+  compile with a compiler coherence error when their pragma admits it.
 
 ## 0.9.0 - 2026-10-30
 
