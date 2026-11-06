@@ -37,6 +37,9 @@ def _migrate(tmp_path: Path, module: str, source: str = SOURCE, **kwargs) -> Rew
         '"""\ninitializes: fake\nx: uint256\n@nonreentrant\n"""\n',
         "# x: uint256\n# @abstract\n",
         "X: constant(uint256) = 42\n",
+        "X: public(constant(uint256)) = 42\n",
+        "X: public(reentrant(constant(uint256))) = 42\n",
+        "X: reentrant(public(constant(uint256))) = 42\n",
         "X: constant(\n    uint256\n) = 42\n",
         "@internal\n@pure\ndef f() -> uint256:\n    x: uint256 = 42\n    return x\n",
         "struct S:\n    x: uint256\nevent E:\n    x: uint256\nflag F:\n    A\n",
@@ -71,6 +74,8 @@ def test_drop_stateless_initialization(tmp_path: Path, module: str) -> None:
         "initializes: child\n",
         "initializes: child[dep := state]\n",
         "#pragma nonreentrancy on\n@external\n@view\ndef f():\n    pass\n",
+        "@external\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n",
+        "@external\n@view\ndef f():\n    #pragma nonreentrancy on\n    pass\n",
         "unknown_new_syntax\n",
         "x: constant(\n",
     ],
@@ -188,3 +193,27 @@ def test_comments_strings_selection_and_idempotence(tmp_path: Path) -> None:
     assert result.source.count("initializes: lib") == 2
     assert not _migrate(tmp_path, "", result.source).fixes
     assert not _migrate(tmp_path, "", ignore=frozenset({"VY126"})).fixes
+
+
+@pytest.mark.parametrize("separator", ["\f", "\v", "\u2028"])
+def test_comment_line_separators_preserve_edit_offsets(tmp_path: Path, separator: str) -> None:
+    source = SOURCE.replace(
+        "from . import lib", f"# comment with{separator} a separator\nfrom . import lib"
+    )
+    result = _migrate(tmp_path, "", source)
+    assert result.source == source.replace("initializes: lib", "")
+    assert result.fixes[0].before == "initializes: lib"
+    assert result.fixes[0].line == 4
+
+
+def test_comments_inside_removed_declaration_are_preserved(tmp_path: Path) -> None:
+    source = SOURCE.replace(
+        "initializes: lib",
+        "initializes: (\n    # user comment\n    #pragma nonreentrancy on\n    lib\n)",
+    )
+    result = _migrate(tmp_path, "", source)
+    assert "initializes:" not in result.source
+    assert "# user comment" in result.source
+    assert "#pragma nonreentrancy on" in result.source
+    assert "# keep this comment" in result.source
+    assert not _migrate(tmp_path, "", result.source).fixes

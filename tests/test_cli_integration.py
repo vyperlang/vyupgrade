@@ -2428,17 +2428,19 @@ if "--version" in sys.argv:
 
 
 @pytest.mark.parametrize("source_version", ["0.4.3", "0.5.0b1"])
+@pytest.mark.parametrize("comment", ["", "# comment with\f a page break\n"])
+@pytest.mark.parametrize("constant_type", ["constant(uint256)", "public(constant(uint256))"])
 def test_real_compiler_stateless_initialization_upgrade(
-    tmp_path: Path, source_version: str
+    tmp_path: Path, source_version: str, comment: str, constant_type: str
 ) -> None:
     contract = tmp_path / "main.vy"
     contract.write_text(f"""#pragma version {source_version}
-from . import lib
+{comment}from . import lib
 initializes: lib
 exports: lib.answer
 """)
-    (tmp_path / "lib.vy").write_text("""#pragma version >=0.4.3
-ANSWER: constant(uint256) = 42
+    (tmp_path / "lib.vy").write_text(f"""#pragma version >=0.4.3
+ANSWER: {constant_type} = 42
 
 @external
 @pure
@@ -2530,7 +2532,12 @@ def test_real_compiler_nested_stateless_initializations_upgrade(tmp_path: Path) 
         ),
         ("@deploy\ndef __init__():\n    pass\n", "@deploy\ndef __init__():\n    lib.__init__()\n"),
         ("@internal\n@nonreentrant\ndef f():\n    pass\n", ""),
-        ("#pragma nonreentrancy on\n@external\n@view\ndef f():\n    pass\n", ""),
+        ("#pragma nonreentrancy on\n@external\n@view\ndef f():\n    pass\n", "exports: lib.f\n"),
+        ("@external\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n", "exports: lib.f\n"),
+        (
+            "@external\n@view\ndef f():\n    #pragma nonreentrancy on\n    pass\n",
+            "exports: lib.f\n",
+        ),
         (
             "@internal\n@abstract\ndef f() -> uint256:\n    ...\n",
             "@internal\n@override(lib)\ndef f() -> uint256:\n    return 42\n",

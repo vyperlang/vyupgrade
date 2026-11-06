@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..models import Config, Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
-from ..source import TextEdit, apply_edits, line_number
+from ..source import TextEdit, apply_edits, code_mask, line_number
 from ..versions import MigrationContext, infer_pragma
 
 if TYPE_CHECKING:
@@ -36,24 +36,25 @@ class _ModuleFacts:
 def _module_facts(source: str) -> _ModuleFacts:
     """Read logical top-level statements; unknown forms keep initialization intact."""
     facts = _ModuleFacts()
-    offsets = [0]
-    for line in source.splitlines(keepends=True):
-        offsets.append(offsets[-1] + len(line))
+    offsets = [0] + [index + 1 for index, char in enumerate(source) if char == "\n"]
     statement: list[tokenize.TokenInfo] = []
     decorators: set[str] = set()
     indent = 0
-    nonreentrancy = False
     try:
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+        # Vyper's pre-parser applies pragmas globally, including indented comments.
+        nonreentrancy = any(
+            token.type == tokenize.COMMENT
+            and re.fullmatch(r"#\s*pragma\s+nonreentrancy\s+on\s*", token.string)
+            for token in tokens
+        )
+        for token in tokens:
             if token.type == tokenize.INDENT:
                 indent += 1
             elif token.type == tokenize.DEDENT:
                 indent -= 1
-            elif indent:
+            elif indent or token.type == tokenize.COMMENT:
                 continue
-            elif token.type == tokenize.COMMENT:
-                if re.fullmatch(r"#\s*pragma\s+nonreentrancy\s+on\s*", token.string):
-                    nonreentrancy = True
             elif token.type == tokenize.NEWLINE:
                 if statement:
                     _record_statement(statement, offsets, decorators, nonreentrancy, facts)
@@ -112,8 +113,16 @@ def _record_statement(
                     offsets[tokens[-1].end[0] - 1] + tokens[-1].end[1],
                 )
             )
-        elif first not in {"exports", "implements"} and words[2:4] != ["constant", "("]:
+        elif first == "uses":
             facts.has_state = True
+        elif first not in {"exports", "implements"}:
+            annotation = words[2:]
+            for _ in range(2):
+                if annotation[:2] not in (["public", "("], ["reentrant", "("]):
+                    break
+                annotation = annotation[2:]
+            if annotation[:2] != ["constant", "("]:
+                facts.has_state = True
     elif first not in {"event", "struct", "flag", "enum", "interface", "error"}:
         # Module docstrings are harmless. Unknown executable declarations aren't.
         if len(tokens) != 1 or tokens[0].type != tokenize.STRING:
@@ -169,14 +178,20 @@ def _drop_stateless_initializations(
         ):
             continue
         before = context.source[declaration.start : declaration.end]
-        edits.append(TextEdit(declaration.start, declaration.end, ""))
+        # Comments can contain module-wide compiler pragmas, so retain them.
+        after = "".join(
+            char
+            for char, is_code in zip(before, code_mask(before), strict=True)
+            if not is_code or char in "\r\n"
+        )
+        edits.append(TextEdit(declaration.start, declaration.end, after))
         fixes.append(
             Fix(
                 "VY126",
                 line_number(context.source, declaration.start),
                 "removed initialization of a stateless concrete module",
                 before,
-                "",
+                after,
             )
         )
     return apply_edits(context.source, edits), fixes, []
