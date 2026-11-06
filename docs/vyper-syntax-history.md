@@ -104,12 +104,32 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0b2>
       self.token.address = empty(address)  # rejected
   ```
 
-- Constant initializers reject a non-constant index into a constant array.
-  [#5181](https://github.com/vyperlang/vyper/pull/5181)
+- Constant initializers reject runtime values reached through a constant: a
+  non-constant index into a constant array, or an address member such as
+  `.balance`. [#5181](https://github.com/vyperlang/vyper/pull/5181)
 
   ```vyper
   A: constant(uint256[2]) = [1, 2]
   B: constant(uint256) = A[block.number]  # rejected
+
+  OWNER: constant(address) = 0x1234567890123456789012345678901234567890
+  C: constant(uint256) = OWNER.balance  # rejected
+  ```
+
+- Flag members can be constant initializers and default argument values,
+  including flags imported from a module.
+  [#5181](https://github.com/vyperlang/vyper/pull/5181)
+
+  ```vyper
+  flag Roles:
+      ADMIN
+      USER
+
+  DEFAULT_ROLE: constant(Roles) = Roles.USER
+
+  @external
+  def grant(role: Roles = Roles.ADMIN):
+      pass
   ```
 
 - Interface functions cannot name a parameter `self`, in inline `interface`
@@ -1011,7 +1031,6 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0>
   After:
 
   ```vyper
-  from ethereum.ercs import IERC20
   from ethereum.ercs import IERC20
 
   token: IERC20

@@ -34,7 +34,10 @@ modern Python interpreter.
 - Unbounded sequences in more positions added: no-op. This is newly accepted
   source.
 - Assignment to non-location targets rejected: validation-only.
-- Non-constant indexes in constant initializers rejected: validation-only.
+- Runtime values in constant initializers rejected: validation-only. This
+  covers non-constant indexes and address members such as `.balance`.
+- Flag members as constant initializers and default arguments added: no-op.
+  This is newly accepted source.
 - Interface parameters named `self` rejected: validation-only.
 - Loops over list literals of unbounded types rejected: validation-only.
 
