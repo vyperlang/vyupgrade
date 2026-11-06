@@ -10,7 +10,6 @@ from ..rule_registry import Rule, RuleContext, crossing
 from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
     lhs_assigned_type as _lhs_assigned_type,
-    lhs_declared_type as _lhs_declared_type,
     literal_integer as _literal_integer,
     line_offsets,
 )
@@ -96,22 +95,16 @@ def _constant_exponent_literals_context(
     # Fold a whole literal before its children so an intermediate typed
     # max_value() cannot introduce overflow into a previously constant expression.
     folded_end = 0
-    for start, end in sorted(_arithmetic_spans(source), key=lambda span: (span[0], -span[1])):
+    for start, end, context in sorted(
+        _arithmetic_spans(source), key=lambda span: (span[0], -span[1])
+    ):
         if start < folded_end or not span_is_code(mask, start, end):
             continue
         expr = source[start:end]
         if re.fullmatch(r"1\s*\*\*\s*[0-9][0-9_]*", expr):
             replacement = "1"
         else:
-            line_start = source.rfind("\n", 0, start) + 1
-            prefix = source[line_start:start]
-            declared = re.search(rf":\s*({_SIGNED_INTEGER_TYPE})\s*=\s*\(*\s*$", prefix)
-            expected = (
-                declared.group(1) if declared
-                else _signed_boundary_return_context_type(source, start, facts)
-            )
-            if expected is None and _int128_literal_context(source, start, facts):
-                expected = "int128"
+            expected = _signed_boundary_context_type(source, start, context, facts)
             if expected is None:
                 continue
             replacement = _signed_boundary_literal_replacement(expected, expr)
@@ -176,8 +169,20 @@ def _constant_exponent_literals_context(
     return apply_edits(source, selected_edits), selected_fixes, []
 
 
-def _arithmetic_spans(source: str) -> Iterator[tuple[int, int]]:
-    """Match complete arithmetic subexpressions in Python-compatible Vyper statements."""
+# Operators whose operands share the result type, so a typed context reaches them.
+_TYPE_PRESERVING_OPS = (
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.BitAnd, ast.BitOr, ast.BitXor,
+    ast.USub, ast.UAdd, ast.Invert,
+)
+
+
+def _arithmetic_spans(source: str) -> Iterator[tuple[int, int, str | None]]:
+    """Match complete arithmetic subexpressions in Python-compatible Vyper statements.
+
+    Each span carries its typing context: an annotation (``"type:<name>"``),
+    ``"return"``, ``"assign"``, or ``None`` when the expression's type is not
+    determined by its statement (for example a call argument).
+    """
     if "**" not in source:
         return
     offsets = line_offsets(source)
@@ -192,7 +197,9 @@ def _arithmetic_spans(source: str) -> Iterator[tuple[int, int]]:
         yield from _statement_arithmetic_spans(statement, start)
 
 
-def _statement_arithmetic_spans(statement: str, start: int) -> Iterator[tuple[int, int]]:
+def _statement_arithmetic_spans(
+    statement: str, start: int
+) -> Iterator[tuple[int, int, str | None]]:
     try:
         tree = ast.parse(statement)
     except (SyntaxError, ValueError, RecursionError):
@@ -204,26 +211,58 @@ def _statement_arithmetic_spans(statement: str, start: int) -> Iterator[tuple[in
         prefix = lines[row - 1].encode("utf-8")[:byte_column]
         return start + offsets[row - 1] + len(prefix.decode("utf-8"))
 
+    contexts: dict[ast.AST, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, (ast.BinOp, ast.UnaryOp)):
-            yield offset(node.lineno, node.col_offset), offset(node.end_lineno, node.end_col_offset)
+        if isinstance(node, ast.Return) and node.value is not None:
+            contexts[node.value] = "return"
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            contexts[node.value] = f"type:{ast.unparse(node.annotation)}"
+        elif isinstance(node, (ast.Assign, ast.AugAssign)):
+            contexts[node.value] = "assign"
+        elif isinstance(node, ast.arguments):
+            positional = [*node.posonlyargs, *node.args]
+            pairs = [
+                *zip(positional[len(positional) - len(node.defaults) :], node.defaults, strict=True),
+                *zip(node.kwonlyargs, node.kw_defaults, strict=True),
+            ]
+            for arg, default in pairs:
+                if default is not None and arg.annotation is not None:
+                    contexts[default] = f"type:{ast.unparse(arg.annotation)}"
+        context = contexts.get(node)
+        if isinstance(node, ast.List) and context is not None:
+            # Static array literals: normalize_type() resolves ``T[N]`` to the element type.
+            contexts.update(dict.fromkeys(node.elts, context))
+        if not isinstance(node, (ast.BinOp, ast.UnaryOp)):
+            continue
+        if context is not None and isinstance(node.op, _TYPE_PRESERVING_OPS):
+            operands = (node.operand,) if isinstance(node, ast.UnaryOp) else (node.left, node.right)
+            for operand in operands:
+                contexts[operand] = context
+        yield (
+            offset(node.lineno, node.col_offset),
+            offset(node.end_lineno, node.end_col_offset),
+            context,
+        )
 
 
-def _int128_literal_context(source: str, index: int, facts: SourceFacts) -> bool:
+def _signed_boundary_context_type(
+    source: str, index: int, context: str | None, facts: SourceFacts
+) -> str | None:
+    """Return the signed integer type an expression is evaluated as, from its statement."""
+    if context is None:
+        return None
     line_no = line_number(source, index)
-    return_type = facts.return_type_at_line(line_no)
-    if normalize_type(return_type or "") == "int128":
-        return True
-    line_start = source.rfind("\n", 0, index) + 1
-    line_end = source.find("\n", index)
-    if line_end == -1:
-        line_end = len(source)
-    line = source[line_start:line_end]
-    vars_for_line = facts.vars_at_line(line_no)
-    return (
-        normalize_type(_lhs_declared_type(line) or _lhs_assigned_type(line, vars_for_line) or "")
-        == "int128"
-    )
+    if context.startswith("type:"):
+        expected = context.removeprefix("type:")
+    elif context == "return":
+        expected = facts.return_type_at_line(line_no) or ""
+    else:
+        line_start = source.rfind("\n", 0, index) + 1
+        line_end = source.find("\n", index)
+        line = source[line_start : len(source) if line_end == -1 else line_end]
+        expected = _lhs_assigned_type(line, facts.vars_at_line(line_no)) or ""
+    expected = normalize_type(expected)
+    return expected if re.fullmatch(_SIGNED_INTEGER_TYPE, expected) else None
 
 
 def _signed_boundary_literal_replacement(type_name: str, expr: str) -> str | None:
@@ -244,21 +283,6 @@ def _signed_boundary_literal_replacement(type_name: str, expr: str) -> str | Non
     if value == 2 ** (bits - 1) - 1:
         return f"max_value({type_name})"
     return str(value)
-
-
-def _signed_boundary_return_context_type(source: str, index: int, facts: SourceFacts) -> str | None:
-    line_no = line_number(source, index)
-    return_type = normalize_type(facts.return_type_at_line(line_no) or "")
-    if not re.fullmatch(_SIGNED_INTEGER_TYPE, return_type):
-        return None
-    line_start = source.rfind("\n", 0, index) + 1
-    line_end = source.find("\n", index)
-    if line_end == -1:
-        line_end = len(source)
-    line_prefix = source[line_start:index]
-    if re.search(r"\breturn\b", line_prefix):
-        return return_type
-    return None
 
 
 def _positive_exponent_max_literal(expr: str) -> str | None:

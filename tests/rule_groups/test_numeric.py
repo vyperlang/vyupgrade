@@ -980,6 +980,20 @@ def f(x: uint256, k: int256) -> uint256:
     assert apply_rules(result.source, config(target_version="0.4.3")).source == result.source
 
 
+def test_shift_builtin_resolves_parameters_of_one_line_function_body(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def f(x: uint256, k: int256) -> uint256: return shift(x, k)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "shift(" not in result.source
+    assert "if k < 0 else (x << convert(k, uint256))" in result.source
+    assert not any(diag.rule == "VYD012" for diag in result.diagnostics)
+
+
 def test_shift_builtin_dispatches_on_bit_255_of_uint256_runtime_amount(config) -> None:
     source = """# @version 0.3.10
 @external

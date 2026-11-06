@@ -230,3 +230,21 @@ PRICE_SIZE: constant(uint128) = 256 / (N_COINS - 1)
     result = apply_rules(source, config(target_version="0.4.3"))
 
     assert "PRICE_SIZE: constant(uint128) = 128" in result.source
+
+
+def test_signed_boundary_call_argument_ignores_enclosing_return_type(config) -> None:
+    source = """# @version 0.3.10
+@internal
+def g(x: uint256) -> int128:
+    return 0
+
+@external
+def f() -> int128:
+    a: int128 = self.g(2**127 - 2 + 1)
+    return self.g(2**127 - 2 + 1)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "max_value(int128)" not in result.source
+    assert result.source.count("self.g(2**127 - 2 + 1)") == 2

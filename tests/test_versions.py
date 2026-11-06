@@ -7,7 +7,7 @@ from vyupgrade.versions import (
     LEGACY_PRERELEASE_VERSIONS,
     MigrationContext,
     VyperVersion,
-    compiler_version_for_source_validation,
+    compiler_versions_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
     infer_pragma,
@@ -85,16 +85,21 @@ VERSION: constant(String[32]) = "# pragma version 0.4.2"
 
 def test_source_validation_compiler_uses_newest_target_bounded_version() -> None:
     assert minimum_satisfying_version(">0.3.10") == VyperVersion("0.4.0")
-    assert compiler_version_for_source_validation(">0.3.10", "0.4.3", "") == "0.4.3"
-    assert compiler_version_for_source_validation(">=0.4.0", "0.4.3", "") == "0.4.3"
-    assert compiler_version_for_source_validation(">=0.4.0", "0.5.0a2", "") == "0.5.0a2"
+    assert compiler_versions_for_source_validation(">0.3.10", "0.4.3") == ("0.4.3", "0.4.0")
+    assert compiler_versions_for_source_validation(">=0.4.0", "0.4.3") == ("0.4.3", "0.4.0")
+    assert compiler_versions_for_source_validation(">=0.4.0", "0.5.0a2") == ("0.5.0a2", "0.4.0")
+    # Rules gate on the floor, so a floor-only syntax repair still validates.
+    assert compiler_versions_for_source_validation(">=0.5.0b1", "0.5.0b2") == (
+        "0.5.0b2",
+        "0.5.0b1",
+    )
+    assert compiler_versions_for_source_validation("0.4.3", "0.5.0b2") == ("0.4.3",)
 
 
 def test_prerelease_targets_never_satisfy_bounded_stable_pragmas() -> None:
     assert known_versions_satisfying("^0.4.2") == (VyperVersion("0.4.2"), VyperVersion("0.4.3"))
     assert compiler_version_for_spec("<0.5.0") == "0.4.3"
-    source = "# pragma version ^0.4.2\n\n@external\ndef value() -> uint256:\n    return 1\n"
-    assert compiler_version_for_source_validation("^0.4.2", "0.5.0a3", source) == "0.4.3"
+    assert compiler_versions_for_source_validation("^0.4.2", "0.5.0a3")[0] == "0.4.3"
     # Legacy caret pragmas that name a prerelease still resolve to prereleases.
     assert minimum_satisfying_version("^0.1.0b14") == VyperVersion("0.1.0b14")
     assert VyperVersion("0.1.0b17") in known_versions_satisfying("^0.1.0b14")

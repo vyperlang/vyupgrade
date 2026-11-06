@@ -2595,6 +2595,42 @@ def test_real_compiler_keeps_required_module_initialization(
     assert root["validation"]["storage_layout_equal"] is True
 
 
+@pytest.mark.parametrize(
+    ("pragma", "modules", "declaration", "removed"),
+    [
+        # A broad pragma whose newest release rejects the initializer validates on its floor.
+        (">=0.5.0b1", {"lib.vy": "X: constant(uint256) = 1\n"}, "import lib\ninitializes: lib\n", True),
+        (
+            "0.5.0b1",
+            {"lib.vy": "import leaf\n", "leaf.vy": "X: constant(uint256) = 1\n"},
+            "import lib\ninitializes: lib.leaf\n",
+            True,
+        ),
+        ("0.5.0b1", {}, "import math\ninitializes: math\n", True),
+        (
+            "0.5.0b1",
+            {"lib.vy": "#pragma version >=0.5.0b1\rcounter: public(uint256)\r"},
+            "import lib\ninitializes: lib\nexports: lib.counter\n",
+            False,
+        ),
+    ],
+)
+def test_real_compiler_module_initialization_edge_cases(
+    tmp_path: Path, pragma: str, modules: dict[str, str], declaration: str, removed: bool
+) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text(f"#pragma version {pragma}\n{declaration}")
+    for name, module in modules.items():
+        (tmp_path / name).write_bytes(module.encode())
+    report = tmp_path / "report.json"
+
+    assert main([str(contract), "--target-version", "0.5.0b2", "--report-json", str(report)]) == 0
+    root = json.loads(report.read_text())["files"][0]
+    assert any(fix["rule"] == "VY126" for fix in root["fixes"]) == removed
+    assert root["validation"]["source_compile"] == root["validation"]["target_compile"] == "passed"
+    assert root["validation"]["storage_layout_equal"] is True
+
+
 def test_real_compiler_prefers_concrete_module_to_json_interface(tmp_path: Path) -> None:
     contract = tmp_path / "main.vy"
     contract.write_text("#pragma version 0.5.0b1\nimport lib\ninitializes: lib\n")
@@ -2663,3 +2699,15 @@ def test_real_compiler_parenthesized_initialization_and_stateless_module_forms(
     assert root["validation"]["abi_equal"] is True
     assert root["validation"]["method_ids_equal"] is True
     assert root["validation"]["storage_layout_equal"] is True
+
+
+def test_real_compiler_zero_bound_dynarray_storage_validates(tmp_path: Path) -> None:
+    contract = tmp_path / "main.vy"
+    # 0.5.0b2 accepts a zero bound; the legacy pragma spelling makes this a pragma-only write.
+    contract.write_text("# @version 0.5.0b2\nitems: DynArray[uint256, 0]\n")
+    report = tmp_path / "report.json"
+
+    assert main([str(contract), "--target-version", "0.5.0b2", "--write", "--report-json", str(report)]) == 0
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["storage_layout_equal"] is True
+    assert contract.read_text().startswith("#pragma version 0.5.0b2\n")

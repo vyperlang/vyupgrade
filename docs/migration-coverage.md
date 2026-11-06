@@ -30,8 +30,11 @@ modern Python interpreter.
   redundant initializations are removed when those modules are also being
   migrated. Concrete `.vy` modules take precedence over interface files. If
   an absolute import has multiple captured candidates, every candidate must
-  be stateless before removing its initialization. Unresolved modules and
-  unsupported declarations remain unchanged and are checked by target validation.
+  be stateless before removing its initialization. A dotted initializer such as
+  `initializes: lib.leaf` resolves `leaf` through the imports of `lib`, and the
+  compiler-bundled `math` module, which Vyper resolves before any search path,
+  is stateless. Unresolved modules and unsupported declarations remain
+  unchanged and are checked by target validation.
 - Positional custom error arguments rejected: validation-only. No rewrite yet
   converts positional arguments to keyword arguments, so target validation
   rejects them.

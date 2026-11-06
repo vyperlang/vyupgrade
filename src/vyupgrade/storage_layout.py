@@ -499,8 +499,11 @@ def _known_storage_width(
         element_width = _known_storage_width(
             dynarray_args[0],
         )
-        if length <= 0 or element_width == 0:
+        if length < 0 or element_width == 0:
             return 0
+        if length == 0:
+            # Vyper 0.5 accepts a zero bound and stores only the length slot.
+            return 1
         if element_width is None:
             return None
         return _checked_storage_width(1 + element_width * length)

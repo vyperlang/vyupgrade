@@ -27,9 +27,12 @@ def shift_call_bindings(source: str, facts: SourceFacts) -> dict[int, dict[str, 
                 pending = {name: typ}
             else:
                 scopes[-1][1][name] = typ
+        # A one-line compound statement (``def f(n: int256): return shift(x, n)``)
+        # keeps its body on the header row, so its pending bindings apply there too.
+        visible = [*(scope for _, scope in scopes), pending]
         for row in range(line, last.end[0] + 1):
             if "shift" in lines[row - 1]:
-                calls[row] = {name: typ for _, scope in scopes for name, typ in scope.items()}
+                calls[row] = {name: typ for scope in visible for name, typ in scope.items()}
     return calls
 
 
