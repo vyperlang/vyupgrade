@@ -13,6 +13,7 @@ return values and needs aggressive mode with VY125 ignored.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -52,8 +53,8 @@ _BOUND_ARGUMENT = {"String": 0, "Bytes": 0, "DynArray": 1}
 _TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|\S")
 _DEF_RE = re.compile(r"[ \t]*def[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\(")
 _RETURN_RE = re.compile(r"[ \t]*->[ \t]*(?P<type>[^:#\n]*[^:#\s])[ \t]*:")
-_IMPLEMENTS_RE = re.compile(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", re.MULTILINE)
-_DOTTED_NAME_RE = re.compile(r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*")
+_IMPLEMENTS_RE = re.compile(r"^[ \t]*implements[ \t]*:", re.MULTILINE)
+_MAX_IMPLEMENTS_LINES = 64
 _IMPORT_RE = re.compile(
     r"^[ \t]*import[ \t]+(?P<module>[A-Za-z_][\w.]*)(?:[ \t]+as[ \t]+(?P<alias>[A-Za-z_]\w*))?",
     re.MULTILINE,
@@ -378,14 +379,39 @@ def _implemented_modules(snapshot: ImportClosure, consumer: Path, source: str) -
 
 
 def _implemented_names(source: str) -> set[str]:
-    """Each `implements:` target as written, dotted names whole (`Types.IFoo`)."""
+    """Each `implements:` target as a dotted name (`Types.IFoo`), parsed as an expression."""
     mask = code_mask(source)
-    return {
-        re.sub(r"\s+", "", name.group())
-        for match in _IMPLEMENTS_RE.finditer(source)
-        if span_is_code(mask, match.start(1), match.end(1))
-        for name in _DOTTED_NAME_RE.finditer(match.group(1))
-    }
+    names: set[str] = set()
+    for match in _IMPLEMENTS_RE.finditer(source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
+        targets = _implements_expression(source, match.end())
+        if targets is not None:
+            elements = targets.elts if isinstance(targets, ast.Tuple) else [targets]
+            names.update(name for element in elements if (name := _dotted_name(element)))
+    return names
+
+
+def _implements_expression(source: str, start: int) -> ast.expr | None:
+    """Parse the expression after `implements:`, extending over continuation lines."""
+    end = start
+    for _ in range(_MAX_IMPLEMENTS_LINES):
+        newline = source.find("\n", end)
+        end = len(source) if newline < 0 else newline + 1
+        try:
+            return ast.parse(source[start:end].strip(), mode="eval").body
+        except SyntaxError:
+            if newline < 0:
+                return None
+    return None
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (base := _dotted_name(node.value)):
+        return f"{base}.{node.attr}"
+    return None
 
 
 def _imported_modules(source: str) -> dict[str, str]:
