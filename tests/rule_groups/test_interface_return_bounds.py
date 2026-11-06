@@ -1260,3 +1260,96 @@ def count(a: address) -> uint256:
     # The other function's callers can name its old type, so it still takes the wildcard.
     assert _wildcards(interface) == [("DynArray[Own, 1]", "DynArray[Own, ...]")]
     assert [diag.rule for diag in interface.diagnostics] == ["VYD020"]
+
+
+@pytest.mark.parametrize(
+    "implements",
+    ["Types.IFoo", "Types . IFoo", "(Types).IFoo", "(\n    Types  # remote\n).IFoo"],
+)
+def test_qualified_implements_leaves_a_same_named_local_interface_alone(
+    tmp_path: Path, config, implements: str
+) -> None:
+    reader = """#pragma version 0.4.3
+import Types
+
+interface IFoo:
+    def data() -> Bytes[1]: view
+
+implements: IMPLEMENTS
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    return staticcall IFoo(a).data()
+""".replace("IMPLEMENTS", implements)
+    files = {
+        "Types.vy": "#pragma version 0.4.3\ninterface IFoo:\n    def data() -> Bytes[5]: view\n",
+        "Reader.vy": reader,
+    }
+
+    result = _migrate(tmp_path, config, files, "Reader.vy")
+
+    assert "    def data() -> Bytes[1]: view\n" in result.source
+    assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
+
+
+def test_ambiguous_absolute_import_of_the_implemented_module_is_not_bound(
+    tmp_path: Path, config
+) -> None:
+    interface = "#pragma version 0.4.3\n@external\n@view\ndef data() -> Bytes[{n}]: ...\n"
+    files = {
+        "IFoo.vyi": interface.format(n=5),
+        "sub/IFoo.vyi": interface.format(n=1),
+        "sub/Impl.vy": """#pragma version 0.4.3
+import IFoo
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+""",
+    }
+
+    result = _migrate(tmp_path, config, files, "sub/IFoo.vyi")
+
+    assert "def data() -> Bytes[1]: ..." in result.source
+    assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
+
+
+def test_implementation_bound_may_use_a_constant_declared_later(tmp_path: Path, config) -> None:
+    implementation = IMPLEMENTATION.format(return_type="String[BOUND]").replace(
+        "implements: IFoo\n",
+        "implements: IFoo\n\nBOUND: constant(uint256) = OTHER + 1\nOTHER: constant(uint256) = 4\n",
+    )
+    files = {"IFoo.vyi": INTERFACE.format(return_type="String[1]"), "Foo.vy": implementation}
+
+    result = _migrate(tmp_path, config, files, "IFoo.vyi")
+
+    assert [(fix.before, fix.after) for fix in result.fixes if fix.rule == "VY125"] == [
+        ("String[1]", "String[...]")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("expression", "rules", "diagnostics"),
+    [("1 << 3", ["VY125"], []), ('len(b"abcde")', [], ["VYD021"])],
+)
+def test_implementation_bound_constant_is_folded_or_diagnosed(
+    tmp_path: Path, config, expression: str, rules: list[str], diagnostics: list[str]
+) -> None:
+    implementation = IMPLEMENTATION.format(return_type="String[N]").replace(
+        "implements: IFoo\n", f"implements: IFoo\n\nN: constant(uint256) = {expression}\n"
+    )
+    files = {"IFoo.vyi": INTERFACE.format(return_type="String[1]"), "Foo.vy": implementation}
+
+    result = _migrate(tmp_path, config, files, "IFoo.vyi")
+
+    assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == rules
+    assert [diagnostic.rule for diagnostic in result.diagnostics] == diagnostics

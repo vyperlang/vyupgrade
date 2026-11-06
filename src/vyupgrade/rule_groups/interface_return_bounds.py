@@ -185,7 +185,7 @@ def _interface_return_bounds(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    exceeded, unevaluated = _exceeded_returns(
+    exceeded, unevaluated = _compared_returns(
         source,
         rule_context.path,
         rule_context.config.source_snapshot,
@@ -202,7 +202,7 @@ def _interface_return_bounds(
     fixes: list[Fix] = []
     diagnostics = [
         Diagnostic(
-            "VYD020",
+            "VYD021",
             line_number(source, declaration.start),
             f"interface return bound {source[declaration.start : declaration.end]} was not "
             "compared with its implementations: a bound names a constant that could not be "
@@ -273,6 +273,16 @@ def _interface_return_bounds(
 
 
 def _exceeded_returns(
+    source: str,
+    path: Path | None,
+    snapshot: ImportClosure | None,
+    constants: dict[str, int],
+) -> list[_ExceededReturn]:
+    """Return declarations of ``source`` whose bounds an implementation exceeds."""
+    return _compared_returns(source, path, snapshot, constants)[0]
+
+
+def _compared_returns(
     source: str,
     path: Path | None,
     snapshot: ImportClosure | None,
@@ -385,17 +395,14 @@ def _module_implementation_returns(
 def _implemented_modules(snapshot: ImportClosure, consumer: Path, source: str) -> dict[Path, str]:
     """The implemented `.vyi` modules of ``consumer``, with the name it imports each as.
 
-    An import that more than one closure member could satisfy is skipped: which
-    one the compiler binds depends on its search order, not the closure's.
+    An import that more than one closure member could satisfy is skipped.
     """
     imports = _imported_modules(source)
-    implemented: dict[Path, str] = {}
-    for name in _implemented_names(source):
-        if name in imports:
-            candidates = snapshot.import_candidates(consumer, imports[name])
-            if len(candidates) == 1:
-                implemented[candidates[0]] = name
-    return implemented
+    return {
+        path: name
+        for name in _implemented_names(source)
+        if name in imports and (path := snapshot.resolve_import(consumer, imports[name]))
+    }
 
 
 def _implemented_names(source: str) -> set[str]:
@@ -408,7 +415,7 @@ def _implemented_names(source: str) -> set[str]:
         targets = _implements_expression(source, match.end())
         if targets is not None:
             elements = targets.elts if isinstance(targets, ast.Tuple) else [targets]
-            names.update(name for element in elements if (name := _dotted_name(element)))
+            names.update(name for element in elements if (name := _reference_name(element)))
     return names
 
 
@@ -426,10 +433,10 @@ def _implements_expression(source: str, start: int) -> ast.expr | None:
     return None
 
 
-def _dotted_name(node: ast.expr) -> str | None:
+def _reference_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
-    if isinstance(node, ast.Attribute) and (base := _dotted_name(node.value)):
+    if isinstance(node, ast.Attribute) and (base := _reference_name(node.value)):
         return f"{base}.{node.attr}"
     return None
 
@@ -1080,7 +1087,12 @@ def _literal_type(type_text: str, constants: dict[str, int]) -> str:
     """``type_text`` with its bounds as integer literals, without spaces."""
     _shape, bounds = _bounded_shape(type_text, constants)
     literal = apply_edits(
-        type_text, [TextEdit(bound.start, bound.end, str(bound.length)) for bound in bounds]
+        type_text,
+        [
+            TextEdit(bound.start, bound.end, str(bound.length))
+            for bound in bounds
+            if bound.length != _UNKNOWN
+        ],
     )
     return re.sub(r"\s+", "", literal)
 
@@ -1108,6 +1120,7 @@ RULES = (
             crossing("VY125", "0.5.0a2"),
             crossing("VYD019", "0.5.0a2"),
             crossing("VYD020", "0.5.0a2"),
+            crossing("VYD021", "0.5.0a2"),
         ),
     ),
 )

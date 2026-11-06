@@ -10,9 +10,10 @@
   bounds. A call whose type the caller cannot name, or whose receiver it
   cannot resolve, keeps the declared bound and is diagnosed with `VYD020`,
   so target validation blocks the write instead of dropping the check. Bounds
-  written as integer constants are compared too. Interfaces that no contract
-  in the closure implements are left alone. `VY124` widening now needs
-  `--aggressive` with `VY125` ignored.
+  named by integer constants defined with literal arithmetic are compared too,
+  and `VYD021` reports bounds whose constants can't be evaluated. Interfaces
+  that no contract in the closure implements are left alone. `VY124` widening
+  now needs `--aggressive` with `VY125` ignored.
 
 - Add `VY126` to remove redundant `initializes:` declarations for concrete
   stateless imported modules when upgrading across Vyper `0.5.0b2`.

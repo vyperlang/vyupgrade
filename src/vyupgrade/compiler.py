@@ -189,6 +189,16 @@ class ImportClosure:
     def files(self) -> tuple[Path, ...]:
         return self.roots + self.dependencies
 
+    def resolve_import(self, consumer: Path, module: str) -> Path | None:
+        """Return the member that dotted ``module`` names when ``consumer`` imports it.
+
+        Leading dots mark a relative import. An import that more than one member
+        could satisfy resolves to None: which one the compiler binds depends on its
+        search order, which differs from the order used to capture the closure.
+        """
+        candidates = self.import_candidates(consumer, module)
+        return candidates[0] if len(candidates) == 1 else None
+
     def import_candidates(self, consumer: Path, module: str) -> tuple[Path, ...]:
         """Every member that dotted ``module`` could name when ``consumer`` imports it."""
         consumer = consumer.resolve()
