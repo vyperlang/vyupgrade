@@ -142,6 +142,9 @@ class _Blockers:
 # Type tokens with length bounds blanked, and the bound lengths in order.
 _Shape = tuple[tuple[str | None, ...], list[int]]
 
+# Length of a bound named by a constant that can't be evaluated.
+_UNKNOWN = -1
+
 
 @dataclass(frozen=True)
 class _ExceededReturn:
@@ -182,7 +185,7 @@ def _interface_return_bounds(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    exceeded = _exceeded_returns(
+    exceeded, unevaluated = _exceeded_returns(
         source,
         rule_context.path,
         rule_context.config.source_snapshot,
@@ -197,7 +200,16 @@ def _interface_return_bounds(
     )
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    diagnostics: list[Diagnostic] = []
+    diagnostics = [
+        Diagnostic(
+            "VYD020",
+            line_number(source, declaration.start),
+            f"interface return bound {source[declaration.start : declaration.end]} was not "
+            "compared with its implementations: a bound names a constant that could not be "
+            "evaluated; if target validation reports an interface violation, review the bound",
+        )
+        for declaration in unevaluated
+    ]
     for exceeded_return in exceeded:
         declaration = exceeded_return.declaration
         declared = exceeded_return.declared
@@ -265,24 +277,32 @@ def _exceeded_returns(
     path: Path | None,
     snapshot: ImportClosure | None,
     constants: dict[str, int],
-) -> list[_ExceededReturn]:
-    """Return declarations of ``source`` whose bounds an implementation exceeds."""
+) -> tuple[list[_ExceededReturn], list[_ReturnDeclaration]]:
+    """Return declarations of ``source`` whose bounds an implementation exceeds,
+    and those an implementation matches but whose bounds can't all be evaluated."""
     declarations = _return_declarations(source, path)
     if not declarations:
-        return []
+        return [], []
     implementations = _implementation_returns_by_interface(source, path, snapshot, constants)
     exceeded: list[_ExceededReturn] = []
+    unevaluated: list[_ReturnDeclaration] = []
     for declaration in declarations:
         declared = source[declaration.start : declaration.end]
         shape, bounds = _bounded_shape(declared, constants)
-        widest = [bound.length for bound in bounds]
-        for returns in implementations.get(declaration.interface, ()):
-            implemented = returns.get(declaration.function)
-            if implemented is not None and implemented[0] == shape:
-                widest = [max(pair) for pair in zip(widest, implemented[1], strict=True)]
+        lengths = [bound.length for bound in bounds]
+        matched = [
+            implemented[1]
+            for returns in implementations.get(declaration.interface, ())
+            if (implemented := returns.get(declaration.function)) is not None
+            and implemented[0] == shape
+        ]
+        if matched and _UNKNOWN in [*lengths, *(length for m in matched for length in m)]:
+            unevaluated.append(declaration)
+            continue
+        widest = [max(column) for column in zip(lengths, *matched, strict=True)]
         if any(length > bound.length for bound, length in zip(bounds, widest, strict=True)):
             exceeded.append(_ExceededReturn(declaration, declared, bounds, widest))
-    return exceeded
+    return exceeded, unevaluated
 
 
 def _return_declarations(source: str, path: Path | None) -> list[_ReturnDeclaration]:
@@ -478,7 +498,8 @@ def _bounded_shape(
 ) -> tuple[tuple[str | None, ...], list[_Bound]]:
     """Split a type into its tokens with length bounds blanked, and those bounds.
 
-    A bound is an integer literal or a name in ``constants``.
+    A bound is an integer literal or a constant name; a name missing from
+    ``constants`` has length ``_UNKNOWN``.
     """
     tokens = list(_TYPE_TOKEN_RE.finditer(type_text))
     shape: list[str | None] = []
@@ -510,7 +531,12 @@ def _length_bound(
     constants: dict[str, int],
 ) -> int | None:
     text = tokens[index].group()
-    length = int(text) if text.isdigit() else constants.get(text)
+    if text.isdigit():
+        length: int | None = int(text)
+    elif text.isidentifier():
+        length = constants.get(text, _UNKNOWN)
+    else:
+        length = None
     if not open_groups or length is None:
         return None
     constructor, argument = open_groups[-1]

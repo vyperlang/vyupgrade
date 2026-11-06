@@ -125,6 +125,10 @@ def _eval_integer_ast(node: ast.AST, values: dict[str, int]) -> int | None:
     if isinstance(node.op, ast.Mod) and right != 0:
         remainder = abs(left) % abs(right)
         return -remainder if left < 0 else remainder
+    if isinstance(node.op, ast.LShift) and 0 <= right <= _MAX_BITS:
+        return _bounded(left << right)
+    if isinstance(node.op, ast.RShift) and right >= 0:
+        return left >> right
     if isinstance(node.op, ast.Pow) and 0 <= right <= _MAX_BITS:
         if abs(left) > 1 and left.bit_length() * right > _MAX_BITS:
             return None
