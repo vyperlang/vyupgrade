@@ -67,6 +67,15 @@ def _module_facts(source: str) -> _ModuleFacts:
     return facts
 
 
+def _expression(tokens: list[tokenize.TokenInfo]) -> ast.expr | None:
+    try:
+        return ast.parse(
+            tokenize.untokenize([(t.type, t.string) for t in tokens]), mode="eval"
+        ).body
+    except SyntaxError:
+        return None
+
+
 def _record_statement(
     tokens: list[tokenize.TokenInfo],
     offsets: list[int],
@@ -76,8 +85,14 @@ def _record_statement(
 ) -> None:
     words = [token.string for token in tokens]
     first = words[0]
-    if first == "@" and len(words) > 1:
-        decorators.add(words[1])
+    if first == "@":
+        decorator = _expression(tokens[1:])
+        if isinstance(decorator, ast.Call):
+            decorator = decorator.func
+        if isinstance(decorator, ast.Name):
+            decorators.add(decorator.id)
+        else:
+            facts.has_state = True
         return
     if first == "def" and len(words) > 1:
         if words[1] == "__init__" or decorators & {"abstract", "nonreentrant"}:
@@ -99,12 +114,7 @@ def _record_statement(
                 facts.imports[alias.asname or alias.name] = package + alias.name
     elif len(words) > 1 and words[1] == ":":
         if first == "initializes":
-            try:
-                annotation = ast.parse(
-                    tokenize.untokenize([(t.type, t.string) for t in tokens[2:]]), mode="eval"
-                ).body
-            except SyntaxError:
-                annotation = None
+            annotation = _expression(tokens[2:])
             module = annotation.id if isinstance(annotation, ast.Name) else None
             facts.initializes.append(
                 _Initialization(
@@ -116,12 +126,25 @@ def _record_statement(
         elif first == "uses":
             facts.has_state = True
         elif first not in {"exports", "implements"}:
-            annotation = words[2:]
+            end = words.index("=") if "=" in words else len(tokens)
+            annotation = _expression(tokens[2:end])
             for _ in range(2):
-                if annotation[:2] not in (["public", "("], ["reentrant", "("]):
+                if not (
+                    isinstance(annotation, ast.Call)
+                    and isinstance(annotation.func, ast.Name)
+                    and annotation.func.id in {"public", "reentrant"}
+                    and len(annotation.args) == 1
+                    and not annotation.keywords
+                ):
                     break
-                annotation = annotation[2:]
-            if annotation[:2] != ["constant", "("]:
+                annotation = annotation.args[0]
+            if not (
+                isinstance(annotation, ast.Call)
+                and isinstance(annotation.func, ast.Name)
+                and annotation.func.id == "constant"
+                and len(annotation.args) == 1
+                and not annotation.keywords
+            ):
                 facts.has_state = True
     elif first not in {"event", "struct", "flag", "enum", "interface", "error"}:
         # Module docstrings are harmless. Unknown executable declarations aren't.
@@ -139,27 +162,54 @@ class _InitializationAnalysis:
         self, consumer: Path, binding: str, imports: dict[str, str], visiting: set[Path]
     ) -> bool:
         module = imports.get(binding)
-        path = self.snapshot.resolve_import(consumer, module) if module is not None else None
-        if path is None or path.suffix != ".vy" or path in visiting:
+        if module is None:
             return False
-        source = self.snapshot.contents[path].decode("utf-8")
-        facts = _module_facts(source)
-        if facts.has_state:
+        paths = self._module_candidates(consumer, module)
+        if not paths:
             return False
-        if not facts.initializes:
-            return True
-        # A parent can lose its state only if its own declarations will be rewritten.
-        migrating = self.config.include_dependencies or path in self.snapshot.roots
-        crosses = MigrationContext.from_specs(
-            infer_pragma(source) or self.config.source_version, self.config.target_version
-        ).crosses("0.5.0b2")
-        if not migrating or not crosses:
-            return False
-        return all(
-            declaration.module is not None
-            and self.is_stateless(path, declaration.module, facts.imports, visiting | {path})
-            for declaration in facts.initializes
-        )
+        for path in paths:
+            if path in visiting:
+                return False
+            source = self.snapshot.contents[path].decode("utf-8")
+            facts = _module_facts(source)
+            if facts.has_state:
+                return False
+            if not facts.initializes:
+                continue
+            # A parent can lose its state only if its own declarations will be rewritten.
+            migrating = self.config.include_dependencies or path in self.snapshot.roots
+            crosses = MigrationContext.from_specs(
+                infer_pragma(source) or self.config.source_version, self.config.target_version
+            ).crosses("0.5.0b2")
+            if not migrating or not crosses:
+                return False
+            if not all(
+                declaration.module is not None
+                and self.is_stateless(path, declaration.module, facts.imports, visiting | {path})
+                for declaration in facts.initializes
+            ):
+                return False
+        return True
+
+    def _module_candidates(self, consumer: Path, module: str) -> set[Path]:
+        level = len(module) - len(module.lstrip("."))
+        if level:
+            base = consumer.resolve().parent
+            for _ in range(level - 1):
+                base = base.parent
+            bases = (base,)
+        else:
+            # Absolute imports use the entrypoint's search paths, not this module's
+            # parent. Capture may include several candidates; require all to be stateless.
+            bases = (*self.snapshot.import_roots, *(path.parent for path in self.snapshot.files))
+        parts = module.lstrip(".").split(".")
+        # Vyper tries concrete modules before .vyi or .json interfaces across all roots.
+        return {
+            path
+            for base in bases
+            if (path := base.joinpath(*parts).with_suffix(".vy").resolve())
+            in self.snapshot.contents
+        }
 
 
 def _drop_stateless_initializations(

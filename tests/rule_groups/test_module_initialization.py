@@ -37,6 +37,8 @@ def _migrate(tmp_path: Path, module: str, source: str = SOURCE, **kwargs) -> Rew
         '"""\ninitializes: fake\nx: uint256\n@nonreentrant\n"""\n',
         "# x: uint256\n# @abstract\n",
         "X: constant(uint256) = 42\n",
+        "X: (constant(uint256)) = 42\n",
+        "X: public((constant(uint256))) = 42\n",
         "X: public(constant(uint256)) = 42\n",
         "X: public(reentrant(constant(uint256))) = 42\n",
         "X: reentrant(public(constant(uint256))) = 42\n",
@@ -69,6 +71,9 @@ def test_drop_stateless_initialization(tmp_path: Path, module: str) -> None:
         "x: UnknownType\n",
         "@deploy\ndef __init__():\n    pass\n",
         "@external\n@nonreentrant\ndef f():\n    pass\n",
+        "@external\n@(nonreentrant)\ndef f():\n    pass\n",
+        "@(external)\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n",
+        "@internal\n@(abstract)\ndef f():\n    ...\n",
         "@external\n@abstract\ndef f():\n    ...\n",
         "uses: child\n",
         "initializes: child\n",
@@ -217,3 +222,44 @@ def test_comments_inside_removed_declaration_are_preserved(tmp_path: Path) -> No
     assert "#pragma nonreentrancy on" in result.source
     assert "# keep this comment" in result.source
     assert not _migrate(tmp_path, "", result.source).fixes
+
+
+def test_concrete_module_takes_precedence_over_json_interface(tmp_path: Path) -> None:
+    (tmp_path / "lib.json").write_text("[]")
+    (tmp_path / "lib.vyi").write_text("@external\n@view\ndef f(): ...\n")
+    result = _migrate(tmp_path, "X: constant(uint256) = 1\n")
+    assert [fix.rule for fix in result.fixes] == ["VY126"]
+
+
+@pytest.mark.parametrize(
+    ("root_source", "sibling_source", "removed"),
+    [
+        ("x: uint256\n", "X: constant(uint256) = 1\n", False),
+        ("X: constant(uint256) = 1\n", "x: uint256\n", False),
+        ("X: constant(uint256) = 1\n", "Y: constant(uint256) = 2\n", True),
+    ],
+)
+def test_absolute_import_requires_every_candidate_to_be_stateless(
+    tmp_path: Path, root_source: str, sibling_source: str, removed: bool
+) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "middle.vy").write_text("import leaf\ninitializes: leaf\n")
+    (tmp_path / "pkg" / "leaf.vy").write_text(sibling_source)
+    (tmp_path / "leaf.vy").write_text(root_source)
+    path = tmp_path / "main.vy"
+    source = "#pragma version 0.4.3\nfrom pkg import middle\ninitializes: middle\n"
+    path.write_text(source)
+    snapshot = resolve_import_closure({path: source})
+    result = apply_rules(
+        source,
+        Config(
+            paths=(path,),
+            target_version="0.5.0b2",
+            include_dependencies=True,
+            source_snapshot=snapshot,
+            select=frozenset({"VY126"}),
+        ),
+        path,
+    )
+    assert bool(result.fixes) == removed
+    assert ("initializes: middle" not in result.source) == removed

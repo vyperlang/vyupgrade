@@ -2429,7 +2429,15 @@ if "--version" in sys.argv:
 
 @pytest.mark.parametrize("source_version", ["0.4.3", "0.5.0b1"])
 @pytest.mark.parametrize("comment", ["", "# comment with\f a page break\n"])
-@pytest.mark.parametrize("constant_type", ["constant(uint256)", "public(constant(uint256))"])
+@pytest.mark.parametrize(
+    "constant_type",
+    [
+        "constant(uint256)",
+        "public(constant(uint256))",
+        "(constant(uint256))",
+        "public((constant(uint256)))",
+    ],
+)
 def test_real_compiler_stateless_initialization_upgrade(
     tmp_path: Path, source_version: str, comment: str, constant_type: str
 ) -> None:
@@ -2532,6 +2540,12 @@ def test_real_compiler_nested_stateless_initializations_upgrade(tmp_path: Path) 
         ),
         ("@deploy\ndef __init__():\n    pass\n", "@deploy\ndef __init__():\n    lib.__init__()\n"),
         ("@internal\n@nonreentrant\ndef f():\n    pass\n", ""),
+        ("@external\n@(nonreentrant)\ndef f():\n    pass\n", "exports: lib.f\n"),
+        ("@(external)\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n", "exports: lib.f\n"),
+        (
+            "@internal\n@(abstract)\ndef f() -> uint256:\n    ...\n",
+            "@internal\n@override(lib)\ndef f() -> uint256:\n    return 42\n",
+        ),
         ("#pragma nonreentrancy on\n@external\n@view\ndef f():\n    pass\n", "exports: lib.f\n"),
         ("@external\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n", "exports: lib.f\n"),
         (
@@ -2559,3 +2573,48 @@ def test_real_compiler_keeps_required_module_initialization(
     assert root["validation"]["source_compile"] == "passed"
     assert root["validation"]["target_compile"] == "passed"
     assert root["validation"]["storage_layout_equal"] is True
+
+
+def test_real_compiler_prefers_concrete_module_to_json_interface(tmp_path: Path) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text("#pragma version 0.5.0b1\nimport lib\ninitializes: lib\n")
+    (tmp_path / "lib.vy").write_text("#pragma version >=0.5.0b1\nX: constant(uint256) = 42\n")
+    (tmp_path / "lib.json").write_text("[]")
+    (tmp_path / "lib.vyi").write_text("@external\n@view\ndef f(): ...\n")
+    report = tmp_path / "report.json"
+
+    assert main([str(contract), "--target-version", "0.5.0b2", "--report-json", str(report)]) == 0
+    root = json.loads(report.read_text())["files"][0]
+    assert any(fix["rule"] == "VY126" for fix in root["fixes"])
+    assert root["validation"]["source_compile"] == root["validation"]["target_compile"] == "passed"
+    assert root["validation"]["storage_layout_equal"] is True
+
+
+def test_real_compiler_retains_initialization_with_shadowed_absolute_import(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "middle.vy").write_text(
+        "#pragma version 0.5.0b1\nimport leaf\ninitializes: leaf\n"
+    )
+    (tmp_path / "pkg" / "leaf.vy").write_text("#pragma version 0.5.0b1\nX: constant(uint256) = 1\n")
+    (tmp_path / "leaf.vy").write_text("#pragma version 0.5.0b1\nx: uint256\n")
+    contract = tmp_path / "main.vy"
+    contract.write_text("#pragma version 0.5.0b1\nfrom pkg import middle\ninitializes: middle\n")
+    report = tmp_path / "report.json"
+
+    assert (
+        main(
+            [
+                str(contract),
+                "--target-version",
+                "0.5.0b2",
+                "--include-dependencies",
+                "--report-json",
+                str(report),
+            ]
+        )
+        == 0
+    )
+    files = json.loads(report.read_text())["files"]
+    assert not any(fix["rule"] == "VY126" for file in files for fix in file["fixes"])
+    assert all(file["validation"]["target_compile"] == "passed" for file in files)
+    assert files[0]["validation"]["storage_layout_equal"] is True

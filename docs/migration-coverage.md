@@ -28,8 +28,10 @@ modern Python interpreter.
   state. Storage, transient and immutable variables, `uses:` declarations and
   retained `initializes:` declarations keep initialization intact. Nested
   redundant initializations are removed when those modules are also being
-  migrated. Unresolved modules and unsupported declarations remain unchanged
-  and are checked by target validation.
+  migrated. Concrete `.vy` modules take precedence over interface files. If
+  an absolute import has multiple captured candidates, every candidate must
+  be stateless before removing its initialization. Unresolved modules and
+  unsupported declarations remain unchanged and are checked by target validation.
 - Positional custom error arguments rejected: validation-only. No rewrite yet
   converts positional arguments to keyword arguments, so target validation
   rejects them.
