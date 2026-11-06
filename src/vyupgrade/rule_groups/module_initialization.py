@@ -6,6 +6,7 @@ import ast
 import io
 import re
 import tokenize
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -95,7 +96,10 @@ def _record_statement(
             facts.has_state = True
         return
     if first == "def" and len(words) > 1:
-        if words[1] == "__init__" or decorators & {"abstract", "nonreentrant"}:
+        if unicodedata.normalize("NFKC", words[1]) == "__init__" or decorators & {
+            "abstract",
+            "nonreentrant",
+        }:
             facts.has_state = True
         if nonreentrancy and "external" in decorators and not decorators & {"pure", "reentrant"}:
             facts.has_state = True
@@ -112,9 +116,10 @@ def _record_statement(
             package = "." * node.level + (node.module + "." if node.module else "")
             for alias in node.names:
                 facts.imports[alias.asname or alias.name] = package + alias.name
-    elif len(words) > 1 and words[1] == ":":
-        if first == "initializes":
-            annotation = _expression(tokens[2:])
+    elif ":" in words and isinstance(target := _expression(tokens[: words.index(":")]), ast.Name):
+        annotation_start = words.index(":") + 1
+        if target.id == "initializes":
+            annotation = _expression(tokens[annotation_start:])
             module = annotation.id if isinstance(annotation, ast.Name) else None
             facts.initializes.append(
                 _Initialization(
@@ -123,11 +128,11 @@ def _record_statement(
                     offsets[tokens[-1].end[0] - 1] + tokens[-1].end[1],
                 )
             )
-        elif first == "uses":
+        elif target.id == "uses":
             facts.has_state = True
-        elif first not in {"exports", "implements"}:
+        elif target.id not in {"exports", "implements"}:
             end = words.index("=") if "=" in words else len(tokens)
-            annotation = _expression(tokens[2:end])
+            annotation = _expression(tokens[annotation_start:end])
             for _ in range(2):
                 if not (
                     isinstance(annotation, ast.Call)
@@ -148,7 +153,8 @@ def _record_statement(
                 facts.has_state = True
     elif first not in {"event", "struct", "flag", "enum", "interface", "error"}:
         # Module docstrings are harmless. Unknown executable declarations aren't.
-        if len(tokens) != 1 or tokens[0].type != tokenize.STRING:
+        docstring = _expression(tokens)
+        if not isinstance(docstring, ast.Constant) or not isinstance(docstring.value, str):
             facts.has_state = True
     decorators.clear()
 

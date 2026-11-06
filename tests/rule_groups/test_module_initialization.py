@@ -34,9 +34,12 @@ def _migrate(tmp_path: Path, module: str, source: str = SOURCE, **kwargs) -> Rew
     "module",
     [
         "",
+        '("Library documentation")\n',
+        '"Library " "documentation"\n',
         '"""\ninitializes: fake\nx: uint256\n@nonreentrant\n"""\n',
         "# x: uint256\n# @abstract\n",
         "X: constant(uint256) = 42\n",
+        "(X): constant(uint256) = 42\n",
         "X: (constant(uint256)) = 42\n",
         "X: public((constant(uint256))) = 42\n",
         "X: public(constant(uint256)) = 42\n",
@@ -70,6 +73,7 @@ def test_drop_stateless_initialization(tmp_path: Path, module: str) -> None:
         "x: HashMap[address, uint256]\n",
         "x: UnknownType\n",
         "@deploy\ndef __init__():\n    pass\n",
+        "@deploy\ndef __\uff49\uff4e\uff49\uff54__():\n    pass\n",
         "@external\n@nonreentrant\ndef f():\n    pass\n",
         "@external\n@(nonreentrant)\ndef f():\n    pass\n",
         "@(external)\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n",
@@ -131,6 +135,7 @@ def test_version_crossing(
         "from pkg import lib as alias\ninitializes: alias\n",
         "import pkg.lib as alias\ninitializes: alias\n",
         "import lib\ninitializes: (\n    lib\n)\n",
+        "import lib\n(initializes): lib\n",
     ],
 )
 def test_resolve_import_aliases(tmp_path: Path, declaration: str) -> None:

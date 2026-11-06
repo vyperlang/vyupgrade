@@ -2539,6 +2539,10 @@ def test_real_compiler_nested_stateless_initializations_upgrade(tmp_path: Path) 
             "@deploy\ndef __init__():\n    lib.__init__()\n",
         ),
         ("@deploy\ndef __init__():\n    pass\n", "@deploy\ndef __init__():\n    lib.__init__()\n"),
+        (
+            "@deploy\ndef __\uff49\uff4e\uff49\uff54__():\n    pass\n",
+            "@deploy\ndef __init__():\n    lib.__init__()\n",
+        ),
         ("@internal\n@nonreentrant\ndef f():\n    pass\n", ""),
         ("@external\n@(nonreentrant)\ndef f():\n    pass\n", "exports: lib.f\n"),
         ("@(external)\n@view\ndef f():\n    pass\n#pragma nonreentrancy on\n", "exports: lib.f\n"),
@@ -2618,3 +2622,28 @@ def test_real_compiler_retains_initialization_with_shadowed_absolute_import(tmp_
     assert not any(fix["rule"] == "VY126" for file in files for fix in file["fixes"])
     assert all(file["validation"]["target_compile"] == "passed" for file in files)
     assert files[0]["validation"]["storage_layout_equal"] is True
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "(X): constant(uint256) = 42\n",
+        '("Library documentation")\nX: constant(uint256) = 42\n',
+        '"Library " "documentation"\nX: constant(uint256) = 42\n',
+    ],
+)
+def test_real_compiler_parenthesized_initialization_and_stateless_module_forms(
+    tmp_path: Path, module: str
+) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text("#pragma version 0.4.3\nimport lib\n(initializes): lib\n")
+    (tmp_path / "lib.vy").write_text("#pragma version >=0.4.3\n" + module)
+    report = tmp_path / "report.json"
+
+    assert main([str(contract), "--target-version", "0.5.0b2", "--report-json", str(report)]) == 0
+    root = json.loads(report.read_text())["files"][0]
+    assert any(fix["rule"] == "VY126" for fix in root["fixes"])
+    assert root["validation"]["source_compile"] == root["validation"]["target_compile"] == "passed"
+    assert root["validation"]["abi_equal"] is True
+    assert root["validation"]["method_ids_equal"] is True
+    assert root["validation"]["storage_layout_equal"] is True
