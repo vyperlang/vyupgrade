@@ -29,7 +29,6 @@ from ..analysis import (
     unwrap_type,
 )
 from ..models import Diagnostic, Fix
-from ..rule_helpers import implemented_interface_names
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
@@ -53,6 +52,8 @@ _BOUND_ARGUMENT = {"String": 0, "Bytes": 0, "DynArray": 1}
 _TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|\S")
 _DEF_RE = re.compile(r"[ \t]*def[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\(")
 _RETURN_RE = re.compile(r"[ \t]*->[ \t]*(?P<type>[^:#\n]*[^:#\s])[ \t]*:")
+_IMPLEMENTS_RE = re.compile(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", re.MULTILINE)
+_DOTTED_NAME_RE = re.compile(r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*")
 _IMPORT_RE = re.compile(
     r"^[ \t]*import[ \t]+(?P<module>[A-Za-z_][\w.]*)(?:[ \t]+as[ \t]+(?P<alias>[A-Za-z_]\w*))?",
     re.MULTILINE,
@@ -339,7 +340,7 @@ def _implementation_returns_by_interface(
     if _is_interface_module(path):
         return {None: list(_module_implementation_returns(path, snapshot))}
     returns = _implementation_returns(parse_source_facts(source), constants)
-    return {name: [returns] for name in implemented_interface_names(source)}
+    return {name: [returns] for name in _implemented_names(source)}
 
 
 def _module_implementation_returns(
@@ -361,12 +362,29 @@ def _module_implementation_returns(
 
 
 def _implemented_modules(snapshot: ImportClosure, consumer: Path, source: str) -> dict[Path, str]:
-    """The implemented `.vyi` modules of ``consumer``, with the name it imports each as."""
+    """The implemented `.vyi` modules of ``consumer``, with the name it imports each as.
+
+    An import that more than one closure member could satisfy is skipped: which
+    one the compiler binds depends on its search order, not the closure's.
+    """
     imports = _imported_modules(source)
+    implemented: dict[Path, str] = {}
+    for name in _implemented_names(source):
+        if name in imports:
+            candidates = snapshot.import_candidates(consumer, imports[name])
+            if len(candidates) == 1:
+                implemented[candidates[0]] = name
+    return implemented
+
+
+def _implemented_names(source: str) -> set[str]:
+    """Each `implements:` target as written, dotted names whole (`Types.IFoo`)."""
+    mask = code_mask(source)
     return {
-        path: name
-        for name in implemented_interface_names(source)
-        if name in imports and (path := snapshot.resolve_import(consumer, imports[name]))
+        re.sub(r"\s+", "", name.group())
+        for match in _IMPLEMENTS_RE.finditer(source)
+        if span_is_code(mask, match.start(1), match.end(1))
+        for name in _DOTTED_NAME_RE.finditer(match.group(1))
     }
 
 
