@@ -75,16 +75,14 @@ modern Python interpreter.
   implementing external function or public getter returns a wider bound.
   Implementers of a `.vyi` module are found in the captured import closure.
   Integer-literal bounds and bounds named by an integer constant of the same
-  file are compared; other mismatches are left to target validation. The
+  file are compared; other mismatches are left to target validation.
+  Interfaces that no contract in the closure implements keep their bounds. The
   wildcard resolves at each call site to the expected type, so a call that
   expects the old type (an annotated assignment or `return` of that type)
-  decodes and checks returns as before. Any other call (a discarded result, a
-  `len()` or comparison operand, a wider target) would resolve it to a wider or
-  unbounded length, so `VY125` passes it through an internal function typed
-  with the old bound; `VYD020` diagnoses such calls whose old type the caller
-  cannot name, and calls of a rewritten method whose receiver it cannot
-  resolve. A type the caller can name through an import is qualified with the
-  caller's import name.
+  decodes and checks returns as before. A call that expects a wider type
+  checks against that type, and one with no expected type (a discarded result,
+  a `len()` or comparison operand) resolves it to an unbounded length. Callers
+  are not rewritten.
   With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to
   the widest implementing bound, and `VYD019` diagnoses bounds that need it.
   Contracts that call through a widened interface accept return values up to
