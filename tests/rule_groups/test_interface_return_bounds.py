@@ -1133,3 +1133,130 @@ def measured(a: address) -> uint256:
         in result.source
     )
     assert "def __vyupgrade_return_bound(returned: String[1]) -> String[1]:" in result.source
+
+
+BRANCH_LOCAL_INTERFACES = """#pragma version 0.4.3
+interface Narrow:
+    def data() -> Bytes[1]: view
+
+interface Wide:
+    def data() -> Bytes[5]: view
+
+implements: Narrow
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"hello"
+
+@external
+@view
+def read(a: address, narrow: bool) -> uint256:
+    if narrow:
+        ref: Narrow = Narrow(a)
+        return len(staticcall ref.data())
+    else:
+        ref: Wide = Wide(a)
+        return len(staticcall ref.data())
+"""
+
+
+def test_branch_local_receivers_are_typed_by_their_own_declaration(config) -> None:
+    result = apply_rules(BRANCH_LOCAL_INTERFACES, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[...]: view\n" in result.source
+    assert (
+        "        ref: Narrow = Narrow(a)\n"
+        "        return len(self.__vyupgrade_return_bound(staticcall ref.data()))\n"
+    ) in result.source
+    assert (
+        "        ref: Wide = Wide(a)\n        return len(staticcall ref.data())\n"
+    ) in result.source
+    assert result.diagnostics == []
+
+
+UNRESOLVED_INLINE_RECEIVER = """#pragma version 0.4.3
+interface IFoo:
+    def data() -> Bytes[1]: view
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"hello"
+
+@external
+@view
+def read(a: address) -> Bytes[5]:
+    return staticcall self.refs(a)[0].data()
+
+@internal
+@view
+def refs(a: address) -> DynArray[IFoo, 1]:
+    return [IFoo(a)]
+"""
+
+
+def test_unresolved_receiver_keeps_the_old_bound(config) -> None:
+    result = apply_rules(UNRESOLVED_INLINE_RECEIVER, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[1]: view\n" in result.source
+    assert "__vyupgrade" not in result.source
+    assert _wildcards(result) == []
+    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
+        ("VYD020", 3),
+        ("VYD020", 15),
+    ]
+    assert "kept interface return bound Bytes[1]" in result.diagnostics[0].message
+
+
+def test_unresolved_receiver_in_another_contract_keeps_the_vyi_bound(
+    tmp_path: Path, config
+) -> None:
+    files = {
+        "IFoo.vyi": INTERFACE.format(return_type="String[1]"),
+        "Foo.vy": IMPLEMENTATION.format(return_type="String[5]"),
+        "Caller.vy": """#pragma version 0.4.3
+import IFoo
+
+@external
+@view
+def read(a: address) -> String[5]:
+    return staticcall self.tokens(a)[0].version()
+
+@internal
+@view
+def tokens(a: address) -> DynArray[IFoo, 1]:
+    return [IFoo(a)]
+""",
+    }
+
+    interface = _migrate(tmp_path, config, files, "IFoo.vyi")
+    caller = _migrate(tmp_path, config, files, "Caller.vy")
+
+    assert "def version() -> String[1]: ..." in interface.source
+    assert _wildcards(interface) == []
+    assert [diag.rule for diag in interface.diagnostics] == ["VYD020"]
+    assert "Caller.vy:7" in interface.diagnostics[0].message
+    assert "__vyupgrade" not in caller.source
+    assert [(diag.rule, diag.line) for diag in caller.diagnostics] == [("VYD020", 7)]
+
+
+def test_unnameable_old_type_keeps_the_vyi_bound(tmp_path: Path, config) -> None:
+    caller = """#pragma version 0.4.3
+import IFoo
+
+@external
+@view
+def count(a: address) -> uint256:
+    return len(staticcall IFoo(a).points())
+"""
+    files = {**STRUCT_FILES, "Caller.vy": caller}
+
+    interface = _migrate(tmp_path, config, files, "IFoo.vyi")
+
+    assert "def points() -> DynArray[common.Point, 1]: ..." in interface.source
+    # The other function's callers can name its old type, so it still takes the wildcard.
+    assert _wildcards(interface) == [("DynArray[Own, 1]", "DynArray[Own, ...]")]
+    assert [diag.rule for diag in interface.diagnostics] == ["VYD020"]

@@ -92,6 +92,51 @@ class _Bound:
     length: int
 
 
+@dataclass(frozen=True)
+class _Origin:
+    """An interface function declaration: its file, inline interface, and name."""
+
+    path: Path | None
+    interface: str | None
+    function: str
+
+
+@dataclass(frozen=True)
+class _Rewritten:
+    """A wildcard return as one caller sees it: its old type, nameable by that caller or not."""
+
+    old_type: str
+    nameable: bool
+    origin: _Origin
+
+
+@dataclass(frozen=True)
+class _CallSite:
+    """A call whose return the wildcard would change: ``rewritten`` is None if unresolved."""
+
+    method: str
+    start: int
+    end: int
+    line: int
+    call: str
+    rewritten: _Rewritten | None
+
+
+@dataclass
+class _Blockers:
+    """Calls anywhere in the closure that the wildcard would leave unchecked.
+
+    An unresolved receiver may be any interface with the method, so it blocks
+    every declaration of that name; an unnameable old type blocks its origin.
+    """
+
+    methods: dict[str, str]
+    origins: dict[_Origin, str]
+
+    def reason(self, origin: _Origin) -> str | None:
+        return self.origins.get(origin) or self.methods.get(origin.function)
+
+
 # Type tokens with length bounds blanked, and the bound lengths in order.
 _Shape = tuple[tuple[str | None, ...], list[int]]
 
@@ -142,6 +187,12 @@ def _interface_return_bounds(
         integer_constant_values(source, rule_context.config.source_ast),
     )
     use_wildcard = rule_context.is_enabled("VY125")
+    snapshot = rule_context.config.source_snapshot
+    blockers = (
+        _closure_blockers(snapshot, rule_context.path, source, exceeded)
+        if use_wildcard and exceeded
+        else None
+    )
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -149,6 +200,19 @@ def _interface_return_bounds(
         declaration = exceeded_return.declaration
         declared = exceeded_return.declared
         line = line_number(source, declaration.start)
+        if blockers is not None and (
+            reason := blockers.reason(_origin(rule_context.path, declaration))
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    "VYD020",
+                    line,
+                    f"kept interface return bound {declared} because {reason}; the wildcard "
+                    "would stop checking that call's return, so give the call a typed receiver "
+                    "or the old return type",
+                )
+            )
+            continue
         if use_wildcard:
             wildcard = exceeded_return.wildcard()
             edits.append(TextEdit(declaration.start, declaration.end, wildcard))
@@ -185,7 +249,9 @@ def _interface_return_bounds(
             )
         )
     if use_wildcard:
-        call_edits, call_fixes, call_diagnostics = _bound_untyped_calls(rule_context, exceeded)
+        call_edits, call_fixes, call_diagnostics = _bound_untyped_calls(
+            rule_context, exceeded, blockers
+        )
         edits.extend(call_edits)
         fixes.extend(call_fixes)
         diagnostics.extend(call_diagnostics)
@@ -411,28 +477,99 @@ def _length_bound(
 
 
 def _bound_untyped_calls(
-    rule_context: RuleContext, local_exceeded: list[_ExceededReturn]
+    rule_context: RuleContext,
+    local_exceeded: list[_ExceededReturn],
+    local_blockers: _Blockers | None,
 ) -> tuple[list[TextEdit], list[Fix], list[Diagnostic]]:
     """Pass calls through a function typed with the old bound unless they expect that type.
 
     The wildcard resolves to the type the call site expects: an unbounded length
     where there is none, and a wider bound where the site expects a wider type.
+    Calls that cannot keep the old bound are diagnosed; their declaration keeps it.
     """
     source = rule_context.source
-    rewritten = _rewritten_returns(rule_context, local_exceeded)
-    # A receiver that is not resolved may be any rewritten interface in the closure.
-    methods = {method for _interface, method in rewritten} | _closure_rewritten_methods(
-        rule_context.config.source_snapshot
-    )
-    if not methods:
-        return [], [], []
-    facts = rule_context.facts
-    mask = rule_context.code_mask
+    path = rule_context.path
+    snapshot = rule_context.config.source_snapshot
     constants = integer_constant_values(source, rule_context.config.source_ast)
+    sites = _call_sites(source, path, snapshot, constants, local_exceeded)
+    if not sites:
+        return [], [], []
+    blockers = local_blockers or _closure_blockers(snapshot, path, source, local_exceeded)
+    taken_names = code_identifiers(source)
+    bound_functions: dict[str, str] = {}
+    edits: list[TextEdit] = []
+    fixes: list[Fix] = []
+    diagnostics: list[Diagnostic] = []
+    for site in sites:
+        if site.rewritten is None:
+            diagnostics.append(
+                Diagnostic(
+                    "VYD020",
+                    site.line,
+                    f"cannot resolve the receiver of {site.call}; every {site.method}() "
+                    "interface return bound it may call keeps its old bound",
+                )
+            )
+            continue
+        old_type = site.rewritten.old_type
+        if not site.rewritten.nameable:
+            diagnostics.append(
+                Diagnostic(
+                    "VYD020",
+                    site.line,
+                    f"{site.call} does not expect its old return type {old_type}, which this "
+                    "file cannot name, so the interface keeps its old bound",
+                )
+            )
+            continue
+        if blockers.reason(site.rewritten.origin) is not None:
+            continue
+        name = bound_functions.get(old_type)
+        if name is None:
+            name = _unique_name(_BOUND_FUNCTION, taken_names)
+            bound_functions[old_type] = name
+        edits.append(TextEdit(site.start, site.start, f"self.{name}("))
+        edits.append(TextEdit(site.end, site.end, ")"))
+        fixes.append(
+            Fix(
+                "VY125",
+                site.line,
+                f"kept the {old_type} return bound of a call that does not expect it",
+                site.call,
+                f"self.{name}({site.call})",
+            )
+        )
+    if bound_functions:
+        parameter = _unique_name("returned", taken_names)
+        definitions = "".join(
+            f"\n\n@internal\n@pure\ndef {name}({parameter}: {old_type}) -> {old_type}:\n"
+            f"    return {parameter}\n"
+            for old_type, name in bound_functions.items()
+        )
+        separator = "" if source.endswith("\n") else "\n"
+        edits.append(TextEdit(len(source), len(source), separator + definitions))
+    return edits, fixes, diagnostics
+
+
+def _call_sites(
+    source: str,
+    path: Path | None,
+    snapshot: ImportClosure | None,
+    constants: dict[str, int],
+    local_exceeded: list[_ExceededReturn],
+) -> list[_CallSite]:
+    """Calls in ``source`` that do not expect the old type of a return that exceeds its bound."""
+    rewritten = _rewritten_returns(source, path, snapshot, local_exceeded)
+    # A receiver that is not resolved may be any rewritten interface in the closure.
+    methods = {method for _interface, method in rewritten} | _closure_rewritten_methods(snapshot)
+    if not methods:
+        return []
+    facts = parse_source_facts(source)
+    mask = code_mask(source)
     modules = _imported_modules(source)
     module_casts = {
         f"{binding}.{interface}"
-        for binding, (_path, module_source) in _imported_sources(rule_context).items()
+        for binding, (_path, module_source) in _imported_sources(source, path, snapshot).items()
         for interface in _declared_interfaces(module_source)
     }
     # Interfaces this file names; a receiver of any other type is not resolved.
@@ -445,11 +582,7 @@ def _bound_untyped_calls(
         match.group("name"): _literal_type(match.group("type"), {})
         for match in _BOUND_FUNCTION_RE.finditer(code)
     }
-    taken_names = code_identifiers(source)
-    bound_functions: dict[str, str] = {}
-    edits: list[TextEdit] = []
-    fixes: list[Fix] = []
-    diagnostics: list[Diagnostic] = []
+    sites: list[_CallSite] = []
     for match in _METHOD_CALL_RE.finditer(code):
         method = match.group("method")
         if method not in methods or not span_is_code(mask, match.start(), match.start() + 1):
@@ -463,62 +596,74 @@ def _bound_untyped_calls(
         if old is None and target_type in known_interfaces:
             continue
         call_start, call_end = _call_span(source, mask, start, method_close + 1)
-        call = source[call_start:call_end]
-        line = line_number(source, start)
-        if old is None:
-            diagnostics.append(
-                Diagnostic(
-                    "VYD020",
-                    line,
-                    f"cannot resolve the receiver of {call}; if it is an interface whose "
-                    f"{method}() return bound became the wildcard, give the result its old type",
-                )
+        site = _CallSite(
+            method,
+            call_start,
+            call_end,
+            line_number(source, start),
+            source[call_start:call_end],
+            old,
+        )
+        if old is not None:
+            wrapper = _wrapping_function(source, mask, call_start)
+            if wrapper is not None and existing_functions.get(wrapper) == _literal_type(
+                old.old_type, {}
+            ):
+                continue
+            expected = _expected_type(source, call_start, call_end, facts)
+            if expected is not None and _literal_type(expected, constants) == _literal_type(
+                old.old_type, {}
+            ):
+                continue
+        sites.append(site)
+    return sites
+
+
+def _closure_blockers(
+    snapshot: ImportClosure | None,
+    path: Path | None,
+    source: str,
+    local_exceeded: list[_ExceededReturn],
+) -> _Blockers:
+    """Calls in this file and every closure contract that a wildcard would leave unchecked."""
+    own = path.resolve() if path is not None else None
+    consumers: dict[Path | None, str] = {own: source}
+    if snapshot is not None:
+        for member, content in snapshot.contents.items():
+            if member.suffix == ".vy" and member != own:
+                consumers[member] = content.decode("utf-8")
+    blockers = _Blockers({}, {})
+    for consumer, consumer_source in consumers.items():
+        exceeded = (
+            local_exceeded
+            if consumer == own
+            else _exceeded_returns(
+                consumer_source, consumer, snapshot, integer_constant_values(consumer_source)
             )
-            continue
-        old_type, nameable = old
-        wrapper = _wrapping_function(source, mask, call_start)
-        if wrapper is not None and existing_functions.get(wrapper) == _literal_type(old_type, {}):
-            continue
-        expected = _expected_type(source, call_start, call_end, facts)
-        if expected is not None and _literal_type(expected, constants) == _literal_type(
-            old_type, {}
+        )
+        for site in _call_sites(
+            consumer_source,
+            consumer,
+            snapshot,
+            integer_constant_values(consumer_source),
+            exceeded,
         ):
-            continue
-        if not nameable:
-            diagnostics.append(
-                Diagnostic(
-                    "VYD020",
-                    line,
-                    f"{call} does not expect its old return type {old_type}, so the "
-                    "wildcard bound no longer checks it; give the result that type",
+            where = f"{site.call} at {consumer.name if consumer else 'line'}:{site.line}"
+            if site.rewritten is None:
+                blockers.methods.setdefault(site.method, f"the receiver of {where} is unresolved")
+            elif not site.rewritten.nameable:
+                blockers.origins.setdefault(
+                    site.rewritten.origin, f"{where} cannot name the old return type"
                 )
-            )
-            continue
-        name = bound_functions.get(old_type)
-        if name is None:
-            name = _unique_name(_BOUND_FUNCTION, taken_names)
-            bound_functions[old_type] = name
-        edits.append(TextEdit(call_start, call_start, f"self.{name}("))
-        edits.append(TextEdit(call_end, call_end, ")"))
-        fixes.append(
-            Fix(
-                "VY125",
-                line,
-                f"kept the {old_type} return bound of a call that does not expect it",
-                call,
-                f"self.{name}({call})",
-            )
-        )
-    if bound_functions:
-        parameter = _unique_name("returned", taken_names)
-        definitions = "".join(
-            f"\n\n@internal\n@pure\ndef {name}({parameter}: {old_type}) -> {old_type}:\n"
-            f"    return {parameter}\n"
-            for old_type, name in bound_functions.items()
-        )
-        separator = "" if source.endswith("\n") else "\n"
-        edits.append(TextEdit(len(source), len(source), separator + definitions))
-    return edits, fixes, diagnostics
+    return blockers
+
+
+def _origin(path: Path | None, declaration: _ReturnDeclaration) -> _Origin:
+    return _Origin(
+        path.resolve() if path is not None else None,
+        declaration.interface,
+        declaration.function,
+    )
 
 
 def _call_span(source: str, mask: list[bool], start: int, end: int) -> tuple[int, int]:
@@ -558,7 +703,7 @@ def _call_target(
         start, name = _dotted_name(source, mask, end)
         if name == "self" or name in modules:
             return None
-        return start, _expression_type(name, end, source, facts)
+        return start, _expression_type(name, end, source, mask, facts)
     return _receiver_type(source, mask, end, facts, module_casts)
 
 
@@ -571,7 +716,7 @@ def _receiver_type(
     """
     if source[end - 1 : end] != ")":
         start, name = _dotted_name(source, mask, end)
-        return start, _expression_type(name, end, source, facts)
+        return start, _expression_type(name, end, source, mask, facts)
     receiver_open = find_matching_open(source, end - 1)
     if receiver_open is None:
         return end, ""
@@ -664,18 +809,70 @@ def _wrapping_function(source: str, mask: list[bool], call_start: int) -> str | 
     return callee[5:] if callee.startswith("self.") else None
 
 
-def _expression_type(expression: str, offset: int, source: str, facts: SourceFacts) -> str:
+def _expression_type(
+    expression: str, offset: int, source: str, mask: list[bool], facts: SourceFacts
+) -> str:
     if not expression or expression[0] in ".[":
         return ""
-    target_type = (
-        facts.storage_vars.get(expression[5:]) if expression.startswith("self.") else None
-    ) or infer_expr_type(expression, facts.vars_at_line(line_number(source, offset)), facts)
+    if expression.startswith("self.") and expression[5:] in facts.storage_vars:
+        return normalize_type(facts.storage_vars[expression[5:]]).strip("() ")
+    variables = facts.vars_at_line(line_number(source, offset))
+    root = re.match(r"[A-Za-z_][A-Za-z0-9_]*", expression)
+    # A local is typed by its declaration in scope, not the function's last one.
+    # Vyper forbids shadowing, so a name without one in scope is a parameter.
+    if root is not None and root.group() != "self":
+        scoped = _scoped_local_type(source, mask, offset, root.group())
+        if scoped is not None:
+            variables[root.group()] = scoped
+    target_type = infer_expr_type(expression, variables, facts)
     return normalize_type(target_type or "").strip("() ")
 
 
+def _scoped_local_type(source: str, mask: list[bool], offset: int, name: str) -> str | None:
+    """Type of the declaration of ``name`` in a block enclosing ``offset``.
+
+    Walks back through the function: a line indented deeper than the innermost
+    enclosing block so far belongs to a block that has already closed.
+    """
+    declaration = re.compile(
+        rf"(?:for[ \t]+)?{re.escape(name)}[ \t]*:[ \t]*(?P<type>.+?)[ \t]*(?:=|[ \t]in[ \t]|$)"
+    )
+    line_start = source.rfind("\n", 0, offset) + 1
+    current = source[line_start:].split("\n", 1)[0]
+    limit = len(current) - len(current.lstrip())
+    for line_end in _line_starts_before(source, line_start):
+        start = source.rfind("\n", 0, line_end - 1) + 1
+        line = source[start : line_end - 1]
+        stripped = line.strip()
+        if not stripped or not line_starts_in_code(source, mask, start):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent > limit:
+            continue
+        found = declaration.match(stripped.split("#", 1)[0].rstrip())
+        if found is not None:
+            return found.group("type")
+        if indent < limit:
+            if _DEF_RE.match(line):
+                # Parameters are typed once for the whole function.
+                return None
+            limit = indent
+    return None
+
+
+def _line_starts_before(source: str, offset: int) -> Iterator[int]:
+    """Start offsets of the lines before the one at ``offset``, nearest first."""
+    while offset > 0:
+        yield offset
+        offset = source.rfind("\n", 0, offset - 1) + 1
+
+
 def _rewritten_returns(
-    rule_context: RuleContext, local_exceeded: list[_ExceededReturn]
-) -> dict[tuple[str, str], tuple[str, bool]]:
+    source: str,
+    path: Path | None,
+    snapshot: ImportClosure | None,
+    local_exceeded: list[_ExceededReturn],
+) -> dict[tuple[str, str], _Rewritten]:
     """Old return type, and whether this file can name it, by (interface, function).
 
     Covers this file's inline interfaces, whose types are in scope, and the
@@ -684,15 +881,13 @@ def _rewritten_returns(
     are written as this file names them.
     """
     rewritten = {
-        (exceeded.declaration.interface, exceeded.declaration.function): (
-            exceeded.literal(),
-            True,
+        (exceeded.declaration.interface, exceeded.declaration.function): _Rewritten(
+            exceeded.literal(), True, _origin(path, exceeded.declaration)
         )
         for exceeded in local_exceeded
         if exceeded.declaration.interface is not None
     }
-    snapshot = rule_context.config.source_snapshot
-    imported = _imported_sources(rule_context)
+    imported = _imported_sources(source, path, snapshot)
     if snapshot is None or not imported:
         return rewritten
     bindings = {module_path: binding for binding, (module_path, _source) in imported.items()}
@@ -702,8 +897,11 @@ def _rewritten_returns(
         ):
             interface = exceeded.declaration.interface
             key = binding if interface is None else f"{binding}.{interface}"
-            rewritten[(key, exceeded.declaration.function)] = _caller_type(
+            old_type, nameable = _caller_type(
                 exceeded.literal(), binding, module_source, module_path, snapshot, bindings
+            )
+            rewritten[(key, exceeded.declaration.function)] = _Rewritten(
+                old_type, nameable, _origin(module_path, exceeded.declaration)
             )
     return rewritten
 
@@ -726,15 +924,15 @@ def _closure_rewritten_methods(snapshot: ImportClosure | None) -> set[str]:
     return methods
 
 
-def _imported_sources(rule_context: RuleContext) -> dict[str, tuple[Path, str]]:
+def _imported_sources(
+    source: str, path: Path | None, snapshot: ImportClosure | None
+) -> dict[str, tuple[Path, str]]:
     """Path and source of each closure module this file imports, by binding."""
-    snapshot = rule_context.config.source_snapshot
-    path = rule_context.path
     if snapshot is None or path is None or path.resolve() not in snapshot.contents:
         return {}
     return {
         binding: (module_path, snapshot.contents[module_path].decode("utf-8"))
-        for binding, module in _imported_modules(rule_context.source).items()
+        for binding, module in _imported_modules(source).items()
         if (module_path := snapshot.resolve_import(path, module)) is not None
     }
 

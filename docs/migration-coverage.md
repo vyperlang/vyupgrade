@@ -81,10 +81,13 @@ modern Python interpreter.
   decodes and checks returns as before. Any other call (a discarded result, a
   `len()` or comparison operand, a wider target) would resolve it to a wider or
   unbounded length, so `VY125` passes it through an internal function typed
-  with the old bound; `VYD020` diagnoses such calls whose old type the caller
-  cannot name, and calls of a rewritten method whose receiver it cannot
-  resolve. A type the caller can name through an import is qualified with the
-  caller's import name.
+  with the old bound. A call anywhere in the closure whose old type its caller
+  cannot name, or whose receiver it cannot resolve (any interface declaring
+  that method), would lose the check, so the declaration keeps its bound and
+  `VYD020` diagnoses both the call and the declaration; target validation then
+  fails until the call is given a typed receiver or the old return type. Local
+  receivers are typed by their declaration in an enclosing block. A type the
+  caller can name through an import is qualified with the caller's import name.
   With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to
   the widest implementing bound, and `VYD019` diagnoses bounds that need it.
   Contracts that call through a widened interface accept return values up to
