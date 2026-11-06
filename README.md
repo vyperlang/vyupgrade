@@ -209,6 +209,11 @@ Rewrites carry a `VY###` code and diagnostics a `VYD###` code. Where the source
 intent cannot be proven safe, the change is reported as a manual-review
 diagnostic instead of being applied.
 
+- For upgrades crossing `0.5.0b2`, `VY126` removes `initializes:` of
+  stateless imported modules using the captured import closure. Stateful or
+  abstract modules, unresolved imports and ambiguous imports with any stateful
+  candidate retain their declarations. Use
+  `--include-dependencies` to migrate redundant nested initializations too.
 - [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
   change mapped to a rule, diagnostic, explicit no-op, or validation-only
   behavior.
