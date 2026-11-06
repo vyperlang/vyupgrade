@@ -22,9 +22,14 @@ modern Python interpreter.
 
 ### v0.5.0b2
 
-- Stateless modules cannot be initialized: validation-only. No rewrite yet
-  drops an `initializes:` declaration for a stateless module, so target
-  validation rejects it.
+- Stateless modules cannot be initialized: `VY126` drops `initializes: lib`
+  when the captured imported `.vy` module has no state, constructor, abstract
+  method or nonreentrancy lock. Constants and `exports:` alone do not count as
+  state. Storage, transient and immutable variables, `uses:` declarations and
+  retained `initializes:` declarations keep initialization intact. Nested
+  redundant initializations are removed when those modules are also being
+  migrated. Unresolved modules and unsupported declarations remain unchanged
+  and are checked by target validation.
 - Positional custom error arguments rejected: validation-only. No rewrite yet
   converts positional arguments to keyword arguments, so target validation
   rejects them.

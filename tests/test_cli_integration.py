@@ -2425,3 +2425,130 @@ if "--version" in sys.argv:
     )
     executable.chmod(0o755)
     return executable
+
+
+@pytest.mark.parametrize("source_version", ["0.4.3", "0.5.0b1"])
+def test_real_compiler_stateless_initialization_upgrade(
+    tmp_path: Path, source_version: str
+) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text(f"""#pragma version {source_version}
+from . import lib
+initializes: lib
+exports: lib.answer
+""")
+    (tmp_path / "lib.vy").write_text("""#pragma version >=0.4.3
+ANSWER: constant(uint256) = 42
+
+@external
+@pure
+def answer() -> uint256:
+    return ANSWER
+""")
+    report = tmp_path / "report.json"
+    output = tmp_path / "upgraded"
+    arguments = [
+        str(contract),
+        "--target-version",
+        "0.5.0b2",
+        "--include-dependencies",
+        "--closure-output",
+        str(output),
+        "--write",
+        "--report-json",
+        str(report),
+    ]
+
+    # The target compiler rejects the original declaration before the rewrite.
+    rejected = compile_target_source(
+        contract,
+        contract.read_text().replace(source_version, "0.5.0b2"),
+        Config(paths=(contract,), target_version="0.5.0b2"),
+    )
+    assert rejected.status == "failed"
+    assert rejected.error_type == "InitializerException"
+    assert "stateless concrete module" in rejected.stderr
+    assert main(arguments) == 0
+    data = json.loads(report.read_text())
+    root = next(file for file in data["files"] if Path(file["path"]) == contract)
+    assert any(fix["rule"] == "VY126" for fix in root["fixes"])
+    validation = root["validation"]
+    assert validation["source_compile"] == "passed"
+    assert validation["target_compile"] == "passed"
+    assert validation["abi_equal"] is True
+    assert validation["method_ids_equal"] is True
+    assert validation["storage_layout_equal"] is True
+    assert "initializes:" not in (output / "main.vy").read_text()
+    assert "exports: lib.answer" in (output / "main.vy").read_text()
+
+
+def test_real_compiler_nested_stateless_initializations_upgrade(tmp_path: Path) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text(
+        "#pragma version 0.4.3\nimport middle\ninitializes: middle\nexports: middle.answer\n"
+    )
+    (tmp_path / "middle.vy").write_text(
+        "#pragma version 0.4.3\nimport leaf\ninitializes: leaf\nexports: leaf.answer\n"
+    )
+    (tmp_path / "leaf.vy").write_text(
+        "#pragma version 0.4.3\n@external\n@pure\ndef answer() -> uint256:\n    return 42\n"
+    )
+    report = tmp_path / "report.json"
+    output = tmp_path / "upgraded"
+
+    assert (
+        main(
+            [
+                str(contract),
+                "--target-version",
+                "0.5.0b2",
+                "--include-dependencies",
+                "--closure-output",
+                str(output),
+                "--write",
+                "--report-json",
+                str(report),
+            ]
+        )
+        == 0
+    )
+    data = json.loads(report.read_text())
+    assert sum(fix["rule"] == "VY126" for file in data["files"] for fix in file["fixes"]) == 2
+    assert all(file["validation"]["target_compile"] == "passed" for file in data["files"])
+    assert "initializes:" not in (output / "main.vy").read_text()
+    assert "initializes:" not in (output / "middle.vy").read_text()
+
+
+@pytest.mark.parametrize(
+    ("module", "body"),
+    [
+        ("value: uint256\n", ""),
+        ("value: transient(uint256)\n", ""),
+        (
+            "VALUE: immutable(uint256)\n@deploy\ndef __init__():\n    VALUE = 42\n",
+            "@deploy\ndef __init__():\n    lib.__init__()\n",
+        ),
+        ("@deploy\ndef __init__():\n    pass\n", "@deploy\ndef __init__():\n    lib.__init__()\n"),
+        ("@internal\n@nonreentrant\ndef f():\n    pass\n", ""),
+        ("#pragma nonreentrancy on\n@external\n@view\ndef f():\n    pass\n", ""),
+        (
+            "@internal\n@abstract\ndef f() -> uint256:\n    ...\n",
+            "@internal\n@override(lib)\ndef f() -> uint256:\n    return 42\n",
+        ),
+    ],
+)
+def test_real_compiler_keeps_required_module_initialization(
+    tmp_path: Path, module: str, body: str
+) -> None:
+    contract = tmp_path / "main.vy"
+    source = "#pragma version 0.5.0b1\nimport lib\ninitializes: lib\n" + body
+    contract.write_text(source)
+    (tmp_path / "lib.vy").write_text("#pragma version >=0.5.0b1\n" + module)
+    report = tmp_path / "report.json"
+
+    assert main([str(contract), "--target-version", "0.5.0b2", "--report-json", str(report)]) == 0
+    root = json.loads(report.read_text())["files"][0]
+    assert not any(fix["rule"] == "VY126" for fix in root["fixes"])
+    assert root["validation"]["source_compile"] == "passed"
+    assert root["validation"]["target_compile"] == "passed"
+    assert root["validation"]["storage_layout_equal"] is True

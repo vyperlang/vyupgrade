@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `VY126` to remove redundant `initializes:` declarations for concrete
+  stateless imported modules when upgrading across Vyper `0.5.0b2`.
+
 - Added opt-in support for Vyper `0.5.0b1` and `0.5.0b2` as source and target
   compilers. Projects that pin either release no longer fail the source
   compile with a compiler coherence error when their pragma admits it.
