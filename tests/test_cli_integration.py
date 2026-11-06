@@ -678,7 +678,7 @@ def version() -> String[{len(version)}]:
     ] == [("String[1]", rewritten)]
 
 
-def test_alpha_target_wildcard_leaves_typed_callers_compiling(
+def test_alpha_target_wildcard_keeps_narrow_and_untyped_callers_compiling(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "IVersioned.vyi").write_text(
@@ -709,7 +709,8 @@ def bump() -> String[10]:
         encoding="utf-8",
     )
     reader = tmp_path / "Reader.vy"
-    reader_source = """#pragma version ~=0.4.3
+    reader.write_text(
+        """#pragma version ~=0.4.3
 from . import IVersioned
 
 @external
@@ -720,14 +721,20 @@ def narrow(a: address) -> String[1]:
 
 @external
 @view
+def measured(a: address) -> uint256:
+    return len(staticcall IVersioned(a).version())
+
+@external
+@view
 def wide(a: address) -> String[10]:
     return staticcall IVersioned(a).version()
 
 @external
-def poke(a: address) -> String[1]:
-    return extcall IVersioned(a).bump()
-"""
-    reader.write_text(reader_source, encoding="utf-8")
+def poke(a: address):
+    extcall IVersioned(a).bump()
+""",
+        encoding="utf-8",
+    )
     report = tmp_path / "report.json"
 
     code = main(
@@ -738,7 +745,11 @@ def poke(a: address) -> String[1]:
     assert "def version() -> String[...]: ..." in (tmp_path / "IVersioned.vyi").read_text(
         encoding="utf-8"
     )
-    assert reader.read_text(encoding="utf-8") == reader_source.replace("~=0.4.3", "0.5.0a3")
+    migrated = reader.read_text(encoding="utf-8")
+    assert "    v: String[1] = staticcall IVersioned(a).version()\n" in migrated
+    assert "len(self.__vyupgrade_return_bound(staticcall IVersioned(a).version()))" in migrated
+    assert "return self.__vyupgrade_return_bound(staticcall IVersioned(a).version())" in migrated
+    assert "    self.__vyupgrade_return_bound(extcall IVersioned(a).bump())\n" in migrated
     files = json.loads(report.read_text())["files"]
     assert {file["validation"]["decision"]["status"] for file in files} == {"passed"}
 

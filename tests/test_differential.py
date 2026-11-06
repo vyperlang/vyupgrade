@@ -231,7 +231,7 @@ def conditional_value(x: uint256, n: uint256) -> uint256:
         ]
 
 
-def test_interface_wildcard_follows_callers_and_widening_changes_accepted_returns(tmp_path):
+def test_interface_wildcard_keeps_and_widening_changes_accepted_returns(tmp_path):
     source = """#pragma version 0.4.3
 interface IFoo:
     def data() -> Bytes[1]: view
@@ -242,10 +242,15 @@ implements: IFoo
 @view
 def data() -> Bytes[5]:
     return b"abcde"
+
+@external
+@view
+def read(other: address) -> uint256:
+    return len(staticcall IFoo(other).data())
 """
-    # Widening breaks the narrow caller at compile time, so only the wildcard
-    # migration gets the typed callers.
-    typed = """
+    # Widening breaks this narrower caller at compile time, so only the wildcard
+    # migration gets it.
+    assigned = """
 @external
 @view
 def assigned(other: address) -> uint256:
@@ -258,16 +263,12 @@ def wide(other: address) -> uint256:
     value: Bytes[10] = staticcall IFoo(other).data()
     return len(value)
 """
-    measured = """
-@external
-@view
-def read(other: address) -> uint256:
-    return len(staticcall IFoo(other).data())
-"""
-    wildcard = apply_rules(source + typed, Config(paths=(tmp_path,), target_version="0.5.0a3"))
+    wildcard = apply_rules(
+        source + assigned, Config(paths=(tmp_path,), target_version="0.5.0a3")
+    )
     assert "def data() -> Bytes[...]: view" in wildcard.source
     widened = apply_rules(
-        source + measured,
+        source,
         Config(
             paths=(tmp_path,),
             target_version="0.5.0a3",
@@ -277,15 +278,13 @@ def read(other: address) -> uint256:
     )
     assert "def data() -> Bytes[5]: view" in widened.source
     path = tmp_path / "entry.vy"
-    original = _deploy(path, source + typed, "0.4.3")
+    original = _deploy(path, source + assigned, "0.4.3")
     kept = _deploy(path, wildcard.source, "0.5.0a3")
     changed = _deploy(path, widened.source, "0.5.0a3")
-    for deployment, signature in ((original, "assigned(address)"), (original, "wide(address)"),
-                                  (kept, "assigned(address)")):
-        with pytest.raises(TransactionFailed):
-            _call(deployment, signature, int(deployment[2], 16))
-    # The wildcard resolves to the caller's type, so the wider caller now accepts it.
-    assert _call(kept, "wide(address)", int(kept[2], 16)) == 5
+    for deployment in (original, kept):
+        for signature in ("read(address)", "assigned(address)", "wide(address)"):
+            with pytest.raises(TransactionFailed):
+                _call(deployment, signature, int(deployment[2], 16))
     assert _call(changed, "read(address)", int(changed[2], 16)) == 5
 
 
