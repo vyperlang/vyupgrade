@@ -28,6 +28,10 @@ def test_known_versions_cover_full_supported_range() -> None:
     assert is_supported_source_version("0.5.0a1")
     assert is_supported_source_version("0.5.0a2")
     assert is_supported_source_version("0.5.0a3")
+    assert is_supported_source_version("0.5.0b1")
+    assert is_supported_source_version("0.5.0b2")
+    # 0.5.0a4 was never published; dev builds between a3 and b1 report it.
+    assert not is_supported_source_version("0.5.0a4")
     assert not is_supported_source_version("0.1.0")
     assert not is_supported_source_version("0.1.0b18")
     assert not is_supported_source_version("0.1.0b99")
@@ -40,6 +44,10 @@ def test_known_versions_cover_full_supported_range() -> None:
     assert VyperVersion("0.5.0a2") in known_versions_satisfying(">=0.5.0a1,<0.6.0")
     assert VyperVersion("0.5.0a3") in known_versions_satisfying(">=0.5.0a1,<0.6.0")
     assert VyperVersion("0.5.0a3") in known_versions_satisfying("^0.5.0a1")
+    assert VyperVersion("0.5.0b1") in known_versions_satisfying(">=0.4.3")
+    assert VyperVersion("0.5.0b1") in known_versions_satisfying("^0.5.0a1")
+    assert VyperVersion("0.5.0b2") in known_versions_satisfying(">=0.4.3")
+    assert VyperVersion("0.5.0b2") in known_versions_satisfying("^0.5.0a1")
     # PEP 440 exclusive ordered bounds reject prereleases of the bound itself,
     # exactly like the compiler's own pragma check does.
     assert known_versions_satisfying(">=0.5.0a1,<0.5.0") == ()
@@ -56,6 +64,8 @@ def test_version_specs_pick_lowest_satisfying_source_floor() -> None:
     assert compiler_version_for_spec(">=0.5.0a1,<0.6.0") == "0.5.0a1"
     assert compiler_version_for_spec("<=0.5.0a2") == "0.5.0a2"
     assert compiler_version_for_spec("<=0.5.0a3") == "0.5.0a3"
+    assert compiler_version_for_spec("<=0.5.0b1") == "0.5.0b1"
+    assert compiler_version_for_spec("<=0.5.0b2") == "0.5.0b2"
     assert compiler_version_for_spec("~=0.4") == "0.4.0"
     assert compiler_version_for_spec("~=0.4.2") == "0.4.2"
     assert compiler_version_for_spec("==0.4.*") == "0.4.3"
@@ -109,3 +119,4 @@ def test_default_evm_versions_track_vyper_release_defaults() -> None:
     assert default_evm_version_for_spec("0.3.10") == "shanghai"
     assert default_evm_version_for_spec("0.4.2") == "cancun"
     assert default_evm_version_for_spec("0.4.3") == "prague"
+    assert default_evm_version_for_spec("0.5.0b2") == "prague"

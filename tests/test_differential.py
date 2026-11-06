@@ -304,3 +304,47 @@ def f(x: uint256, n: uint256) -> uint256:
     for n in (0, 1, 7, 31, 32, 2**255 - 1, 2**255):
         actual = [_outcome(d, "f(uint256,uint256)", 2**256 - 1, n) for d in (original, migrated)]
         assert actual[0] == actual[1], (n, actual)
+
+
+def test_stateless_initializer_removal_preserves_embedded_nonreentrancy_pragma(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.vy"
+    (tmp_path / "lib.vy").write_text("#pragma version >=0.5.0b1\nX: constant(uint256) = 1\n")
+    source = """#pragma version 0.5.0b1
+import lib
+initializes: (
+    #pragma nonreentrancy on
+    lib
+)
+
+@internal
+@nonreentrant
+def keep_lock_slot():
+    pass
+
+@external
+def probe() -> bool:
+    return raw_call(self, method_id("ping()"), revert_on_failure=False)
+
+@external
+def ping():
+    pass
+"""
+    path.write_text(source)
+    config = Config(
+        paths=(path,),
+        target_version="0.5.0b2",
+        source_snapshot=compiler.resolve_import_closure({path: source}),
+    )
+    result = apply_rules(source, config, path)
+    assert any(fix.rule == "VY126" for fix in result.fixes)
+    original_compile = compiler.compile_source_file(path, config, "0.5.0b1")
+    migrated_compile = compiler.compile_target_source(path, result.source, config)
+    assert original_compile.status == migrated_compile.status == "passed"
+    assert compiler.compare_artifacts(original_compile, migrated_compile) == (True, True, True)
+
+    original = _deploy(path, source, "0.5.0b1")
+    migrated = _deploy(path, result.source, "0.5.0b2")
+    assert _call(original, "probe()") == 0
+    assert _call(migrated, "probe()") == 0
