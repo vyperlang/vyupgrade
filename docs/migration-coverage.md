@@ -20,6 +20,24 @@ modern Python interpreter.
 
 ## v0.5.x prereleases
 
+### v0.5.0b2
+
+- Stateless modules cannot be initialized: validation-only. No rewrite yet
+  drops an `initializes:` declaration for a stateless module, so target
+  validation rejects it.
+- Positional custom error arguments rejected: validation-only. No rewrite yet
+  converts positional arguments to keyword arguments, so target validation
+  rejects them.
+- Zero-length `DynArray`s added: no-op. This is newly accepted source.
+- Ternary expressions in constant initializers added: no-op. This is newly
+  accepted source.
+- Unbounded sequences in more positions added: no-op. This is newly accepted
+  source.
+- Assignment to non-location targets rejected: validation-only.
+- Non-constant indexes in constant initializers rejected: validation-only.
+- Interface parameters named `self` rejected: validation-only.
+- Loops over list literals of unbounded types rejected: validation-only.
+
 ### v0.5.0b1
 
 - Immutable access through `self`: no-op. This is newly accepted source;
