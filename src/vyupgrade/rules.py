@@ -23,6 +23,7 @@ from .rule_groups.legacy import (
 from .rule_groups.legacy_builtins import RULES as LEGACY_BUILTIN_RULES
 from .rule_groups.legacy_diagnostics import RULES as LEGACY_DIAGNOSTIC_RULES
 from .rule_groups.legacy_interfaces import RULES as LEGACY_INTERFACE_RULES
+from .rule_groups.module_initialization import RULES as MODULE_INITIALIZATION_RULES
 from .rule_groups.numeric import (
     INTEGER_DIVISION_RULES as NUMERIC_INTEGER_DIVISION_RULES,
     LATE_RULES as NUMERIC_LATE_RULES,
@@ -116,6 +117,7 @@ RULES = (
     *DATA_CONSTRUCTOR_RULES,
     *INTERFACE_RULES,
     *INTERFACE_RETURN_BOUND_RULES,
+    *MODULE_INITIALIZATION_RULES,
     *DATA_ENUM_RULES,
     *NUMERIC_RANGE_RULES,
     *EXTERNAL_CALL_RULES,

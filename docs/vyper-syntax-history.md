@@ -1,6 +1,6 @@
 # Vyper Syntax History
 
-This document tracks Vyper source syntax changes from `v0.5.0a3` back through
+This document tracks Vyper source syntax changes from `v0.5.0b2` back through
 the installable `v0.1.0-beta.*` prereleases. It is intended as upgrade source
 material for `vyupgrade`.
 
@@ -11,6 +11,195 @@ backend-only, ABI-layout-only, optimizer-only, EVM-default, CLI-only, and pure
 runtime semantic changes unless they require source text to change.
 
 ## v0.5.x prereleases
+
+### v0.5.0b2
+
+Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0b2>
+
+- `initializes:` rejects a module with no state. A module needs initializing
+  only when it declares storage, transient or immutable variables, has an
+  `__init__()` function, a nonreentrant function, an `initializes:` or `uses:`
+  declaration, or an abstract method; drop the `initializes:` line for any
+  other module. [#5223](https://github.com/vyperlang/vyper/pull/5223)
+
+  Before:
+
+  ```vyper
+  # lib.vy declares only constants and @pure functions
+  import lib
+
+  initializes: lib
+  ```
+
+  After:
+
+  ```vyper
+  import lib
+  ```
+
+- Custom errors must be instantiated with keyword arguments.
+  [#5193](https://github.com/vyperlang/vyper/pull/5193)
+
+  Before:
+
+  ```vyper
+  error InsufficientBalance:
+      available: uint256
+      required: uint256
+
+  @external
+  def withdraw(amount: uint256):
+      raise InsufficientBalance(self.balance, amount)
+  ```
+
+  After:
+
+  ```vyper
+  @external
+  def withdraw(amount: uint256):
+      raise InsufficientBalance(available=self.balance, required=amount)
+  ```
+
+- `DynArray`s can have length 0. [#5234](https://github.com/vyperlang/vyper/pull/5234)
+
+  ```vyper
+  @external
+  def empty_list() -> DynArray[uint256, 0]:
+      return []
+  ```
+
+- Ternary expressions fold in constant initializers.
+  [#5303](https://github.com/vyperlang/vyper/pull/5303)
+
+  ```vyper
+  TESTNET: constant(bool) = False
+  DELAY: constant(uint256) = 60 if TESTNET else 86400
+  ```
+
+- Unbounded sequences (`--experimental-codegen` only) reach more positions:
+  `raw_call` accepts `max_outsize=INF`, memory structs can have unbounded
+  members, and `DynArray[T, INF]` elements can be ABI-dynamic or themselves
+  unbounded. [#5271](https://github.com/vyperlang/vyper/pull/5271),
+  [#5282](https://github.com/vyperlang/vyper/pull/5282),
+  [#5240](https://github.com/vyperlang/vyper/pull/5240),
+  [#5315](https://github.com/vyperlang/vyper/pull/5315)
+
+  ```vyper
+  @external
+  def forward(target: address, data: Bytes[1024]) -> Bytes[INF]:
+      return raw_call(target, data, max_outsize=INF)
+  ```
+
+- Assignment targets must be variable locations. Assigning to the `address`
+  of an interface-typed variable, which earlier releases compiled, is
+  rejected. [#5181](https://github.com/vyperlang/vyper/pull/5181)
+
+  ```vyper
+  from ethereum.ercs import IERC20
+
+  token: IERC20
+
+  @external
+  def reset():
+      self.token.address = empty(address)  # rejected
+  ```
+
+- Constant initializers reject runtime values reached through a constant: a
+  non-constant index into a constant array, or an address member such as
+  `.balance`. [#5181](https://github.com/vyperlang/vyper/pull/5181)
+
+  ```vyper
+  A: constant(uint256[2]) = [1, 2]
+  B: constant(uint256) = A[block.number]  # rejected
+
+  OWNER: constant(address) = 0x1234567890123456789012345678901234567890
+  C: constant(uint256) = OWNER.balance  # rejected
+  ```
+
+- Flag members can be constant initializers and default argument values,
+  including flags imported from a module.
+  [#5181](https://github.com/vyperlang/vyper/pull/5181)
+
+  ```vyper
+  flag Roles:
+      ADMIN
+      USER
+
+  DEFAULT_ROLE: constant(Roles) = Roles.USER
+
+  @external
+  def grant(role: Roles = Roles.ADMIN):
+      pass
+  ```
+
+- Interface functions cannot name a parameter `self`, in inline `interface`
+  blocks and in `.vyi` files. [#5172](https://github.com/vyperlang/vyper/pull/5172)
+
+- Loops over a list literal whose loop variable has an unbounded type are
+  rejected, including in internal functions that are never called.
+  [#5324](https://github.com/vyperlang/vyper/pull/5324)
+
+### v0.5.0b1
+
+Release: <https://github.com/vyperlang/vyper/releases/tag/v0.5.0b1>
+
+- Immutables are accessed through `self`; bare-name access still compiles but
+  emits a deprecation warning. [#5035](https://github.com/vyperlang/vyper/pull/5035)
+
+  Before:
+
+  ```vyper
+  OWNER: public(immutable(address))
+
+  @deploy
+  def __init__():
+      OWNER = msg.sender
+
+  @external
+  def owner_is_sender() -> bool:
+      return OWNER == msg.sender
+  ```
+
+  After:
+
+  ```vyper
+  OWNER: public(immutable(address))
+
+  @deploy
+  def __init__():
+      self.OWNER = msg.sender
+
+  @external
+  def owner_is_sender() -> bool:
+      return self.OWNER == msg.sender
+  ```
+
+- `unreachable` is a reserved keyword and can no longer be used as an
+  identifier. [#5159](https://github.com/vyperlang/vyper/pull/5159)
+
+  Before:
+
+  ```vyper
+  unreachable: uint256 = 5
+  ```
+
+  After:
+
+  ```vyper
+  not_reached: uint256 = 5
+  ```
+
+- Flag values can be converted to `bytes32`. [#5160](https://github.com/vyperlang/vyper/pull/5160)
+
+  ```vyper
+  x: bytes32 = convert(Roles.ADMIN, bytes32)
+  ```
+
+- String-literal revert reasons longer than 1024 bytes are rejected, matching
+  the existing limit for `String` variables. [#5203](https://github.com/vyperlang/vyper/pull/5203)
+
+- `implements` rejects a function without a return type for an interface
+  function that returns a value. [#5149](https://github.com/vyperlang/vyper/pull/5149)
 
 ### v0.5.0a3
 
@@ -843,6 +1032,7 @@ Release: <https://github.com/vyperlang/vyper/releases/tag/v0.4.0>
 
   ```vyper
   from ethereum.ercs import IERC20
+
   token: IERC20
   ```
 - Module import and ownership declarations added. [#3655](https://github.com/vyperlang/vyper/pull/3655), [#3663](https://github.com/vyperlang/vyper/pull/3663), [#3729](https://github.com/vyperlang/vyper/pull/3729)

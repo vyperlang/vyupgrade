@@ -20,6 +20,44 @@ modern Python interpreter.
 
 ## v0.5.x prereleases
 
+### v0.5.0b2
+
+- Stateless modules cannot be initialized: `VY126` drops `initializes: lib`
+  when the captured imported `.vy` module has no state, constructor, abstract
+  method or nonreentrancy lock. Constants and `exports:` alone do not count as
+  state. Storage, transient and immutable variables, `uses:` declarations and
+  retained `initializes:` declarations keep initialization intact. Nested
+  redundant initializations are removed when those modules are also being
+  migrated. Concrete `.vy` modules take precedence over interface files. If
+  an absolute import has multiple captured candidates, every candidate must
+  be stateless before removing its initialization. Unresolved modules and
+  unsupported declarations remain unchanged and are checked by target validation.
+- Positional custom error arguments rejected: validation-only. No rewrite yet
+  converts positional arguments to keyword arguments, so target validation
+  rejects them.
+- Zero-length `DynArray`s added: no-op. This is newly accepted source.
+- Ternary expressions in constant initializers added: no-op. This is newly
+  accepted source.
+- Unbounded sequences in more positions added: no-op. This is newly accepted
+  source.
+- Assignment to non-location targets rejected: validation-only.
+- Runtime values in constant initializers rejected: validation-only. This
+  covers non-constant indexes and address members such as `.balance`.
+- Flag members as constant initializers and default arguments added: no-op.
+  This is newly accepted source.
+- Interface parameters named `self` rejected: validation-only.
+- Loops over list literals of unbounded types rejected: validation-only.
+
+### v0.5.0b1
+
+- Immutable access through `self`: no-op. This is newly accepted source;
+  bare-name access still compiles with a deprecation warning.
+- `unreachable` reserved: validation-only. An identifier named `unreachable`
+  is left for target validation to reject.
+- Flag to `bytes32` conversion added: no-op. This is newly accepted source.
+- Over-long string-literal revert reasons rejected: validation-only.
+- `implements` return-presence mismatch rejected: validation-only.
+
 ### v0.5.0a3
 
 - Custom errors added: no-op. This is newly accepted revert declaration and
