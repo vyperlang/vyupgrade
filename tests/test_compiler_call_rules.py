@@ -434,3 +434,68 @@ def supply(token: address) -> uint256:
     assert result is not None and "staticcall IERC20(token).totalSupply()" in result[0]
     duplicate = current.replace("from ethereum.ercs", "from thirdparty")
     assert proven_call_keywords(ctx.with_source(duplicate, receipts)) is None
+
+
+def test_native_only_evidence_owns_only_mapped_member_sites():
+    call = "self.events[who].pop()"
+    source = f"""# @version 0.3.10
+events: HashMap[address, DynArray[uint256, 2]]
+event Popped:
+    item: uint256
+@external
+def pop_event(who: address):
+    log Popped({call})
+"""
+    evidence = _evidence(source, [(source.index(call), "pop", call, "nonpayable")])
+    row = evidence.external_calls["calls"].pop()
+    evidence.external_calls["member_calls"] = [
+        {key: row[key] for key in ("src", "method", "node_id")}
+    ]
+    ctx = _context(source, evidence)
+    assert proven_call_keywords(ctx) == (source, [], {"pop_event"})
+
+    before = f"log Popped({call})"
+    after = f"log Popped(item={call})"
+    moved = ctx.with_source(source.replace(before, after), (Fix("VY112", 7, "", before, after),))
+    assert proven_call_keywords(moved) is None
+    evidence.external_calls["member_calls"][0]["src"] = "0:1:0"
+    assert proven_call_keywords(ctx) is None
+
+
+def test_rule_only_array_members_keep_shape_through_indexing_and_scopes():
+    source = """# @version 0.3.10
+interface Api:
+    def append(x: uint256): nonpayable
+events: HashMap[address, DynArray[uint256, 2]]
+peers: HashMap[address, Api]
+
+@external
+def run(who: address, item: uint256):
+    bucket: DynArray[uint256, 2] = []
+    bucket.append(item)
+    self.events[who].append(bucket.pop())
+    self.peers[who].append(self.events[who].pop())
+"""
+    cfg = Config(paths=(), select=frozenset({"VY040", "VY041", "VYD003"}))
+    result = apply_rules(source, cfg)
+    assert result.source == source.replace(
+        "    self.peers[who].append(", "    extcall self.peers[who].append("
+    )
+    assert not result.diagnostics
+
+
+def test_unproven_append_or_pop_remains_a_diagnostic():
+    # An unsatisfied import or missing storage declaration must not acquire the
+    # type of a local with the same spelling. A fixed array of dynamic arrays
+    # only exposes the native member after it has been indexed.
+    source = """# @version 0.3.10
+@external
+def run(items: DynArray[uint256, 2], groups: DynArray[uint256, 2][3], peer: address):
+    self.items.pop()
+    groups.pop()
+    peer.append(1)
+    groups[0].append(2)
+"""
+    result = apply_rules(source, Config(paths=(), select=frozenset({"VYD003"})))
+    assert len(result.diagnostics) == 3
+    assert {d.line for d in result.diagnostics} == {4, 5, 6}

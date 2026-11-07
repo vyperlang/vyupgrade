@@ -385,8 +385,10 @@ def indexed_key_type(type_name: str | None) -> str | None:
 
 
 def infer_expr_type(
-    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None,
+    *, preserve_shape: bool = False,
 ) -> str | None:
+    """Infer an expression's type, optionally retaining container bounds and subscripts."""
     expr = expr.strip()
     expr = _strip_outer_parens(expr)
     if re.fullmatch(r"\d(?:_?\d)*", expr):
@@ -427,7 +429,7 @@ def infer_expr_type(
     if facts is not None:
         storage_type = _infer_self_storage_type(expr, facts)
         if storage_type is not None:
-            return storage_type
+            return unwrap_type(storage_type) if preserve_shape else normalize_type(storage_type)
         internal_call_type = _infer_internal_call_type(expr, facts)
         if internal_call_type is not None:
             return internal_call_type
@@ -438,10 +440,11 @@ def infer_expr_type(
         if attr_type is not None:
             return attr_type
     if expr in vars_for_line:
-        return normalize_type(vars_for_line[expr])
+        typ = vars_for_line[expr]
+        return unwrap_type(typ) if preserve_shape else normalize_type(typ)
     indexed_type = _infer_indexed_type(expr, vars_for_line, facts)
     if indexed_type is not None:
-        return indexed_type
+        return unwrap_type(indexed_type) if preserve_shape else normalize_type(indexed_type)
     return None
 
 
@@ -520,8 +523,7 @@ def _infer_self_storage_type(expr: str, facts: SourceFacts) -> str | None:
     match = re.fullmatch(r"self\.([A-Za-z_][A-Za-z0-9_]*)", expr)
     if match is None:
         return None
-    storage_type = facts.storage_vars.get(match.group(1))
-    return normalize_type(storage_type) if storage_type is not None else None
+    return facts.storage_vars.get(match.group(1))
 
 
 def _infer_attribute_type(
@@ -558,8 +560,11 @@ def _infer_indexed_type(
             if base_type is None:
                 return None
             rest = rest[close + 1 :]
-        return normalize_type(base_type) if rest == "" else None
+        return base_type if rest == "" else None
 
+    if expr.startswith("self.") and facts is not None:
+        # A local of the same name supplies no evidence about contract storage.
+        return facts.storage_vars.get(expr[5:])
     expr = expr.removeprefix("self.")
     root_match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", expr)
     if root_match is None:
@@ -576,7 +581,7 @@ def _infer_indexed_type(
         if type_name is None:
             return None
         rest = rest[close + 1 :]
-    return normalize_type(type_name) if rest == "" else None
+    return type_name if rest == "" else None
 
 
 def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None:
@@ -601,7 +606,7 @@ def _raw_index_base_type(
     expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None
 ) -> str | None:
     if expr.startswith("self.") and facts is not None:
-        return facts.storage_vars.get(expr[5:]) or vars_for_line.get(expr[5:])
+        return facts.storage_vars.get(expr[5:])
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
         return vars_for_line.get(expr)
     return None

@@ -168,17 +168,17 @@ def _external_call_keywords_once(
         if row in protected_lines or end in resolved:
             continue
         vars_for_line = facts.vars_at_line(row)
-        if target.startswith("self."):
-            target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(
-                target, vars_for_line, facts
-            )
-        else:
-            target_type = (
-                cast_type
-                or infer_expr_type(target, vars_for_line, facts)
-                or _conditional_receiver_type(target, vars_for_line, facts)
-            )
-        if method in {"append", "pop"} and (target_type or "").startswith("DynArray["):
+        target_type = (
+            cast_type
+            or infer_expr_type(target, vars_for_line, facts, preserve_shape=True)
+            or _conditional_receiver_type(target, vars_for_line, facts)
+        )
+        if (
+            method in {"append", "pop"}
+            and target_type is not None
+            and target_type.startswith("DynArray[")
+            and find_matching(target_type, len("DynArray"), "[", "]") == len(target_type) - 1
+        ):
             resolved.add(end)
             unknown.pop(end, None)
             continue

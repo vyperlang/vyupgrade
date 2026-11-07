@@ -178,8 +178,9 @@ def proven_call_keywords(context: RuleContext) -> tuple[str, list[Fix], set[str]
     members = _sites(evidence.get("member_calls", []), members=True)
     module_span = node_span(module)
     if (
-        not external
+        external is None
         or members is None
+        or not (external or members)
         or external.keys() & members.keys()
         or module_span is None
         or not isinstance(module.get("body"), list)
@@ -372,16 +373,9 @@ def _function_edits(
                 and receiver.get("id") == "self"
             ):
                 continue
-            member = program.members.get(call_id)
-            if (
-                member
-                and method in {"append", "pop"}
-                and member.src == call.get("src")
-                and member.method == method
-                and source.span(call, source_id=source_id) is not None
-            ):
-                continue
-            return None
+            proof = program.members.get(call_id)
+            if proof is None:
+                return None
         span = source.span(call, source_id=source_id)
         if (
             span is None
@@ -392,6 +386,10 @@ def _function_edits(
             or span.end not in ends
         ):
             return None
+        consumed = True
+        if proof.mode is None:
+            # The producer positively identified a native dynamic-array member.
+            continue
         start, end = starts[span.start], ends[span.end]
         mode = proof.mode
         interface = program.aliases.get(proof.interface, proof.interface)
@@ -399,7 +397,6 @@ def _function_edits(
             proof.interface in program.local_interfaces or interface != proof.interface
         ) and context.facts.interfaces.get(interface, {}).get(method) != mode:
             return None
-        consumed = True
         keyword, code = (
             ("staticcall", "VY041") if mode in {"view", "pure"} else ("extcall", "VY040")
         )
