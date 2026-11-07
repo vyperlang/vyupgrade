@@ -133,10 +133,10 @@ def read_other(other: address) -> uint256:
         ),
     ],
 )
-def test_earlier_interface_edits_control_the_target_call_mode(tmp_path, body, expected):
+def test_aggressive_interface_edits_control_the_target_call_mode(tmp_path, body, expected):
     path = tmp_path / "contract.vy"
     path.write_text("# @version 0.3.10\n" + body)
-    assert main([str(path), "--write"]) == 0
+    assert main([str(path), "--write", "--aggressive"]) == 0
     assert expected in path.read_text()
 
 

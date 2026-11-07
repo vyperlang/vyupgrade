@@ -260,10 +260,12 @@ modern Python interpreter.
   `String` when the source AST confirms a direct return, raise reason, or
   assertion message and every decoded code point fits in one byte. `VYD024`
   asks for review when the source evidence or expression context is insufficient.
-- Local interface mutability is checked more strictly: `VY014` changes
-  `nonpayable` interface entries to `view` when the implementation is a view
-  function or `public(...)` getter, and changes `@pure` implementations to
-  `@view` when an implemented interface requires a view method.
+- Local interface mutability is checked more strictly. `VY014` can update
+  the declaration for conformance when the affected method has no outgoing
+  uses, or change a pure implementation to match a view declaration. `VYD023`
+  flags changes that could switch an outgoing call between `CALL` and
+  `STATICCALL` or allow an entry point to accept ETH. Those changes require
+  `--aggressive`; artifact differences still require their own waivers.
 - Pure functions may no longer read immutable state: `VY015` changes `@pure`
   functions to `@view` when source facts show the function body references a
   top-level `immutable(...)` binding.

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+import tokenize
+import unicodedata
+from collections import Counter
+from collections.abc import Callable, Iterator
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type
 from ..models import Diagnostic, Fix
@@ -19,6 +22,8 @@ from ..source import (
     code_mask,
     find_matching,
     line_number,
+    logical_statement_tokens,
+    lone_cr_as_lf,
     replace_identifier,
     split_top_level_arg_spans,
     span_is_code,
@@ -277,96 +282,97 @@ def _is_constant_declaration_name(source: str, start: int) -> bool:
     return bool(re.search(r":\s*constant\s*\(", source[start:line_end]))
 
 
-def _interface_view_mutability(
-    rule_context: RuleContext,
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    source = rule_context.source
-    view_names = _view_implementation_names(source)
-    if not view_names:
+def _interface_method_modes(source: str) -> Iterator[tuple[str, str, tokenize.TokenInfo]]:
+    interface = method = None
+    for statement in logical_statement_tokens(source):
+        first = statement[0]
+        if first.start[1] == 0:
+            interface = statement[1].string if first.string == "interface" and len(statement) >= 3 else None
+            method = None
+        elif interface is not None:
+            if first.string == "def" and len(statement) > 2:
+                method = statement[1].string
+            mode = statement[-1]
+            if method is not None and mode.string in {"pure", "view", "nonpayable", "payable"}:
+                yield interface, method, mode
+                method = None
+
+
+def _conformance_only_methods(
+    source: str, implemented: set[str], facts: SourceFacts,
+) -> set[tuple[str, str]]:
+    if not implemented:
+        return set()
+    # Count the whole source so a partial parse cannot silently omit a use.
+    # Vyper normalizes identifiers before resolving them.
+    code = "".join(c if live else " " for c, live in zip(source, code_mask(source), strict=True))
+    code = unicodedata.normalize("NFKC", code)
+    local = set(re.findall(r"^interface[ \t]+(\w+)\b", code, re.MULTILINE))
+    uses = Counter(re.findall(r"\w+", code))
+    # An outgoing interface call must name its member after a dot. Treat every
+    # such access as a possible call, even when its receiver type is unknown.
+    # Comments are masked above; implicit and explicit continuations can follow the dot.
+    accessed = set(re.findall(r"\.[\s\\]*(\w+)", code))
+    return {
+        (interface, method) for interface in local & implemented
+        for method in facts.interfaces.get(interface, {})
+        if uses[interface] == 2 or method not in accessed
+    }
+
+
+def _local_interface_mutability(context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    source = context.source
+    if "interface" not in source:
         return source, [], []
-    fixes: list[Fix] = []
-    edits: list[TextEdit] = []
-    mask = rule_context.code_mask
-    pattern = re.compile(
-        r"^([ \t]*def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^#\n]*\)[ \t]*(?:->[ \t]*[^:#\n]+)?[ \t]*:[ \t]*)(nonpayable)\b",
-        re.MULTILINE,
-    )
-    for match in pattern.finditer(source):
-        if match.group(2) not in view_names or not span_is_code(mask, match.start(), match.end()):
-            continue
-        edits.append(TextEdit(match.start(3), match.end(3), "view"))
-        fixes.append(
-            Fix(
-                "VY014",
-                line_number(source, match.start()),
-                "changed local interface mutability to match view implementation",
-                match.group(0),
-                f"{match.group(1)}view",
-            )
-        )
-    return apply_edits(source, edits), fixes, []
-
-
-def _side_effecting_view_interface_calls(
-    rule_context: RuleContext,
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    source = rule_context.source
-    facts = rule_context.facts
-    methods = _side_effecting_view_interface_methods(source, facts)
-    if not methods:
+    lexical = lone_cr_as_lf(source)
+    offsets = context.with_source(lexical).line_offsets
+    implemented = implemented_interface_names(lexical)
+    facts = context.facts
+    standalone = _standalone_void_view_methods(lexical, facts)
+    if not implemented and not standalone:
         return source, [], []
+    conformance_only = _conformance_only_methods(lexical, implemented, facts)
+    external = {
+        facts.function_names[row]
+        for row, decorators in facts.function_decorators.items()
+        if "external" in decorators
+    }
+    edits, fixes, diagnostics = [], [], []
+    for interface, method, token in _interface_method_modes(lexical):
+        before = token.string
+        risk = None
+        if (interface, method) in standalone and before in {"pure", "view"}:
+            after = "nonpayable"
+            risk = f"{interface}.{method} has no return value; changing its standalone static call to CALL allows the callee to write state"
+        elif interface in implemented:
+            if method in external:
+                after = _implementation_mutability(facts, method, before)
+            elif _public_getter_return_type(facts, method) is not None:
+                after = "view"
+            else:
+                continue
+            if before == "nonpayable" and after in {"pure", "view"}:
+                if (interface, method) not in conformance_only:
+                    risk = f"{interface}.{method} is also available to callers; changing CALL to STATICCALL can make state-writing callees revert"
+            elif (before, after) != ("payable", "nonpayable") or (interface, method) not in conformance_only:
+                continue
+        else:
+            continue
 
-    lines = source.splitlines(keepends=True)
-    offsets = _line_offsets(source)
-    current_interface: str | None = None
-    current_indent = 0
-    edits: list[TextEdit] = []
-    fixes: list[Fix] = []
-    mask = rule_context.code_mask
-    for index, line in enumerate(lines):
-        offset = offsets[index]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not _line_match_starts_outside_string(source, mask, offset):
-            continue
-        indent = len(line) - len(line.lstrip(" \t"))
-        header = line.split("#", 1)[0].strip()
-        interface_match = re.match(
-            r"interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*$", header
-        )
-        if interface_match is not None:
-            current_interface = interface_match.group(1)
-            current_indent = indent
-            continue
-        if current_interface is not None and indent <= current_indent:
-            current_interface = None
-        if current_interface is None:
-            continue
-        method_match = re.match(
-            r"(?P<prefix>[ \t]*def[ \t]+(?P<method>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^#\n]*\)[ \t]*:[ \t]*)(?P<mutability>view|pure)\b",
-            line,
-        )
-        if method_match is None:
-            continue
-        if (current_interface, method_match.group("method")) not in methods:
-            continue
-        start = offset + method_match.start("mutability")
-        end = offset + method_match.end("mutability")
-        edits.append(TextEdit(start, end, "nonpayable"))
-        fixes.append(
-            Fix(
-                "VY014",
-                index + 1,
-                "changed no-return view interface method used as a statement to nonpayable",
-                method_match.group("mutability"),
-                "nonpayable",
-            )
-        )
-    return apply_edits(source, edits), fixes, []
+        row, column = token.start
+        if risk is not None:
+            if context.is_enabled("VYD023"):
+                diagnostics.append(Diagnostic("VYD023", row, risk))
+            if not context.config.aggressive:
+                continue
+        if context.is_enabled("VY014"):
+            start = offsets[row - 1] + column
+            edits.append(TextEdit(start, start + len(before), after))
+            fixes.append(Fix("VY014", row, f"changed {interface}.{method} interface mutability", before, after))
+    return apply_edits(source, edits), fixes, diagnostics
 
 
-def _side_effecting_view_interface_methods(
+def _standalone_void_view_methods(
     source: str, facts: SourceFacts
 ) -> set[tuple[str, str]]:
     methods: set[tuple[str, str]] = set()
@@ -440,12 +446,26 @@ def _implemented_payable_mutability(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     facts = rule_context.facts
-    payable_methods = _implemented_interface_methods(source, facts, "payable")
+    implemented = implemented_interface_names(source)
+    payable = {
+        interface for interface in implemented
+        if "payable" in facts.interfaces.get(interface, {}).values()
+    }
+    if not payable:
+        return source, [], []
+    # Conformance-only declarations can be corrected without changing the
+    # entry point, including when only review diagnostics were selected.
+    conformance_only = _conformance_only_methods(lone_cr_as_lf(source), payable, facts)
+    payable_methods = {
+        name for interface in payable for name, mode in facts.interfaces[interface].items()
+        if mode == "payable" and (interface, name) not in conformance_only
+    }
     if not payable_methods:
         return source, [], []
     lines = source.splitlines(keepends=True)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
+    diagnostics: list[Diagnostic] = []
     for function_line, decorators in facts.function_decorators.items():
         function_name = facts.function_names.get(function_line)
         if (
@@ -463,6 +483,13 @@ def _implemented_payable_mutability(
         decorator_match = re.match(r"([ \t]*)@external\b", line)
         if decorator_match is None:
             continue
+        if rule_context.is_enabled("VYD023"):
+            diagnostics.append(Diagnostic(
+                "VYD023", external_line,
+                f"making {function_name} payable would accept ETH that its original implementation rejects",
+            ))
+        if not rule_context.config.aggressive or not rule_context.is_enabled("VY014"):
+            continue
         insert_at = rule_context.line_offsets[external_line - 1] + len(line)
         replacement = f"{decorator_match.group(1)}@payable\n"
         edits.append(TextEdit(insert_at, insert_at, replacement))
@@ -475,7 +502,7 @@ def _implemented_payable_mutability(
                 replacement.rstrip("\n"),
             )
         )
-    return apply_edits(source, edits), fixes, []
+    return apply_edits(source, edits), fixes, diagnostics
 
 
 def _implemented_interface_methods(
@@ -485,38 +512,6 @@ def _implemented_interface_methods(
     for interface_name in implemented_interface_names(source):
         methods = facts.interfaces.get(interface_name, {})
         names.update(name for name, method_mutability in methods.items() if method_mutability == mutability)
-    return names
-
-
-def _view_implementation_names(source: str) -> set[str]:
-    mask = code_mask(source)
-    names = {
-        match.group(1)
-        for match in re.finditer(
-            r"^[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*public\s*\(",
-            source,
-            re.MULTILINE,
-        )
-        if span_is_code(mask, match.start(1), match.end(1))
-    }
-    decorators: set[str] = set()
-    offsets = _line_offsets(source)
-    for index, line in enumerate(source.splitlines(keepends=True)):
-        if not _line_match_starts_outside_string(source, mask, offsets[index]):
-            continue
-        stripped = line.strip()
-        decorator = re.fullmatch(r"@([A-Za-z_][A-Za-z0-9_]*)", stripped)
-        if decorator is not None:
-            decorators.add(decorator.group(1))
-            continue
-        def_match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", stripped)
-        if def_match is not None:
-            if decorators & {"view", "pure"}:
-                names.add(def_match.group(1))
-            decorators = set()
-            continue
-        if stripped:
-            decorators = set()
     return names
 
 
@@ -1228,11 +1223,9 @@ RULES = (
     Rule("immutable_accessor_collisions", runner=_immutable_accessor_collisions, changes=(crossing("VY013", (0, 4, 0)),)),
     Rule("constant_accessor_collisions", runner=_constant_accessor_collisions, changes=(crossing("VY016", (0, 4, 0)),)),
     Rule("interface_storage_assignment_casts", runner=_interface_storage_assignment_casts, changes=(crossing("VY019", (0, 4, 0)),)),
-    Rule("interface_view_mutability", runner=_interface_view_mutability, changes=(crossing("VY014", (0, 4, 0)),)),
     Rule(
-        "side_effecting_view_interface_calls",
-        runner=_side_effecting_view_interface_calls,
-        changes=(crossing("VY014", (0, 4, 0)),),
+        "local_interface_mutability", runner=_local_interface_mutability,
+        changes=(crossing("VY014", (0, 4, 0)), crossing("VYD023", (0, 4, 0))),
     ),
     Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
     Rule("view_log_mutability", runner=_view_log_mutability, changes=(crossing("VY017", (0, 4, 0)),)),
@@ -1252,7 +1245,7 @@ RULES = (
     Rule(
         "implemented_payable_mutability",
         runner=_implemented_payable_mutability,
-        changes=(crossing("VY014", (0, 4, 0)),),
+        changes=(crossing("VY014", (0, 4, 0)), crossing("VYD023", (0, 4, 0))),
     ),
     Rule(
         "dependency_imports",

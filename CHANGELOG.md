@@ -14,6 +14,9 @@
   context do not establish a byte-preserving rewrite.
 - Use annotated error declarations from Vyper `0.5.0b1` to name positional
   custom error arguments when migrating to `0.5.0b2` (`VY127`).
+- Require `--aggressive` for interface changes that could alter outgoing call
+  behavior or accept previously rejected ETH. `VYD023` explains the affected
+  declaration.
 
 ## 0.10.0 - 2026-11-07
 
