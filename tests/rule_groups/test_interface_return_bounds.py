@@ -912,6 +912,55 @@ def tok(a: address) -> IFoo:
     ]
 
 
+def test_bound_constant_only_the_compiler_evaluates_is_diagnosed(tmp_path: Path, config) -> None:
+    # Callers re-derive this module's bounds from source, so its own run must too:
+    # trusting the compiler's `N` would wildcard a bound its callers never wrap.
+    compiler_ast = {
+        "ast_type": "Module",
+        "body": [
+            {
+                "ast_type": "VariableDecl",
+                "is_constant": True,
+                "target": {"ast_type": "Name", "id": "N"},
+                "value": {"ast_type": "Int", "value": 1},
+            }
+        ],
+    }
+    result = _migrate(
+        tmp_path,
+        config,
+        {
+            "Module.vy": """#pragma version 0.4.3
+(N): constant(uint256) = 1
+
+interface IFoo:
+    def data() -> Bytes[N]: view
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+""",
+            "Main.vy": """#pragma version 0.4.3
+import Module
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    return staticcall Module.IFoo(a).data()
+""",
+        },
+        "Module.vy",
+        source_ast=compiler_ast,
+    )
+
+    assert "    def data() -> Bytes[N]: view\n" in result.source
+    assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
+    assert "VYD021" in [diagnostic.rule for diagnostic in result.diagnostics]
+
+
 def test_calls_through_a_module_qualified_inline_interface_are_wrapped(
     tmp_path: Path, config
 ) -> None:

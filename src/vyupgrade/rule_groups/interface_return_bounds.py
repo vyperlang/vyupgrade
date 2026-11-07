@@ -192,7 +192,7 @@ def _interface_return_bounds(
         source,
         rule_context.path,
         rule_context.config.source_snapshot,
-        integer_constant_values(source, rule_context.config.source_ast),
+        integer_constant_values(source),
     )
     use_wildcard = rule_context.is_enabled("VY125")
     blockers = (
@@ -569,7 +569,7 @@ def _bound_untyped_calls(
     source = rule_context.source
     path = rule_context.path
     snapshot = rule_context.config.source_snapshot
-    constants = integer_constant_values(source, rule_context.config.source_ast)
+    constants = integer_constant_values(source)
     sites = _call_sites(source, path, snapshot, constants, local_exceeded)
     if not sites:
         return [], [], []
