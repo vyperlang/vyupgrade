@@ -38,7 +38,6 @@ from ..rule_registry import Rule, RuleContext, crossing, is_enabled
 from ..source import (
     TextEdit,
     apply_edits,
-    code_identifiers,
     code_mask,
     find_matching,
     find_matching_open,
@@ -580,7 +579,8 @@ def _bound_untyped_calls(
     if not sites:
         return [], [], []
     blockers = local_blockers or _closure_blockers(rule_context, source, local_exceeded)
-    taken_names = code_identifiers(source)
+    # Vyper compares identifiers after NFKC, so a fullwidth spelling takes a name too.
+    taken_names = {unicodedata.normalize("NFKC", name) for name in _code_identifiers(source)}
     bound_functions: dict[str, str] = {}
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
@@ -894,6 +894,15 @@ def _dotted_name(source: str, mask: list[bool], end: int) -> tuple[int, str]:
         parts.append(".")
         start = dot - 1
     return start, "".join(reversed(parts))
+
+
+def _code_identifiers(source: str) -> set[str]:
+    mask = code_mask(source)
+    return {
+        match.group()
+        for match in re.finditer(_IDENTIFIER, source)
+        if span_is_code(mask, match.start(), match.end())
+    }
 
 
 def _is_identifier_character(character: str) -> bool:

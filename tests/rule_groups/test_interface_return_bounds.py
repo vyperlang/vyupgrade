@@ -802,6 +802,29 @@ def __vyupgrade_return_bound_custom(returned: String[10]) -> String[10]:
     ) in result.source
 
 
+def test_bound_function_avoids_a_name_taken_by_a_compatibility_spelling(
+    tmp_path: Path, config
+) -> None:
+    # `\uff4f` (fullwidth o) normalizes to `o`, so this function is `__vyupgrade_return_bound`.
+    caller = """#pragma version 0.4.3
+from . import IFoo
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall IFoo(a).version())
+
+@internal
+@pure
+def __vyupgrade_return_b\uff4fund(x: uint256) -> uint256:
+    return x
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert "self.__vyupgrade_return_bound_2(staticcall IFoo(a).version())" in result.source
+    assert "def __vyupgrade_return_bound_2(" in result.source
+
+
 def test_call_with_an_unresolved_receiver_is_diagnosed(tmp_path: Path, config) -> None:
     caller = """#pragma version 0.4.3
 from . import IFoo
