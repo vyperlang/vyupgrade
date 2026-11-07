@@ -87,7 +87,10 @@ modern Python interpreter.
   cannot name, or whose receiver it cannot resolve (any interface declaring
   that method), would lose the check, so the declaration keeps its bound and
   `VYD020` diagnoses both the call and the declaration; target validation then
-  fails until the call is given a typed receiver or the old return type. Local
+  fails until the call is given a typed receiver or the old return type. A call
+  in a contract this run does not rewrite (a captured dependency without
+  `--include-dependencies`, or a contract whose own pragma is already past
+  0.5.0a2) is never wrapped, so it blocks the same way. Local
   receivers are typed by their declaration in an enclosing block. A type the
   caller can name through an import is qualified with the caller's import name.
   With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to

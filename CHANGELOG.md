@@ -8,7 +8,8 @@
   interface that do not expect exactly the old return type pass through an
   internal function typed with the old bound, so callers keep their return
   bounds. A call whose type the caller cannot name, or whose receiver it
-  cannot resolve, keeps the declared bound and is diagnosed with `VYD020`,
+  cannot resolve, or that sits in a contract this run does not rewrite, keeps
+  the declared bound and is diagnosed with `VYD020`,
   so target validation blocks the write instead of dropping the check. Bounds
   named by integer constants defined with literal arithmetic are compared too,
   and `VYD021` reports bounds whose constants can't be evaluated. Interfaces
