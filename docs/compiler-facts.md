@@ -5,6 +5,75 @@ pipeline can use that evidence to choose external call syntax and to name
 custom error arguments. The target compiler still validates the exact output
 and the normal ABI, method identifier, and storage checks still govern writes.
 
+## Architecture decision
+
+Use the compiler that accepted a contract to answer questions about types and
+declarations. Apply its answers as small edits to the captured source. For
+example, choosing `staticcall` or `extcall` requires knowing which interface a
+branch-local variable refers to. A lossless syntax tree could locate the call
+and preserve its comments, but would still need that binding. Rebuilding the
+contract through a target printer would also require modeling the historical
+compiler's literal encodings and evaluation order.
+
+The maintenance cost in this design is matching original compiler locations
+after earlier rules edit a function. The external call planner already shares
+the result of that work across call mode, parentheses, and discarded returns.
+If another rule family needs the same history, move the mapping into the
+shared edit machinery before adding another rule-specific matcher.
+
+Delimiter lookups now share the balanced pairs found in each source revision.
+Replacing the per-lookup scan with this index reduced median rewrite time
+on Yearn's `Bootstrap.vy` from 2.36 s to
+0.32 s and on Curve's `ControllerFactory.vy` from 0.93 s to 0.17 s. Both
+measurements used three cold-index runs per matcher, excluded compilation,
+and produced identical source, fixes and diagnostics.
+
+## Results on pinned contracts
+
+We compared the prototype (`2086343`) with the integrated rules (`51a7e2a`)
+on 131 real contracts. The sample includes 124 Vyper 0.3.10 inputs and seven
+from other releases. Both runs used the same source bytes, resolved imports,
+compiler versions, target (0.4.3), and default write policy. The selection manifest's
+SHA-256 is `a3becf9ffb53ee14bc32dbb0519a53c9fdb1c7d3b2b1ef63f3a7a0b9cc4e3263`.
+
+| Measurement | Prototype | Integrated rules |
+| --- | ---: | ---: |
+| Real contracts allowed to write | 102 of 131 | 102 of 131 |
+| 0.3.10 call keywords supplied by the compiler | 172 of 713 sites | 612 of 713 sites |
+| 0.3.10 contracts using at least one compiler-supplied keyword | 39 of 124 | 79 of 124 |
+| `VYD003` warnings across the 124 inputs | 675 | 7 |
+| Additional source compiler invocations for private call facts | 84 | 0 |
+
+All 131 candidate source hashes, source and target compile outcomes, and
+ABI, method ID and storage comparison results matched. The seven remaining
+warnings came from three inputs whose imported interfaces were missing. Both
+compilers rejected them. On the original seven-contract 0.3.10 sample, the
+compiler supplied all 42 call keywords, up from 12. On the wider sample,
+the source-analysis fallback handled functions where the planner could not
+verify the call against both revisions.
+
+The 29 blocked real contracts included 21 with storage-layout differences,
+eight with failed source compilation and four with failed target compilation.
+These counts overlap. Determining whether those storage differences preserve
+deployed state requires evidence about the layouts themselves.
+
+Five execution controls were measured separately. The final rules preserved
+the two branch-local call modes and the exact custom error and French revert
+payloads. The default write policy blocked both cases where the prototype
+changed whether a call to a storage-writing peer succeeded.
+
+Two additional controls exercise a named constant used as a tuple index.
+For a tuple containing a dynamic array and an interface, selecting the
+interface makes its `append` an external call. For `(uint256, int256)`,
+selecting the signed member means `convert(pair[I], uint256)` must still
+revert on `-1`. Guessing the first tuple member let the prototype remove that
+checked conversion. The target then returned `false` despite passing all
+three artifact comparisons. A separate execution regression covers the
+opposite mistake on assignment. Treating a Boolean tuple member as unsigned
+introduced a checked conversion of a negative loop counter and made a
+previously successful transaction revert. The shared lookup now requires
+the actual tuple position to distinguish different member types.
+
 ## Which facts a rule can use
 
 `RuleContext.compiler_facts` describes the original source. The engine passes
