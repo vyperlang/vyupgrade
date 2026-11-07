@@ -871,8 +871,8 @@ def tok(a: address) -> IFoo:
 
     assert "__vyupgrade" not in result.source
     assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
-        ("VYD020", 8),
-        ("VYD020", 13),
+        ("VYD022", 8),
+        ("VYD022", 13),
     ]
 
 
@@ -928,10 +928,10 @@ def tok(a: address) -> IFoo:
 
     assert "__vyupgrade" not in result.source
     assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
-        ("VYD020", 7),
-        ("VYD020", 12),
-        ("VYD020", 17),
-        ("VYD020", 22),
+        ("VYD022", 7),
+        ("VYD022", 12),
+        ("VYD022", 17),
+        ("VYD022", 22),
     ]
 
 
@@ -981,7 +981,7 @@ def wide(a: address) -> Bytes[10]:
 
     assert "    def data() -> Bytes[N]: view\n" in result.source
     assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
-    assert "VYD021" in [diagnostic.rule for diagnostic in result.diagnostics]
+    assert "VYD023" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 def test_calls_through_a_module_qualified_inline_interface_are_wrapped(
@@ -1159,7 +1159,7 @@ def count(a: address) -> uint256:
 
     assert "    return len(staticcall IFoo(a).points())\n" in result.source
     assert _wildcards(result) == []
-    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [("VYD020", 7)]
+    assert [(diag.rule, diag.line) for diag in result.diagnostics] == [("VYD022", 7)]
 
 
 def test_inline_interface_return_types_are_nameable_by_their_file(config) -> None:
@@ -1315,7 +1315,7 @@ def test_branch_local_receiver_declared_in_a_spelling_the_rule_misses_blocks(con
     result = apply_rules(source, config(target_version="0.5.0a3"))
 
     assert "    def data() -> Bytes[1]: view\n" in result.source
-    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+    assert "VYD022" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 STORAGE_NAMED_LIKE_A_LOCAL = """#pragma version 0.4.3
@@ -1356,7 +1356,7 @@ def test_local_named_like_a_storage_variable_is_not_typed_by_it(config) -> None:
     result = apply_rules(source, config(target_version="0.5.0a3"))
 
     assert "    def data() -> Bytes[1]: view\n" in result.source
-    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+    assert "VYD022" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 def test_storage_shadow_under_a_compatibility_character_function_name_blocks(config) -> None:
@@ -1368,7 +1368,7 @@ def test_storage_shadow_under_a_compatibility_character_function_name_blocks(con
     result = apply_rules(source, config(target_version="0.5.0a3"))
 
     assert "    def data() -> Bytes[1]: view\n" in result.source
-    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+    assert "VYD022" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 def test_module_immutable_receiver_is_typed_by_its_declaration(config) -> None:
@@ -1435,7 +1435,7 @@ def wide(a: address) -> Bytes[10]:
     result = apply_rules(source, config(target_version="0.5.0a3"))
 
     assert "    def data() -> Bytes[1]: view\n" in result.source
-    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+    assert "VYD022" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 def test_method_spelled_with_a_connector_that_normalizes_to_underscore_is_wrapped(
@@ -1497,8 +1497,8 @@ def test_unresolved_receiver_keeps_the_old_bound(config) -> None:
     assert "__vyupgrade" not in result.source
     assert _wildcards(result) == []
     assert [(diag.rule, diag.line) for diag in result.diagnostics] == [
-        ("VYD020", 3),
-        ("VYD020", 15),
+        ("VYD022", 3),
+        ("VYD022", 15),
     ]
     assert "kept interface return bound Bytes[1]" in result.diagnostics[0].message
 
@@ -1529,10 +1529,10 @@ def tokens(a: address) -> DynArray[IFoo, 1]:
 
     assert "def version() -> String[1]: ..." in interface.source
     assert _wildcards(interface) == []
-    assert [diag.rule for diag in interface.diagnostics] == ["VYD020"]
+    assert [diag.rule for diag in interface.diagnostics] == ["VYD022"]
     assert "Caller.vy:7" in interface.diagnostics[0].message
     assert "__vyupgrade" not in caller.source
-    assert [(diag.rule, diag.line) for diag in caller.diagnostics] == [("VYD020", 7)]
+    assert [(diag.rule, diag.line) for diag in caller.diagnostics] == [("VYD022", 7)]
 
 
 def test_unnameable_old_type_keeps_the_vyi_bound(tmp_path: Path, config) -> None:
@@ -1551,7 +1551,7 @@ def count(a: address) -> uint256:
     assert "def points() -> DynArray[common.Point, 1]: ..." in interface.source
     # The other function's callers can name its old type, so it still takes the wildcard.
     assert _wildcards(interface) == [("DynArray[Own, 1]", "DynArray[Own, ...]")]
-    assert [diag.rule for diag in interface.diagnostics] == ["VYD020"]
+    assert [diag.rule for diag in interface.diagnostics] == ["VYD022"]
 
 
 @pytest.mark.parametrize(
@@ -1631,7 +1631,7 @@ def test_implementation_bound_may_use_a_constant_declared_later(tmp_path: Path, 
 
 @pytest.mark.parametrize(
     ("expression", "rules", "diagnostics"),
-    [("1 << 3", ["VY125"], []), ('len(b"abcde")', [], ["VYD021"])],
+    [("1 << 3", ["VY125"], []), ('len(b"abcde")', [], ["VYD023"])],
 )
 def test_implementation_bound_constant_is_folded_or_diagnosed(
     tmp_path: Path, config, expression: str, rules: list[str], diagnostics: list[str]
@@ -1676,7 +1676,7 @@ def wide(a: address) -> Bytes[10]:
 
     assert "def data() -> Bytes[1]: ..." in result.source
     assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
-    assert [diagnostic.rule for diagnostic in result.diagnostics] == ["VYD020"]
+    assert [diagnostic.rule for diagnostic in result.diagnostics] == ["VYD022"]
 
 
 @pytest.mark.parametrize("include_dependencies", [False, True])
@@ -1733,7 +1733,7 @@ def wide(a: address) -> Bytes[10]:
         assert "def data() -> Bytes[...]: ..." in result.source
     else:
         assert "def data() -> Bytes[1]: ..." in result.source
-        assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+        assert "VYD022" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 # The engine hands the declaration's rules its own resolved source version.
@@ -1768,7 +1768,7 @@ def wide(a: address) -> Bytes[10]:
 
     assert "def data() -> Bytes[1]: ..." in result.source
     assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
-    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+    assert "VYD022" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
 def test_return_is_typed_by_its_own_function_header_with_a_hash_default(config) -> None:

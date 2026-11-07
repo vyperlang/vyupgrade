@@ -210,7 +210,7 @@ def _interface_return_bounds(
     fixes: list[Fix] = []
     diagnostics = [
         Diagnostic(
-            "VYD021",
+            "VYD023",
             line_number(source, declaration.start),
             f"interface return bound {source[declaration.start : declaration.end]} was not "
             "compared with its implementations: a bound names a constant that could not be "
@@ -227,7 +227,7 @@ def _interface_return_bounds(
         ):
             diagnostics.append(
                 Diagnostic(
-                    "VYD020",
+                    "VYD022",
                     line,
                     f"kept interface return bound {declared} because {reason}; the wildcard "
                     "would stop checking that call's return, so give the call a typed receiver "
@@ -591,7 +591,7 @@ def _bound_untyped_calls(
         if site.rewritten is None:
             diagnostics.append(
                 Diagnostic(
-                    "VYD020",
+                    "VYD022",
                     site.line,
                     f"cannot resolve the receiver of {site.call}; every {site.method}() "
                     "interface return bound it may call keeps its old bound",
@@ -602,7 +602,7 @@ def _bound_untyped_calls(
         if not site.rewritten.nameable:
             diagnostics.append(
                 Diagnostic(
-                    "VYD020",
+                    "VYD022",
                     site.line,
                     f"{site.call} does not expect its old return type {old_type}, which this "
                     "file cannot name, so the interface keeps its old bound",
@@ -1284,8 +1284,8 @@ RULES = (
             crossing("VY124", "0.5.0a2"),
             crossing("VY125", "0.5.0a2"),
             crossing("VYD019", "0.5.0a2"),
-            crossing("VYD020", "0.5.0a2"),
-            crossing("VYD021", "0.5.0a2"),
+            crossing("VYD022", "0.5.0a2"),
+            crossing("VYD023", "0.5.0a2"),
         ),
     ),
 )

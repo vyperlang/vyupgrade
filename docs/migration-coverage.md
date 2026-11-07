@@ -78,7 +78,7 @@ modern Python interpreter.
   implementing external function or public getter returns a wider bound.
   Implementers of a `.vyi` module are found in the captured import closure.
   Integer-literal bounds and bounds named by an integer constant of the same
-  file defined with literal arithmetic are compared. `VYD021` reports an
+  file defined with literal arithmetic are compared. `VYD023` reports an
   implemented declaration when a bound on either side names a constant that
   can't be evaluated; other mismatches are left to target validation. The
   wildcard resolves at each call site to the expected type, so a call that
@@ -89,7 +89,7 @@ modern Python interpreter.
   with the old bound. A call anywhere in the closure whose old type its caller
   cannot name, or whose receiver it cannot resolve (any interface declaring
   that method), would lose the check, so the declaration keeps its bound and
-  `VYD020` diagnoses both the call and the declaration; target validation then
+  `VYD022` diagnoses both the call and the declaration; target validation then
   fails until the call is given a typed receiver or the old return type. A call
   in a contract this run does not rewrite (a captured dependency without
   `--include-dependencies`, or a contract whose own pragma is already past
