@@ -72,6 +72,7 @@ _IMPORTED_NAME_RE = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\s+as\s+(?P<alias>[A-Z
 # letters or a dashed low line spell ASCII names.
 _IDENTIFIER = r"(?:[^\W\d]|[^\x00-\x7f])(?:\w|[^\x00-\x7f])*"
 _METHOD_CALL_RE = re.compile(rf"\.\s*(?P<method>{_IDENTIFIER})\s*\(")
+_BARE_MODULE_NAME_RE = re.compile(r"\b(?:constant|immutable)\s*\(")
 _CALL_KEYWORDS = frozenset({"staticcall", "extcall"})
 _ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
 _BOUND_FUNCTION = "__vyupgrade_return_bound"
@@ -962,11 +963,13 @@ def _expression_type(
     variables = facts.vars_at_line(line_number(source, offset))
     root = re.match(r"[A-Za-z_][A-Za-z0-9_]*", expression)
     # A local is typed by its declaration in scope or the function's parameter,
-    # not the function's last declaration of that name. Vyper forbids
-    # shadowing, so any other name must be declared at module level.
+    # not the function's last declaration of that name. Otherwise a bare name is
+    # a module constant or immutable, which no local may shadow; a storage
+    # variable is only reached through `self`, so a local can share its name.
     if root is not None and root.group() != "self":
         scoped = _scoped_local_type(source, offset, root.group())
-        if scoped == "" or (scoped is None and root.group() not in facts.global_vars):
+        module_type = facts.global_vars.get(root.group(), "")
+        if scoped == "" or (scoped is None and not _BARE_MODULE_NAME_RE.search(module_type)):
             return ""
         if scoped is not None:
             variables[root.group()] = scoped
