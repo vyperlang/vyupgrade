@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Add `VY125` to replace interface return bounds that an implementing contract
+  exceeds with the Vyper 0.5 wildcard (`String[...]`, `Bytes[...]`,
+  `DynArray[T, ...]`), by default for targets from 0.5.0a2. Calls through the
+  interface that do not expect exactly the old return type pass through an
+  internal function typed with the old bound, so callers keep their return
+  bounds. A call whose type the caller cannot name, or whose receiver it
+  cannot resolve, or that sits in a contract this run does not rewrite, keeps
+  the declared bound and is diagnosed with `VYD022`,
+  so target validation blocks the write instead of dropping the check. Bounds
+  named by integer constants defined with literal arithmetic are compared too,
+  and `VYD023` reports bounds whose constants can't be evaluated. Interfaces
+  that no contract in the closure implements are left alone. `VY124` widening
+  now needs `--aggressive` with `VY125` ignored.
+
 ## 0.10.0 - 2026-11-07
 
 - Add opt-in support for Vyper `0.5.0b1` and `0.5.0b2` as source and target

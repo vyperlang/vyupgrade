@@ -646,7 +646,8 @@ def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None
             index = int(index_expr.replace("_", ""))
             if 0 <= index < len(parts):
                 return parts[index].strip()
-        return parts[0].strip()
+        # Which member a computed or out-of-range index picks is unknown.
+        return None
     return indexed_value_type(type_name)
 
 

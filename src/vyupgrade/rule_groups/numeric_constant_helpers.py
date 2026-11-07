@@ -34,11 +34,23 @@ def integer_constant_values(
         re.MULTILINE,
     )
     mask = code_mask(source)
-    for match in constant_re.finditer(source):
-        if match.group("name") not in values and span_is_code(mask, match.start(), match.end()):
+    pending = [
+        match
+        for match in constant_re.finditer(source)
+        if match.group("name") not in values and span_is_code(mask, match.start(), match.end())
+    ]
+    # Constants may refer to ones declared later, so evaluate until nothing resolves.
+    while pending:
+        unresolved = []
+        for match in pending:
             value = eval_integer_constant_expr(match.group("expr"), values)
-            if value is not None:
-                values[match.group("name")] = value
+            if value is None:
+                unresolved.append(match)
+            else:
+                values.setdefault(match.group("name"), value)
+        if len(unresolved) == len(pending):
+            break
+        pending = unresolved
     return values
 
 
@@ -113,6 +125,10 @@ def _eval_integer_ast(node: ast.AST, values: dict[str, int]) -> int | None:
     if isinstance(node.op, ast.Mod) and right != 0:
         remainder = abs(left) % abs(right)
         return -remainder if left < 0 else remainder
+    if isinstance(node.op, ast.LShift) and 0 <= right <= _MAX_BITS:
+        return _bounded(left << right)
+    if isinstance(node.op, ast.RShift) and right >= 0:
+        return left >> right
     if isinstance(node.op, ast.Pow) and 0 <= right <= _MAX_BITS:
         if abs(left) > 1 and left.bit_length() * right > _MAX_BITS:
             return None

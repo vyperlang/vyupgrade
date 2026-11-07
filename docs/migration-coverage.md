@@ -72,14 +72,34 @@ modern Python interpreter.
   after the docstring.
 - Wildcard interface lengths and unbounded length spellings added: no-op. This
   is newly accepted source syntax.
-- Interface return-type bounds checked covariantly: `VYD019` diagnoses bounds
-  that need manual review. With `--aggressive`, `VY124` raises each
+- Interface return-type bounds checked covariantly: `VY125` replaces each
   `String`, `Bytes`, and `DynArray` return bound declared by a `.vyi` module or
-  an implemented inline `interface` block to the widest bound returned by an
-  implementing external function or public getter. Implementers of a `.vyi`
-  module are found in the captured import closure. Only integer-literal bounds
-  are compared; other mismatches are left to target validation. Contracts that
-  call through a widened interface accept return values up to the new bound.
+  an implemented inline `interface` block with the wildcard `...` when an
+  implementing external function or public getter returns a wider bound.
+  Implementers of a `.vyi` module are found in the captured import closure.
+  Integer-literal bounds and bounds named by an integer constant of the same
+  file defined with literal arithmetic are compared. `VYD023` reports an
+  implemented declaration when a bound on either side names a constant that
+  can't be evaluated; other mismatches are left to target validation. The
+  wildcard resolves at each call site to the expected type, so a call that
+  expects the old type (an annotated assignment or `return` of that type)
+  decodes and checks returns as before. Any other call (a discarded result, a
+  `len()` or comparison operand, a wider target) would resolve it to a wider or
+  unbounded length, so `VY125` passes it through an internal function typed
+  with the old bound. A call anywhere in the closure whose old type its caller
+  cannot name, or whose receiver it cannot resolve (any interface declaring
+  that method), would lose the check, so the declaration keeps its bound and
+  `VYD022` diagnoses both the call and the declaration; target validation then
+  fails until the call is given a typed receiver or the old return type. A call
+  in a contract this run does not rewrite (a captured dependency without
+  `--include-dependencies`, or a contract whose own pragma is already past
+  0.5.0a2) is never wrapped, so it blocks the same way. Local
+  receivers are typed by their declaration in an enclosing block. A type the
+  caller can name through an import is qualified with the caller's import name.
+  With `--aggressive` and `VY125` ignored, `VY124` instead raises each bound to
+  the widest implementing bound, and `VYD019` diagnoses bounds that need it.
+  Contracts that call through a widened interface accept return values up to
+  the new bound.
 
 ### v0.5.0a1
 

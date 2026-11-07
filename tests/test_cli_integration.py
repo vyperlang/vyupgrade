@@ -639,9 +639,11 @@ def sqrt_plus_zero(x: uint256) -> uint256:
     )
 
 
-@pytest.mark.parametrize("aggressive", [False, True])
-def test_alpha_target_widens_vyi_return_bound_to_widest_implementation(
-    tmp_path: Path, aggressive: bool
+@pytest.mark.parametrize(
+    "options", [[], ["--aggressive", "--ignore", "VY125"], ["--ignore", "VY125"]]
+)
+def test_alpha_target_rewrites_exceeded_vyi_return_bound(
+    tmp_path: Path, options: list[str]
 ) -> None:
     interface = tmp_path / "IVersioned.vyi"
     interface.write_text(
@@ -671,24 +673,101 @@ def version() -> String[{len(version)}]:
     originals = {path: path.read_bytes() for path in tmp_path.iterdir()}
     code = main(
         [str(tmp_path), "--write", "--target-version", "0.5.0a3", "--report-json", str(report),
-         *(["--aggressive"] if aggressive else [])]
+         *options]
     )
 
-    if not aggressive:
+    if options == ["--ignore", "VY125"]:
         assert code != 0
         assert all(path.read_bytes() == content for path, content in originals.items())
         files = json.loads(report.read_text())["files"]
         assert any(d["rule"] == "VYD019" for file in files for d in file["diagnostics"])
         return
     assert code == 0
-    assert "def version() -> String[10]: ..." in interface.read_text(encoding="utf-8")
+    rule, rewritten = ("VY125", "String[...]") if not options else ("VY124", "String[10]")
+    assert f"def version() -> {rewritten}: ..." in interface.read_text(encoding="utf-8")
     files = {Path(file["path"]).name: file for file in json.loads(report.read_text())["files"]}
     assert {file["validation"]["decision"]["status"] for file in files.values()} == {"passed"}
     assert [
         (fix["before"], fix["after"])
         for fix in files["IVersioned.vyi"]["fixes"]
-        if fix["rule"] == "VY124"
-    ] == [("String[1]", "String[10]")]
+        if fix["rule"] == rule
+    ] == [("String[1]", rewritten)]
+
+
+def test_alpha_target_wildcard_keeps_narrow_and_untyped_callers_compiling(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "IVersioned.vyi").write_text(
+        """#pragma version ~=0.4.3
+VERSION_LEN: constant(uint256) = 1
+
+@external
+@view
+def version() -> String[VERSION_LEN]: ...
+
+@external
+def bump() -> String[VERSION_LEN]: ...
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "Versioned.vy").write_text(
+        """#pragma version ~=0.4.3
+from . import IVersioned
+
+implements: IVersioned
+
+version: public(String[10])
+
+@external
+def bump() -> String[10]:
+    return self.version
+""",
+        encoding="utf-8",
+    )
+    reader = tmp_path / "Reader.vy"
+    reader.write_text(
+        """#pragma version ~=0.4.3
+from . import IVersioned
+
+@external
+@view
+def narrow(a: address) -> String[1]:
+    v: String[1] = staticcall IVersioned(a).version()
+    return v
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall IVersioned(a).version())
+
+@external
+@view
+def wide(a: address) -> String[10]:
+    return staticcall IVersioned(a).version()
+
+@external
+def poke(a: address):
+    extcall IVersioned(a).bump()
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [str(tmp_path), "--write", "--target-version", "0.5.0a3", "--report-json", str(report)]
+    )
+
+    assert code == 0
+    assert "def version() -> String[...]: ..." in (tmp_path / "IVersioned.vyi").read_text(
+        encoding="utf-8"
+    )
+    migrated = reader.read_text(encoding="utf-8")
+    assert "    v: String[1] = staticcall IVersioned(a).version()\n" in migrated
+    assert "len(self.__vyupgrade_return_bound(staticcall IVersioned(a).version()))" in migrated
+    assert "return self.__vyupgrade_return_bound(staticcall IVersioned(a).version())" in migrated
+    assert "    self.__vyupgrade_return_bound(extcall IVersioned(a).bump())\n" in migrated
+    files = json.loads(report.read_text())["files"]
+    assert {file["validation"]["decision"]["status"] for file in files} == {"passed"}
 
 
 def test_standalone_interface_receives_target_validation(tmp_path: Path) -> None:
