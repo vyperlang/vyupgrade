@@ -14,7 +14,10 @@ return values and needs aggressive mode with VY125 ignored.
 from __future__ import annotations
 
 import ast
+import functools
+import io
 import re
+import tokenize
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -945,35 +948,48 @@ def _expression_type(
     # A local is typed by its declaration in scope, not the function's last one.
     # Vyper forbids shadowing, so a name without one in scope is a parameter.
     if root is not None and root.group() != "self":
-        scoped = _scoped_local_type(source, mask, offset, root.group())
+        scoped = _scoped_local_type(source, offset, root.group())
+        if scoped == "":
+            return ""
         if scoped is not None:
             variables[root.group()] = scoped
     target_type = infer_expr_type(expression, variables, facts)
     return normalize_type(target_type or "").strip("() ")
 
 
-def _scoped_local_type(source: str, mask: list[bool], offset: int, name: str) -> str | None:
+def _scoped_local_type(source: str, offset: int, name: str) -> str | None:
     """Type of the declaration of ``name`` in a block enclosing ``offset``.
 
-    Walks back through the function: a line indented deeper than the innermost
-    enclosing block so far belongs to a block that has already closed.
+    Walks back through the function's logical lines: one indented deeper than
+    the innermost enclosing block so far belongs to a block that has already
+    closed. None when no enclosing block declares ``name``; "" when the source
+    cannot be split into logical lines.
     """
+    logical = _logical_line_numbers(source)
+    if logical is None:
+        return ""
     declaration = re.compile(
         rf"(?:for[ \t]+)?{re.escape(name)}[ \t]*:[ \t]*(?P<type>.+?)[ \t]*(?:=|[ \t]in[ \t]|$)"
     )
+    number = line_number(source, offset)
     line_start = source.rfind("\n", 0, offset) + 1
+    # A call on a continuation line belongs to the logical line it continues.
+    while number not in logical and line_start > 0:
+        line_start = source.rfind("\n", 0, line_start - 1) + 1
+        number -= 1
     current = source[line_start:].split("\n", 1)[0]
     limit = len(current) - len(current.lstrip())
     for line_end in _line_starts_before(source, line_start):
+        number -= 1
+        if number not in logical:
+            # Comments, blank lines and continuations say nothing about blocks.
+            continue
         start = source.rfind("\n", 0, line_end - 1) + 1
         line = source[start : line_end - 1]
-        stripped = line.strip()
-        if not stripped or not line_starts_in_code(source, mask, start):
-            continue
         indent = len(line) - len(line.lstrip())
         if indent > limit:
             continue
-        found = declaration.match(stripped.split("#", 1)[0].rstrip())
+        found = declaration.match(line.strip().split("#", 1)[0].rstrip())
         if found is not None:
             return found.group("type")
         if indent < limit:
@@ -982,6 +998,24 @@ def _scoped_local_type(source: str, mask: list[bool], offset: int, name: str) ->
                 return None
             limit = indent
     return None
+
+
+@functools.lru_cache(maxsize=16)
+def _logical_line_numbers(source: str) -> frozenset[int] | None:
+    """Numbers of the lines that start a logical line, or None if ``source`` doesn't tokenize."""
+    numbers: set[int] = set()
+    starts_line = True
+    skipped = {tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT}
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type in skipped:
+                continue
+            if starts_line:
+                numbers.add(token.start[0])
+            starts_line = token.type == tokenize.NEWLINE
+    except (tokenize.TokenError, SyntaxError):
+        return None
+    return frozenset(numbers)
 
 
 def _line_starts_before(source: str, offset: int) -> Iterator[int]:

@@ -1244,6 +1244,44 @@ def test_branch_local_receivers_are_typed_by_their_own_declaration(config) -> No
     assert result.diagnostics == []
 
 
+@pytest.mark.parametrize(
+    ("narrow_branch", "narrow_call"),
+    [
+        # A comment indented less than the block does not close it.
+        (
+            "        ref: Narrow = Narrow(a)\n# a comment\n",
+            "        return len(staticcall ref.data())\n",
+        ),
+        # Neither does a continuation line inside brackets.
+        (
+            "        ref: Narrow = Narrow(\n    a)\n",
+            "        return len(staticcall ref.data())\n",
+        ),
+        # A call on a continuation line belongs to the line it continues.
+        (
+            "        ref: Narrow = Narrow(a)\n",
+            "        return len(\n  staticcall ref.data())\n",
+        ),
+    ],
+)
+def test_branch_local_receivers_ignore_lines_that_do_not_start_statements(
+    config, narrow_branch: str, narrow_call: str
+) -> None:
+    source = BRANCH_LOCAL_INTERFACES.replace(
+        "        ref: Narrow = Narrow(a)\n        return len(staticcall ref.data())\n",
+        narrow_branch + narrow_call,
+    )
+    assert source != BRANCH_LOCAL_INTERFACES
+
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    wrapped = narrow_call.replace(
+        "staticcall ref.data()", "self.__vyupgrade_return_bound(staticcall ref.data())"
+    )
+    assert narrow_branch + wrapped in result.source
+    assert result.diagnostics == []
+
+
 UNRESOLVED_INLINE_RECEIVER = """#pragma version 0.4.3
 interface IFoo:
     def data() -> Bytes[1]: view
