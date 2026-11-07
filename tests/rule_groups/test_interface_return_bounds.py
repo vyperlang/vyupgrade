@@ -1323,6 +1323,64 @@ def read(
     )
 
 
+def test_tuple_receiver_at_a_computed_index_blocks(config) -> None:
+    source = """#pragma version 0.4.3
+interface Narrow:
+    def data() -> Bytes[1]: view
+
+interface Wide:
+    def data() -> Bytes[5]: view
+
+implements: Narrow
+
+IDX: constant(uint256) = 1
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    refs: (Wide, Narrow) = (Wide(a), Narrow(a))
+    return staticcall refs[IDX].data()
+"""
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[1]: view\n" in result.source
+    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+
+
+def test_method_spelled_with_a_connector_that_normalizes_to_underscore_is_wrapped(
+    config,
+) -> None:
+    # U+FE4D DASHED LOW LINE is an identifier character that NFKC maps to `_`.
+    source = """#pragma version 0.4.3
+interface Narrow:
+    def get_data() -> Bytes[1]: view
+
+implements: Narrow
+
+@external
+@view
+def get_data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    return staticcall Narrow(a).get\ufe4ddata()
+"""
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def get_data() -> Bytes[...]: view\n" in result.source
+    assert (
+        "    return self.__vyupgrade_return_bound(staticcall Narrow(a).get\ufe4ddata())\n"
+        in result.source
+    )
+
+
 UNRESOLVED_INLINE_RECEIVER = """#pragma version 0.4.3
 interface IFoo:
     def data() -> Bytes[1]: view

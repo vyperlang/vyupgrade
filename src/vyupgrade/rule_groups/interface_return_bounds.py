@@ -68,8 +68,11 @@ _FROM_IMPORT_RE = re.compile(
     r"^[ \t]*from[ \t]+(?P<package>[.\w]+)[ \t]+import[ \t]+(?P<names>[^#\n]+)", re.MULTILINE
 )
 _IMPORTED_NAME_RE = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\s+as\s+(?P<alias>[A-Za-z_]\w*))?")
-# Any identifier: Vyper normalizes identifiers to NFKC, so fullwidth letters spell ASCII names.
-_METHOD_CALL_RE = re.compile(r"\.\s*(?P<method>[^\W\d]\w*)\s*\(")
+# Any identifier. Code outside strings and comments can hold non-ASCII
+# characters only in identifiers, which Vyper normalizes to NFKC: fullwidth
+# letters or a dashed low line spell ASCII names.
+_IDENTIFIER = r"(?:[^\W\d]|[^\x00-\x7f])(?:\w|[^\x00-\x7f])*"
+_METHOD_CALL_RE = re.compile(rf"\.\s*(?P<method>{_IDENTIFIER})\s*\(")
 _CALL_KEYWORDS = frozenset({"staticcall", "extcall"})
 _ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
 _BOUND_FUNCTION = "__vyupgrade_return_bound"
@@ -879,7 +882,7 @@ def _dotted_name(source: str, mask: list[bool], end: int) -> tuple[int, str]:
             parts.append(" ".join(source[index_open:position].split()))
             position = _skip_back(source, mask, index_open)
         name_start = position
-        while name_start > 0 and (source[name_start - 1].isalnum() or source[name_start - 1] == "_"):
+        while name_start > 0 and _is_identifier_character(source[name_start - 1]):
             name_start -= 1
         if name_start == position:
             break
@@ -893,11 +896,15 @@ def _dotted_name(source: str, mask: list[bool], end: int) -> tuple[int, str]:
     return start, "".join(reversed(parts))
 
 
+def _is_identifier_character(character: str) -> bool:
+    return character.isalnum() or character == "_" or not character.isascii()
+
+
 def _word_before(source: str, mask: list[bool], end: int) -> tuple[int, str]:
     """Start and text of the identifier right before ``end``, skipping spacing and comments."""
     word_end = _skip_back(source, mask, end)
     word_start = word_end
-    while word_start > 0 and (source[word_start - 1].isalnum() or source[word_start - 1] == "_"):
+    while word_start > 0 and _is_identifier_character(source[word_start - 1]):
         word_start -= 1
     return word_start, source[word_start:word_end]
 
