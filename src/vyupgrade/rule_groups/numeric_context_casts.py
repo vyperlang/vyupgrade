@@ -11,6 +11,7 @@ from ..analysis import (
     iterable_element_type,
     normalize_type,
 )
+from ..constant_evaluation import integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, RuleContext, crossing
@@ -30,7 +31,7 @@ from .numeric_casts import (
     cast_integer_arg_to_expected,
     inside_convert_call,
 )
-from .numeric_constant_helpers import constant_range_iteration_bound, integer_constant_values
+from .numeric_constant_helpers import constant_range_iteration_bound
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,

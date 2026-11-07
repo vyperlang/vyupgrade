@@ -10,6 +10,7 @@ from ..analysis import (
     normalize_type,
     parse_source_facts,
 )
+from ..constant_evaluation import integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
@@ -29,7 +30,6 @@ from ..source import (
     span_is_code,
 )
 from .numeric_casts import inside_convert_call
-from .numeric_constant_helpers import integer_constant_values
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -50,8 +50,12 @@ def _mixed_signed_unsigned_arithmetic(
         if not line_starts_in_code(source, mask, offset):
             offset += len(raw_line)
             continue
-        line = raw_line.rstrip("\n")
-        code_line = line.split("#", 1)[0]
+        code_line = raw_line.rstrip("\r\n")
+        if any(char in code_line for char in "'\"#"):
+            # Keep source columns while excluding strings and comments from type evidence.
+            code_line = "".join(
+                char if mask[offset + i] else " " for i, char in enumerate(code_line)
+            ).rstrip()
         if not code_line.startswith((" ", "\t")) or not (
             re.search(r"[-+*/%<>]=?|==|!=", code_line)
             or re.search(r":\s*[^=]+=", code_line)
@@ -63,12 +67,14 @@ def _mixed_signed_unsigned_arithmetic(
             continue
         line_no = line_number(source, offset)
         vars_for_line = facts.vars_at_line(line_no)
-        lhs_type = (
-            _lhs_declared_type(code_line)
-            or _lhs_assigned_type(code_line, vars_for_line)
-            or _lhs_assigned_expr_type(code_line, vars_for_line, facts)
-        )
-        rhs_offset = _expression_start_offset(code_line)
+        rhs_offset = facts.assignment_rhs_columns.get(line_no, 0)
+        lhs_type = None
+        if rhs_offset:
+            lhs_type = (
+                _lhs_declared_type(code_line)
+                or _lhs_assigned_type(code_line, vars_for_line)
+                or _lhs_assigned_expr_type(code_line, vars_for_line, facts)
+            )
         rhs_start = offset + rhs_offset
         rhs = code_line[rhs_offset:]
         signed_max_assignment = re.fullmatch(
@@ -159,7 +165,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or (
                         comparison_target is None
                         and not _signed_name_has_unsigned_context(
-                            source, start, name, lhs_type, vars_for_line, facts
+                            rhs, match.start(), name, lhs_type, vars_for_line, facts
                         )
                     )
                 ):
@@ -1368,14 +1374,6 @@ def _top_level_arg_index(raw_args: str, offset: int) -> int | None:
         if start <= offset <= end:
             return arg_index
     return None
-
-
-def _expression_start_offset(line: str) -> int:
-    for pattern in [r"\b(?:if|elif|assert|return)\s+", r"=\s*"]:
-        match = re.search(pattern, line)
-        if match:
-            return match.end()
-    return 0
 
 
 def _local_expression(source: str, index: int) -> str:

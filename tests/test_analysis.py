@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from vyupgrade.analysis import iterable_element_type, parse_source_facts
+from vyupgrade.analysis import infer_expr_type, iterable_element_type, parse_source_facts
 
 
 @pytest.mark.parametrize(
@@ -86,3 +86,22 @@ def test_one_line_function_and_loop_bodies_have_bindings() -> None:
     assert facts.vars_at_line(5) == {"x": "int128"}
     assert facts.loop_vars_at_line(5) == {"x"}
     assert facts.vars_at_line(6) == {}
+
+
+def test_local_tuple_annotations_preserve_nested_types_and_require_typed_members():
+    source = """@external
+def f(u: uint256, n: int256):
+    nested: ((uint256, int256), (address, bool)) = ((u, n), (self, True))
+    single: (uint256,) = (u,)
+    grouped: ((uint256, int256)) = (u, n)
+    invalid: (uint256, unknown()) = (u, n)
+    pass
+"""
+    facts = parse_source_facts(source)
+    variables = facts.vars_at_line(7)
+    assert "invalid" not in variables
+    for expression, expected in (
+        ("nested[0][1]", "int256"), ("nested[1][0]", "address"), ("single[0]", "uint256"),
+        ("single[1]", None), ("grouped[1]", "int256"),
+    ):
+        assert infer_expr_type(expression, variables, facts) == expected

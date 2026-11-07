@@ -4,7 +4,9 @@ import re
 import tokenize
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import cached_property
 
+from .constant_evaluation import integer_constant_values
 from .source import (
     code_mask,
     find_matching,
@@ -66,6 +68,7 @@ class SourceFacts:
     storage_vars: dict[str, str] = field(default_factory=dict)
     global_vars: dict[str, str] = field(default_factory=dict)
     local_declarations: dict[int, tuple[str, str]] = field(default_factory=dict)
+    assignment_rhs_columns: dict[int, int] = field(default_factory=dict)
     function_vars: dict[int, dict[str, str]] = field(default_factory=dict)
     _bindings_by_line: dict[int, _Binding] = field(default_factory=dict, repr=False)
     function_ends: dict[int, int] = field(default_factory=dict)
@@ -76,6 +79,25 @@ class SourceFacts:
     function_return_names: dict[str, str] = field(default_factory=dict)
     function_params: dict[str, dict[str, str]] = field(default_factory=dict)
     imported_interfaces: dict[str, str] = field(default_factory=dict)
+
+    _source: str = field(default="", repr=False, compare=False)
+
+    @cached_property
+    def tuple_index_constants(self) -> dict[str, int]:
+        # In valid source, locals cannot shadow a module constant. Rule-only
+        # clients can supply invalid source, so reject any ambiguous binding.
+        values = {
+            name: value for name, value in integer_constant_values(self._source).items()
+            if is_integer_type(self.storage_vars.get(name))
+        }
+        seen = set()
+        for head in self._bindings_by_line.values():
+            binding = head
+            while binding is not None and id(binding) not in seen:
+                seen.add(id(binding))
+                values.pop(binding.name, None)
+                binding = binding.outer
+        return values
 
     def _visible_bindings(self, line_number: int) -> Iterator[_Binding]:
         head = self._bindings_by_line.get(line_number)
@@ -134,8 +156,8 @@ def _statement_text(tokens: list[tokenize.TokenInfo]) -> str:
 
 
 def parse_source_facts(source: str) -> SourceFacts:
-    facts = SourceFacts()
     source = lone_cr_as_lf(source)
+    facts = SourceFacts(_source=source)
     decorators: list[tuple[str, int]] = []
     function: int | None = None
     interface: str | None = None
@@ -211,6 +233,7 @@ def parse_source_facts(source: str) -> SourceFacts:
                 name, typ = decl
                 facts.struct_fields[struct][name] = typ
         elif function is not None:
+            _record_assignment_rhs(tokens, facts)
             if first.string == "for" and len(tokens) >= 4 and tokens[1].type == tokenize.NAME:
                 name = tokens[1].string
                 in_index = next((i for i, token in enumerate(tokens) if token.string == "in"), None)
@@ -241,6 +264,24 @@ def parse_source_facts(source: str) -> SourceFacts:
     if function is not None:
         facts.function_ends[function] = source.count("\n") + int(not source.endswith("\n"))
     return facts
+
+
+def _record_assignment_rhs(tokens: list[tokenize.TokenInfo], facts: SourceFacts) -> None:
+    """Record the real assignment operator, excluding comparisons and call keywords."""
+    depth = 0
+    for token in tokens:
+        if token.type != tokenize.OP:
+            continue
+        if token.string in {"(", "[", "{"}:
+            depth += 1
+        elif token.string in {")", "]", "}"}:
+            depth -= 1
+        elif depth == 0 and token.string in {
+            "=", "+=", "-=", "*=", "/=", "//=", "%=", "**=", "&=", "|=", "^=", ">>=", "<<=",
+        }:
+            row, column = token.end
+            facts.assignment_rhs_columns[row] = column
+            return
 
 
 def _record_function(
@@ -363,10 +404,12 @@ def indexed_value_type(type_name: str | None) -> str | None:
         parts = split_top_level_args(type_name[1:-1])
         if not parts:
             return None
-        if len(parts) == 1:
-            type_name = parts[0].strip()
-        else:
-            return parts[0].strip()
+        if len(parts) == 1 and not type_name[1:-1].rstrip().endswith(","):
+            # Parentheses around a type leave its indexing behavior unchanged.
+            return indexed_value_type(parts[0].strip())
+        # Without a position a heterogeneous tuple has no single element type.
+        element = parts[0].strip()
+        return element if all(part.strip() == element for part in parts) else None
     if type_name.startswith("HashMap[") and type_name.endswith("]"):
         parts = split_top_level_args(type_name.removeprefix("HashMap[").removesuffix("]"))
         if parts and len(parts) == 2:
@@ -556,7 +599,7 @@ def _infer_indexed_type(
             close = _matching_local_bracket(rest, 0)
             if close is None:
                 return None
-            base_type = _indexed_value_type_at(base_type, rest[1:close].strip())
+            base_type = _indexed_value_type_at(base_type, rest[1:close].strip(), facts)
             if base_type is None:
                 return None
             rest = rest[close + 1 :]
@@ -577,14 +620,16 @@ def _infer_indexed_type(
         close = rest.find("]")
         if close == -1:
             return None
-        type_name = _indexed_value_type_at(type_name, rest[1:close].strip())
+        type_name = _indexed_value_type_at(type_name, rest[1:close].strip(), facts)
         if type_name is None:
             return None
         rest = rest[close + 1 :]
     return type_name if rest == "" else None
 
 
-def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None:
+def _indexed_value_type_at(
+    type_name: str | None, index_expr: str, facts: SourceFacts | None
+) -> str | None:
     if type_name is None:
         return None
     unwrapped = unwrap_type(type_name)
@@ -592,13 +637,15 @@ def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None
         parts = split_top_level_args(unwrapped[1:-1])
         if not parts:
             return None
-        if len(parts) == 1:
-            return indexed_value_type(parts[0].strip())
+        if len(parts) == 1 and not unwrapped[1:-1].rstrip().endswith(","):
+            return _indexed_value_type_at(parts[0].strip(), index_expr, facts)
         if re.fullmatch(r"\d(?:_?\d)*", index_expr):
             index = int(index_expr.replace("_", ""))
-            if 0 <= index < len(parts):
-                return parts[index].strip()
-        return parts[0].strip()
+        elif facts is not None and index_expr.isidentifier():
+            index = facts.tuple_index_constants.get(index_expr)
+        else:
+            index = None
+        return parts[index].strip() if index is not None and 0 <= index < len(parts) else None
     return indexed_value_type(type_name)
 
 
@@ -716,7 +763,7 @@ def _unwrap_public_or_constant(type_name: str, known_types: set[str] | None = No
 def _looks_like_type(type_name: str, known_types: set[str]) -> bool:
     if type_name.startswith("(") and type_name.endswith(")"):
         parts = split_top_level_args(type_name[1:-1])
-        return len(parts or []) == 1 and _looks_like_type(parts[0].strip(), known_types)
+        return bool(parts) and all(_looks_like_type(part.strip(), known_types) for part in parts)
     if TYPE_WRAPPER_RE.fullmatch(type_name):
         return True
     if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):

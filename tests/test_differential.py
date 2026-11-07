@@ -113,6 +113,37 @@ def _outcome(deployment, signature: str, *args: int) -> int | str:
         return "revert"
 
 
+def test_named_tuple_index_preserves_checked_unsigned_conversion(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+SIGNED_MEMBER: constant(uint256) = 1
+
+@external
+@pure
+def is_zero(pair: (uint256, int256)) -> bool:
+    return convert(pair[SIGNED_MEMBER], uint256) == 0
+""")
+    for member, expected in ((-1, "revert"), (0, 1), (1, 0)):
+        for deployment in deployments:
+            assert _outcome(deployment, "is_zero((uint256,int256))", 4, member) == expected
+
+
+@pytest.mark.parametrize("index", ["1", "BOOL_MEMBER"])
+def test_tuple_assignment_preserves_signed_membership(tmp_path, index):
+    deployments = _migration_pair(tmp_path, f"""# @version 0.3.10
+BOOL_MEMBER: constant(uint256) = 1
+
+@external
+@pure
+def selected(first: uint256) -> bool:
+    pair: (uint256, bool) = (first, False)
+    for k in range(-2, 2):
+        pair[{index}] = k in [0, 1, 2]
+    return pair[{index}]
+""")
+    for deployment in deployments:
+        assert _outcome(deployment, "selected(uint256)", 4) == 1
+
+
 def test_runtime_shift_amounts_preserve_executed_results(tmp_path):
     deployments = _migration_pair(tmp_path, """# @version 0.3.10
 @external

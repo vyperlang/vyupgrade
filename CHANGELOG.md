@@ -22,6 +22,9 @@
   declaration.
 - Preserve source and compiler positions across CRLF, lone CR and mixed line
   endings when rewriting version pragmas and compiler-confirmed literals.
+- Resolve literal and named tuple indices before choosing external call syntax
+  or changing numeric conversions. Preserve signed behavior when reading and
+  assigning heterogeneous tuple members.
 
 ## 0.10.0 - 2026-11-07
 

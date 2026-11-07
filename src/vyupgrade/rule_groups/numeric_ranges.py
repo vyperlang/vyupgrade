@@ -10,6 +10,7 @@ from ..analysis import (
     iterable_element_type,
     normalize_type,
 )
+from ..constant_evaluation import eval_integer_constant_expr, integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     line_match_starts_outside_string as _line_match_starts_outside_string,
@@ -25,7 +26,6 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,

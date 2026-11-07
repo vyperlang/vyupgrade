@@ -499,3 +499,60 @@ def run(items: DynArray[uint256, 2], groups: DynArray[uint256, 2][3], peer: addr
     result = apply_rules(source, Config(paths=(), select=frozenset({"VYD003"})))
     assert len(result.diagnostics) == 3
     assert {d.line for d in result.diagnostics} == {4, 5, 6}
+
+
+@pytest.mark.parametrize(
+    ("index", "keyword", "unknown"),
+    [
+        ("I", "extcall", False),
+        ("1", "extcall", False),
+        ("which", None, True),
+        ("2", None, True),
+    ],
+)
+def test_tuple_member_receiver_uses_only_a_known_in_range_position(index, keyword, unknown):
+    source = f"""# @version 0.3.10
+interface Store:
+    def append(x: uint256) -> bool: nonpayable
+I: constant(uint256) = 1
+
+@external
+def run(pair: (DynArray[uint256, 2], Store), which: uint256) -> bool:
+    return pair[{index}].append(7)
+"""
+    cfg = Config(paths=(), select=frozenset({"VY040", "VYD003"}))
+    migrated = apply_rules(source, cfg)
+    assert migrated.source == (
+        source.replace("return pair", "return extcall pair") if keyword else source
+    )
+    assert [d.rule for d in migrated.diagnostics] == (["VYD003"] if unknown else [])
+
+
+def test_shadowed_tuple_index_constant_is_not_evidence_in_rule_only_mode():
+    source = """# @version 0.3.10
+interface Store:
+    def append(x: uint256) -> bool: nonpayable
+I: constant(uint256) = 1
+@external
+def run(pair: (DynArray[uint256, 2], Store), I: uint256) -> bool:
+    return pair[I].append(7)
+"""
+    result = apply_rules(source, Config(paths=(), select=frozenset({"VY040", "VYD003"})))
+    assert result.source == source
+    assert [d.rule for d in result.diagnostics] == ["VYD003"]
+
+
+def test_rule_only_local_interface_tuple_resolves_named_append_receiver():
+    source = """# @version 0.3.10
+interface Store:
+    def append(x: uint256) -> bool: nonpayable
+I: constant(uint256) = 1
+@external
+def run(a: address) -> bool:
+    xs: DynArray[uint256, 2] = []
+    pair: (DynArray[uint256, 2], Store) = (xs, Store(a))
+    return pair[I].append(7)
+"""
+    result = apply_rules(source, Config(paths=(), select=frozenset({"VY040", "VYD003"})))
+    assert result.source == source.replace("return pair", "return extcall pair")
+    assert not result.diagnostics

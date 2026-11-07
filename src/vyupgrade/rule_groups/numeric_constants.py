@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterator
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type
+from ..constant_evaluation import eval_integer_constant_expr, integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
 from ..rule_helpers import (
@@ -22,7 +23,6 @@ from ..source import (
     split_top_level_arg_spans,
     span_is_code,
 )
-from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 
 _INTEGER_BITS = "|".join(str(bits) for bits in range(8, 257, 8))
 _SIGNED_INTEGER_TYPE = rf"int(?:{_INTEGER_BITS})"

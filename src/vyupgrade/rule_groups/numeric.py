@@ -8,6 +8,7 @@ from ..analysis import (
     is_integer_type,
     normalize_type,
 )
+from ..constant_evaluation import integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     find_matching_open as _find_matching_open,
@@ -27,7 +28,6 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from .numeric_constant_helpers import integer_constant_values
 from .numeric_shift import constant_shift_replacement, runtime_shift_replacement
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
