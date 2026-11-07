@@ -30,7 +30,7 @@ from ..analysis import (
     unwrap_type,
 )
 from ..models import Diagnostic, Fix
-from ..rule_registry import Rule, RuleContext, crossing
+from ..rule_registry import Rule, RuleContext, crossing, is_enabled
 from ..source import (
     TextEdit,
     apply_edits,
@@ -42,6 +42,7 @@ from ..source import (
     line_starts_in_code,
     span_is_code,
 )
+from ..versions import MigrationContext, infer_pragma
 from .numeric_constant_helpers import integer_constant_values
 
 if TYPE_CHECKING:
@@ -192,9 +193,8 @@ def _interface_return_bounds(
         integer_constant_values(source, rule_context.config.source_ast),
     )
     use_wildcard = rule_context.is_enabled("VY125")
-    snapshot = rule_context.config.source_snapshot
     blockers = (
-        _closure_blockers(snapshot, rule_context.path, source, exceeded)
+        _closure_blockers(rule_context, source, exceeded)
         if use_wildcard and exceeded
         else None
     )
@@ -571,7 +571,7 @@ def _bound_untyped_calls(
     sites = _call_sites(source, path, snapshot, constants, local_exceeded)
     if not sites:
         return [], [], []
-    blockers = local_blockers or _closure_blockers(snapshot, path, source, local_exceeded)
+    blockers = local_blockers or _closure_blockers(rule_context, source, local_exceeded)
     taken_names = code_identifiers(source)
     bound_functions: dict[str, str] = {}
     edits: list[TextEdit] = []
@@ -628,6 +628,18 @@ def _bound_untyped_calls(
     return edits, fixes, diagnostics
 
 
+def _unambiguous_imports(
+    modules: dict[str, str], path: Path | None, snapshot: ImportClosure | None
+) -> set[str]:
+    if snapshot is None or path is None or path.resolve() not in snapshot.contents:
+        return set(modules)
+    return {
+        binding
+        for binding, module in modules.items()
+        if len(snapshot.import_candidates(path, module)) < 2
+    }
+
+
 def _call_sites(
     source: str,
     path: Path | None,
@@ -649,8 +661,11 @@ def _call_sites(
         for binding, (_path, module_source) in _imported_sources(source, path, snapshot).items()
         for interface in _declared_interfaces(module_source)
     }
-    # Interfaces this file names; a receiver of any other type is not resolved.
-    known_interfaces = _declared_interfaces(source) | set(modules) | module_casts
+    # Interfaces this file names; a receiver of any other type is not resolved. An
+    # import that more than one closure member could satisfy names no known interface.
+    known_interfaces = (
+        _declared_interfaces(source) | _unambiguous_imports(modules, path, snapshot) | module_casts
+    )
     # Comments, strings and line continuations are blanked so they can sit anywhere in a call.
     code = "".join(
         char if in_code else " " for char, in_code in zip(source, mask, strict=True)
@@ -697,12 +712,16 @@ def _call_sites(
 
 
 def _closure_blockers(
-    snapshot: ImportClosure | None,
-    path: Path | None,
-    source: str,
-    local_exceeded: list[_ExceededReturn],
+    rule_context: RuleContext, source: str, local_exceeded: list[_ExceededReturn]
 ) -> _Blockers:
-    """Calls in this file and every closure contract that a wildcard would leave unchecked."""
+    """Calls in this file and every closure contract that a wildcard would leave unchecked.
+
+    A contract whose own migration does not apply `VY125` (one already written
+    for the target, say) leaves its calls unwrapped, so each of them blocks.
+    """
+    config = rule_context.config
+    snapshot = config.source_snapshot
+    path = rule_context.path
     own = path.resolve() if path is not None else None
     consumers: dict[Path | None, str] = {own: source}
     if snapshot is not None:
@@ -710,6 +729,14 @@ def _closure_blockers(
             if member.suffix == ".vy" and member != own:
                 consumers[member] = content.decode("utf-8")
     blockers = _Blockers({}, {})
+
+    def wraps(consumer: Path | None, consumer_source: str) -> bool:
+        if consumer == own:
+            return True
+        version = config.source_version or infer_pragma(consumer_source)
+        migration = MigrationContext.from_specs(version, config.target_version)
+        return is_enabled("VY125", config, migration, rule_context.rule_changes)
+
     for consumer, consumer_source in consumers.items():
         exceeded = (
             local_exceeded
@@ -726,7 +753,12 @@ def _closure_blockers(
             exceeded,
         ):
             where = f"{site.call} at {consumer.name if consumer else 'line'}:{site.line}"
-            if site.rewritten is None:
+            if site.rewritten is not None and not wraps(consumer, consumer_source):
+                blockers.origins.setdefault(
+                    site.rewritten.origin,
+                    f"{where} is in a file this migration does not wrap calls in",
+                )
+            elif site.rewritten is None:
                 blockers.methods.setdefault(site.method, f"the receiver of {where} is unresolved")
             elif not site.rewritten.nameable:
                 blockers.origins.setdefault(

@@ -1353,3 +1353,65 @@ def test_implementation_bound_constant_is_folded_or_diagnosed(
 
     assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == rules
     assert [diagnostic.rule for diagnostic in result.diagnostics] == diagnostics
+
+
+def test_call_through_an_ambiguous_import_keeps_the_bound(tmp_path: Path, config) -> None:
+    interface = "#pragma version 0.4.3\n@external\n@view\ndef data() -> Bytes[{n}]: ...\n"
+    files = {
+        "IFoo.vyi": interface.format(n=1),
+        "sub/IFoo.vyi": interface.format(n=10),
+        "Foo.vy": """#pragma version 0.4.3
+from . import IFoo
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+""",
+        "sub/Caller.vy": """#pragma version 0.4.3
+import IFoo
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    return staticcall IFoo(a).data()
+""",
+    }
+
+    result = _migrate(tmp_path, config, files, "IFoo.vyi")
+
+    assert "def data() -> Bytes[1]: ..." in result.source
+    assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
+    assert [diagnostic.rule for diagnostic in result.diagnostics] == ["VYD020"]
+
+
+def test_call_in_a_contract_already_on_the_target_keeps_the_bound(tmp_path: Path, config) -> None:
+    files = {
+        "IFoo.vyi": "@external\n@view\ndef data() -> Bytes[1]: ...\n",
+        "Foo.vy": """#pragma version 0.4.3
+from . import IFoo
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+""",
+        "Caller.vy": """#pragma version 0.5.0a3
+from . import IFoo
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    return staticcall IFoo(a).data()
+""",
+    }
+
+    result = _migrate(tmp_path, config, files, "IFoo.vyi")
+
+    assert "def data() -> Bytes[1]: ..." in result.source
+    assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
+    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
