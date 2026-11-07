@@ -4365,11 +4365,6 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
                         "slot": 18,
                         "type": "HashMap[address, flag Permission('READ','WRITE')]",
                     },
-                    "get_gauge": {
-                        "location": "storage",
-                        "slot": 19,
-                        "type": "address[115792089237316195423570985008687907853269984665640564039457584007913129639935]",
-                    },
                 }
             }
         },
@@ -4390,10 +4385,6 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
                     "permissions": {
                         "slot": 18,
                         "type": "HashMap[address, Permission]",
-                    },
-                    "get_gauge": {
-                        "slot": 19,
-                        "type": "HashMap[uint256, address]",
                     },
                 }
             }

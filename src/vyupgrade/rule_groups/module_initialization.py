@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from ..compiler import ImportClosure
 
 
+# Vyper resolves these absolute imports to its bundled stdlib before any search
+# path (``BUILTIN_MODULE_RULES``); each holds only ``@pure @internal`` functions.
+_STATELESS_BUILTIN_MODULES = frozenset({"math"})
+
+
 @dataclass(frozen=True)
 class _Initialization:
     module: str | None
@@ -37,6 +42,9 @@ class _ModuleFacts:
 def _module_facts(source: str) -> _ModuleFacts:
     """Read logical top-level statements; unknown forms keep initialization intact."""
     facts = _ModuleFacts()
+    # Vyper accepts CR-only line endings; tokenize only splits on LF. A lone CR
+    # becomes LF in place, so offsets into the original source stay valid.
+    source = re.sub(r"\r(?!\n)", "\n", source)
     offsets = [0] + [index + 1 for index, char in enumerate(source) if char == "\n"]
     statement: list[tokenize.TokenInfo] = []
     decorators: set[str] = set()
@@ -75,6 +83,15 @@ def _expression(tokens: list[tokenize.TokenInfo]) -> ast.expr | None:
         ).body
     except SyntaxError:
         return None
+
+
+def _dotted_name(node: ast.expr | None) -> str | None:
+    """Spell ``a`` or ``a.b.c``; other forms (subscripts, walrus) return ``None``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (owner := _dotted_name(node.value)) is not None:
+        return f"{owner}.{node.attr}"
+    return None
 
 
 def _record_statement(
@@ -119,8 +136,7 @@ def _record_statement(
     elif ":" in words and isinstance(target := _expression(tokens[: words.index(":")]), ast.Name):
         annotation_start = words.index(":") + 1
         if target.id == "initializes":
-            annotation = _expression(tokens[annotation_start:])
-            module = annotation.id if isinstance(annotation, ast.Name) else None
+            module = _dotted_name(_expression(tokens[annotation_start:]))
             facts.initializes.append(
                 _Initialization(
                     module,
@@ -169,7 +185,22 @@ class _InitializationAnalysis:
     ) -> bool:
         module = imports.get(binding)
         if module is None:
-            return False
+            # ``initializes: middle.leaf`` names ``leaf`` as bound inside ``middle``.
+            head, _, rest = binding.partition(".")
+            if not rest or (module := imports.get(head)) is None:
+                return False
+            paths = self._module_candidates(consumer, module)
+            return bool(paths) and all(
+                self.is_stateless(
+                    path,
+                    rest,
+                    _module_facts(self.snapshot.contents[path].decode("utf-8")).imports,
+                    visiting,
+                )
+                for path in paths
+            )
+        if module in _STATELESS_BUILTIN_MODULES:
+            return True
         paths = self._module_candidates(consumer, module)
         if not paths:
             return False

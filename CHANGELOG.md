@@ -2,8 +2,25 @@
 
 ## Unreleased
 
+- Preserve internal reentrancy guards. Report incompatible storage layouts when
+  a max-length fixed array becomes a mapping. Array conversion and switching a
+  legacy factory to a different forwarder now require `--aggressive`.
+- Preserve selector padding, literal calldata, bitwise operand grouping,
+  block-local shift types, and precedence when folding boundary constants.
+  Expanded empty comparisons evaluate complex array indexes once.
+- Attest the installed Vyper beta compiler and its distribution when compiling
+  through the Python compatibility wrapper.
+
 - Add `VY126` to remove redundant `initializes:` declarations for concrete
-  stateless imported modules when upgrading across Vyper `0.5.0b2`.
+  stateless imported modules when upgrading across Vyper `0.5.0b2`. It also
+  covers dotted initializers such as `initializes: lib.leaf` and the bundled
+  `math` stdlib module, and reads modules with CR-only line endings.
+- Fold signed boundary literals only where the return, annotation, or
+  assignment types them, so call arguments keep their own parameter type.
+  One-line function bodies keep their parameter types for `shift()` rewrites.
+- Validate a broad pragma's source on its floor compiler when the newest
+  target-bounded release rejects it, so floor-only syntax repaired by a rule
+  no longer blocks the write. Accept zero-bound `DynArray` storage layouts.
 
 - Added opt-in support for Vyper `0.5.0b1` and `0.5.0b2` as source and target
   compilers. Projects that pin either release no longer fail the source

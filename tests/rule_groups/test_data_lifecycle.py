@@ -40,7 +40,7 @@ def f(target: address):
     assert any(fix.rule == "VY080" for fix in result.fixes)
 
 
-def test_max_value_bound_public_storage_array_becomes_hashmap(config) -> None:
+def test_max_value_bound_storage_array_requires_aggressive(config) -> None:
     source = """# @version 0.3.7
 get_gauge_count: public(uint256)
 get_gauge: public(address[max_value(uint256)])
@@ -54,6 +54,10 @@ def f(idx: uint256, gauge: address):
 
     result = apply_rules(source, config(target_version="0.4.3"))
 
+    assert "get_gauge: public(address[max_value(uint256)])" in result.source
+    assert [d.rule for d in result.diagnostics].count("VYD020") == 2
+    assert all(fix.rule != "VY091" for fix in result.fixes)
+    result = apply_rules(source, config(target_version="0.4.3", aggressive=True))
     assert "get_gauge: public(HashMap[uint256, address])" in result.source
     assert "restLayout: public(HashMap[uint256, bytes32])" in result.source
     assert "fixed: public(address[8])" in result.source
@@ -542,14 +546,11 @@ def f():
     assert '''NOTE: constant(String[64]) = '@nonreentrant("literal")' '''.strip() in first.source
     assert '# @nonreentrant("comment")' in first.source
     assert '@nonreentrant("actual")' not in first.source
-    assert "_vyupgrade_reentrancy_lock_slot: uint256" in first.source
-    assert first.source.index('"""\nNOTE:') < first.source.index(
-        "_vyupgrade_reentrancy_lock_slot"
-    )
+    assert "@internal\n@nonreentrant\ndef f" in first.source
     assert second.source == first.source
 
 
-def test_named_reentrancy_lock_reserves_legacy_storage_slot(config) -> None:
+def test_named_internal_lock_keeps_decorator(config) -> None:
     source = """# @version 0.3.10
 balance: uint256
 
@@ -561,11 +562,8 @@ def f():
 
     result = apply_rules(source, config())
 
-    assert "_vyupgrade_reentrancy_lock_slot: uint256" in result.source
-    assert result.source.index("_vyupgrade_reentrancy_lock_slot") < result.source.index("balance")
-    assert any(
-        fix.rule == "VY090" and "storage slot" in fix.message for fix in result.fixes
-    )
+    assert "@internal\n@nonreentrant\ndef f" in result.source
+    assert "_vyupgrade_reentrancy_lock_slot" not in result.source
 
 
 def test_named_reentrancy_lock_keeps_layout_gap_out_when_decorator_remains(config) -> None:
@@ -601,7 +599,7 @@ def f():
     assert "@nonreentrant\n@external" in result.source
 
 
-def test_internal_nonreentrant_removed_after_global_lock_migration(config) -> None:
+def test_internal_nonreentrant_preserved_after_global_lock_migration(config) -> None:
     source = """# @version 0.3.7
 @internal
 @nonreentrant("lock")
@@ -616,6 +614,5 @@ def f():
 
     result = apply_rules(source, config())
 
-    assert "@internal\n@nonreentrant\ndef _reentrant" not in result.source
-    assert "@internal\ndef _reentrant" in result.source
+    assert "@internal\n@nonreentrant\ndef _reentrant" in result.source
     assert "@external\n@nonreentrant\ndef f" in result.source

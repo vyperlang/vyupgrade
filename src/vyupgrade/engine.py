@@ -37,7 +37,7 @@ from .rules import RULE_CHANGES, apply_rules
 from .validation import decide_run_validation
 from .versions import (
     MigrationContext,
-    compiler_version_for_source_validation,
+    compiler_versions_for_source_validation,
     compiler_version_for_spec,
     default_evm_version_for_spec,
     infer_pragma,
@@ -129,10 +129,12 @@ def bounded_migration_request(
     elif config.source_vyper:
         attempts = (SourceCompileAttempt(source_version, source_version),)
     else:
-        compiler = compiler_version_for_source_validation(
-            source_version, config.target_version, original
+        attempts = tuple(
+            SourceCompileAttempt(compiler, source_version, compiler)
+            for compiler in compiler_versions_for_source_validation(
+                source_version, config.target_version
+            )
         )
-        attempts = (SourceCompileAttempt(compiler, source_version, compiler),)
     return MigrationRequest(
         path,
         original,

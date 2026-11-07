@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
 
 from ..analysis import SourceFacts, parse_source_facts
 from ..models import Diagnostic, Fix
@@ -17,7 +16,6 @@ from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
-    code_identifiers,
     code_mask,
     find_matching,
     line_number,
@@ -167,58 +165,10 @@ def _enum_to_flag(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagn
     return pattern.sub(repl, source), fixes, diagnostics
 
 
-def _remove_internal_nonreentrant(source: str) -> tuple[str, list[Fix]]:
-    lines = source.splitlines(keepends=True)
-    mask = code_mask(source)
-    offsets: list[int] = []
-    cursor = 0
-    for line in lines:
-        offsets.append(cursor)
-        cursor += len(line)
-    fixes: list[Fix] = []
-    out = list(lines)
-    offset = 0
-    for index, line in enumerate(lines):
-        if not re.match(
-            r"\s*def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line
-        ) or not _line_match_starts_outside_string(source, mask, offsets[index]):
-            continue
-        start = index
-        while (
-            start > 0
-            and re.match(
-                r"\s*@[A-Za-z_][A-Za-z0-9_]*(?:\(.*\))?\s*(?:#.*)?$",
-                lines[start - 1],
-            )
-            and _line_match_starts_outside_string(source, mask, offsets[start - 1])
-        ):
-            start -= 1
-        decorators = [
-            decor.strip().split("(", 1)[0].split("#", 1)[0] for decor in lines[start:index]
-        ]
-        if "@internal" not in decorators or "@nonreentrant" not in decorators:
-            continue
-        for original_index in range(index - 1, start - 1, -1):
-            if re.match(r"\s*@nonreentrant\b", lines[original_index]):
-                before = out[original_index + offset].rstrip("\n")
-                del out[original_index + offset]
-                offset -= 1
-                fixes.append(
-                    Fix(
-                        "VY090",
-                        original_index + 1,
-                        "removed internal nonreentrant decorator to avoid global-lock self-call violation",
-                        before,
-                        "",
-                    )
-                )
-                break
-    return "".join(out), fixes
-
-
 def _max_value_storage_arrays(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     mask = rule_context.code_mask
+    diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     pattern = re.compile(
@@ -230,6 +180,14 @@ def _max_value_storage_arrays(rule_context: RuleContext) -> tuple[str, list[Fix]
             continue
         replacement_type = _max_value_array_type_to_hashmap(match.group("type").strip())
         if replacement_type is None:
+            continue
+        diagnostics.append(
+            Diagnostic(
+                "VYD020", line_number(source, match.start()),
+                "converting this fixed array to a HashMap changes storage slots and index bounds",
+            )
+        )
+        if not rule_context.config.aggressive or not rule_context.is_enabled("VY091"):
             continue
         before = match.group(0)
         after = f"{match.group('name')}: {replacement_type}{match.group('comment')}"
@@ -243,7 +201,7 @@ def _max_value_storage_arrays(rule_context: RuleContext) -> tuple[str, list[Fix]
                 after,
             )
         )
-    return apply_edits(source, edits), fixes, []
+    return apply_edits(source, edits), fixes, diagnostics
 
 
 def _max_value_array_type_to_hashmap(type_expr: str) -> str | None:
@@ -904,13 +862,12 @@ def _nonreentrant(
         for match in pattern.finditer(source)
         if span_is_code(mask, match.start(), match.start() + len("@nonreentrant"))
     ]
-    locks = [match.group(2) for match in matches]
+    locks = {match.group(2) for match in matches}
     diagnostics: list[Diagnostic] = []
     fixes: list[Fix] = []
     if not locks:
         return source, fixes, diagnostics
-    counts = Counter(locks)
-    if len(counts) > 1 and rule_context.is_enabled("VYD002"):
+    if len(locks) > 1 and rule_context.is_enabled("VYD002"):
         first = matches[0]
         diagnostics.append(
             Diagnostic(
@@ -925,7 +882,7 @@ def _nonreentrant(
         Diagnostic(
             "VY090",
             line_number(source, match.start()),
-            "single named nonreentrant lock rewritten; review callback assumptions",
+            "named nonreentrant lock rewritten. Review callback assumptions",
         )
         for match in matches
     )
@@ -942,94 +899,7 @@ def _nonreentrant(
         )
         edits.append(TextEdit(match.start(), match.end(), "@nonreentrant"))
 
-    current = apply_edits(source, edits)
-    current, internal_fixes = _remove_internal_nonreentrant(current)
-    fixes.extend(internal_fixes)
-    current_mask = code_mask(current)
-    if not any(
-        span_is_code(current_mask, match.start(), match.end())
-        for match in re.finditer(r"@nonreentrant\b", current)
-    ):
-        current, gap_fixes = _insert_nonreentrant_storage_gaps(current, len(counts))
-        fixes.extend(gap_fixes)
-    return current, fixes, diagnostics
-
-
-def _insert_nonreentrant_storage_gaps(source: str, count: int) -> tuple[str, list[Fix]]:
-    if count <= 0:
-        return source, []
-    names = _nonreentrant_storage_gap_names(source, count)
-    declarations = "".join(
-        f"{name}: uint256  # preserves legacy nonreentrant lock storage slot\n" for name in names
-    )
-    insert_at = _storage_gap_insert_offset(source)
-    if insert_at is None:
-        return source, []
-    before = "\n" if insert_at > 0 and not source[:insert_at].endswith("\n\n") else ""
-    after = "" if declarations.endswith("\n") else "\n"
-    replacement = f"{before}{declarations}{after}"
-    line = line_number(source, insert_at)
-    return source[:insert_at] + replacement + source[insert_at:], [
-        Fix(
-            "VY090",
-            line,
-            "reserved legacy nonreentrant lock storage slot",
-            "",
-            declarations.rstrip("\n"),
-        )
-    ]
-
-
-def _nonreentrant_storage_gap_names(source: str, count: int) -> list[str]:
-    used = code_identifiers(source)
-    names: list[str] = []
-    index = 1
-    while len(names) < count:
-        suffix = "" if index == 1 else f"_{index}"
-        name = f"_vyupgrade_reentrancy_lock_slot{suffix}"
-        if name not in used:
-            names.append(name)
-            used.add(name)
-        index += 1
-    return names
-
-
-def _storage_gap_insert_offset(source: str) -> int | None:
-    facts = parse_source_facts(source)
-    storage_names = {
-        name
-        for name, type_name in facts.global_vars.items()
-        if not type_name.startswith(("constant(", "immutable("))
-    }
-    lines = source.splitlines(keepends=True)
-    mask = code_mask(source)
-    offsets: list[int] = []
-    cursor = 0
-    for line in lines:
-        offsets.append(cursor)
-        cursor += len(line)
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if (
-            not stripped
-            or line[:1].isspace()
-            or not _line_match_starts_outside_string(source, mask, offsets[index])
-        ):
-            continue
-        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", stripped)
-        if match and match.group(1) in storage_names:
-            return offsets[index]
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if (
-            not stripped
-            or line[:1].isspace()
-            or not _line_match_starts_outside_string(source, mask, offsets[index])
-        ):
-            continue
-        if stripped.startswith("@") or re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
-            return offsets[index]
-    return len(source)
+    return apply_edits(source, edits), fixes, diagnostics
 
 
 CONSTRUCTOR_RULES = (
@@ -1051,7 +921,10 @@ ENUM_RULES = (
 POST_NUMERIC_RULES = (
     Rule("struct_kwargs", runner=_struct_kwargs, changes=(crossing("VY060", (0, 4, 0)),)),
     Rule("create_from_blueprint", runner=_create_from_blueprint, changes=(crossing("VY080", (0, 4, 0)),)),
-    Rule("max_value_storage_arrays", runner=_max_value_storage_arrays, changes=(crossing("VY091", (0, 4, 0)),)),
+    Rule(
+        "max_value_storage_arrays", runner=_max_value_storage_arrays,
+        changes=(crossing("VY091", (0, 4, 0)), crossing("VYD020", (0, 4, 0))),
+    ),
     Rule("unreachable_code", runner=_unreachable_code, changes=(crossing("VY092", (0, 4, 0)),)),
     Rule("reserved_flag_storage", runner=_reserved_flag_storage, changes=(crossing("VY093", (0, 3, 4)),)),
     Rule("unbounded_dynarray_limits", runner=_unbounded_dynarray_limits, changes=(crossing("VY094", (0, 4, 0)),)),

@@ -88,3 +88,22 @@ def f(claim: Claim) -> bool:
         "return (claim.claimAddress != empty(address) or "
         "claim.claimTotalAmount != empty(uint256))"
     ) in result.source
+
+
+def test_complex_array_comparisons_reuse_collision_free_helper(config) -> None:
+    source = """# @version 0.3.1
+_item: constant(uint256) = 0
+_vyupgrade_compare_empty: uint256
+items: uint256[2][2]
+@internal
+def idx() -> uint256:
+    return _item
+@external
+def f() -> bool:
+    return self.items[self.idx()] == empty(uint256[2]) and self.items[self.idx()] == empty(uint256[2])
+"""
+    selected = config(source_version="0.3.1", select=frozenset({"VY213"}))
+    result = apply_rules(source, selected)
+    assert result.source.count("self._vyupgrade_compare_empty_(self.items[self.idx()])") == 2
+    assert result.source.count("def _vyupgrade_compare_empty_(_item_: uint256[2])") == 1
+    assert apply_rules(result.source, selected).source == result.source

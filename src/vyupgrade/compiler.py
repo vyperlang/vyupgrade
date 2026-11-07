@@ -1852,7 +1852,10 @@ def _run_compiler_process(
             )
         runner_command = _compiler_runner_command(full)
         managed_compiler = (
-            _is_uv_run_command(full) and bool(runner_command) and runner_command[0] == "vyper"
+            _is_uv_run_command(full) and (
+                runner_command[:1] == ["vyper"]
+                or runner_command[:2] == ["python", str(Path(__file__).with_name("legacy_vyper.py"))]
+            )
         )
         return _run_compiler_adapter(
             full,

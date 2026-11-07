@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
 import re
+import tokenize
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 
@@ -16,6 +19,25 @@ class TextEdit:
 
 def line_number(source: str, offset: int) -> int:
     return source.count("\n", 0, offset) + 1
+
+
+def logical_statements(source: str) -> Iterator[tuple[tokenize.TokenInfo, tokenize.TokenInfo]]:
+    """Yield the first and last code token of each complete logical statement."""
+    first = last = None
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.NEWLINE:
+                if first is not None and last is not None:
+                    yield first, last
+                first = last = None
+            elif token.type not in {
+                tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER,
+            }:
+                first = first or token
+                last = token
+    except (IndentationError, tokenize.TokenError):
+        # Rule-only callers may supply incomplete source.
+        return
 
 
 def code_mask(source: str) -> list[bool]:

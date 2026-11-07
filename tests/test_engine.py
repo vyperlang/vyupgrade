@@ -48,7 +48,11 @@ def test_bounded_request_preserves_cli_compiler_selection(tmp_path: Path) -> Non
         path, source, _config(tmp_path, source_vyper="/tmp/vyper")
     )
 
-    assert inferred.source_attempts == (SourceCompileAttempt("0.4.3", ">0.3.10", "0.4.3"),)
+    # The newest target-bounded compiler first, then the floor the rules gate on.
+    assert inferred.source_attempts == (
+        SourceCompileAttempt("0.4.3", ">0.3.10", "0.4.3"),
+        SourceCompileAttempt("0.4.0", ">0.3.10", "0.4.0"),
+    )
     assert explicit.source_attempts == (SourceCompileAttempt(">0.3.10", ">0.3.10"),)
 
 

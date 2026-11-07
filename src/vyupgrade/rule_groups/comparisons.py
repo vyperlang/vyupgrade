@@ -5,7 +5,7 @@ import re
 from ..analysis import infer_expr_type, normalize_type
 from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
-from ..source import TextEdit, apply_edits, line_number, span_is_code
+from ..source import TextEdit, apply_edits, code_identifiers, line_number, span_is_code
 
 
 def not_in_comparator(
@@ -35,15 +35,56 @@ def not_in_comparator(
     return apply_edits(source, edits), fixes, []
 
 
+def _empty_comparison(
+    expr: str, type_name: str, op: str, fields: list[tuple[str, str]],
+    source: str, helpers: dict[tuple[str, str], tuple[str, str]],
+) -> str:
+    def comparison(value: str) -> str:
+        joiner = " and " if op == "==" else " or "
+        return "(" + joiner.join(f"{value}{field} {op} empty({typ})" for field, typ in fields) + ")"
+
+    if all(re.fullmatch(r"\w+", index.strip()) for index in re.findall(r"\[([^]]+)\]", expr)):
+        return comparison(expr)
+
+    # An internal call evaluates the operand once, at its original position
+    # even inside a short-circuit condition. Reuse one helper per type/operator.
+    key = (type_name, op)
+    if key not in helpers:
+        taken = code_identifiers(source) | {name for name, _ in helpers.values()}
+        argument = "_item"
+        while argument in taken:
+            argument += "_"
+        name = "_vyupgrade_compare_empty"
+        while name in taken:
+            name += "_"
+        body = (
+            f"@internal\n@pure\ndef {name}({argument}: {type_name}) -> bool:\n"
+            f"    return {comparison(argument)}\n"
+        )
+        helpers[key] = (name, body)
+    name, _ = helpers[key]
+    return f"self.{name}({expr})"
+
+
+def _apply_comparisons(
+    source: str, edits: list[TextEdit], helpers: dict[tuple[str, str], tuple[str, str]]
+) -> str:
+    result = apply_edits(source, edits)
+    if helpers:
+        result = result.rstrip("\n") + "\n\n" + "\n".join(body for _, body in helpers.values())
+    return result
+
+
 def fixed_array_empty_comparisons(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
+    helpers: dict[tuple[str, str], tuple[str, str]] = {}
     mask = rule_context.code_mask
     pattern = re.compile(
-        r"(?P<expr>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)"
+        r"(?<![\w.])(?P<expr>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)"
         r"(?P<left_space>\s*)(?P<op>==|!=)(?P<right_space>\s*)"
         r"empty\s*\(\s*(?P<element>[A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(?P<size>[0-9]+)\s*\]\s*\)"
     )
@@ -64,11 +105,8 @@ def fixed_array_empty_comparisons(
         ):
             continue
         op = match.group("op")
-        joiner = " and " if op == "==" else " or "
-        parts = [
-            f"{expr}[{index}] {op} empty({match.group('element')})" for index in range(size)
-        ]
-        replacement = f"({joiner.join(parts)})"
+        fields = [(f"[{index}]", match.group("element")) for index in range(size)]
+        replacement = _empty_comparison(expr, expected_type, op, fields, source, helpers)
         edits.append(TextEdit(match.start(), match.end(), replacement))
         fixes.append(
             Fix(
@@ -79,7 +117,7 @@ def fixed_array_empty_comparisons(
                 replacement,
             )
         )
-    return apply_edits(source, edits), fixes, []
+    return _apply_comparisons(source, edits, helpers), fixes, []
 
 
 def struct_empty_comparisons(
@@ -88,9 +126,10 @@ def struct_empty_comparisons(
     source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
+    helpers: dict[tuple[str, str], tuple[str, str]] = {}
     mask = rule_context.code_mask
     pattern = re.compile(
-        r"(?P<expr>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)"
+        r"(?<![\w.])(?P<expr>(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]+\])*)"
         r"(?P<left_space>\s*)(?P<op>==|!=)(?P<right_space>\s*)"
         r"empty\s*\(\s*(?P<struct>[A-Za-z_][A-Za-z0-9_]*)\s*\)"
     )
@@ -108,9 +147,8 @@ def struct_empty_comparisons(
         if normalize_type(expr_type or "") != struct_name:
             continue
         op = match.group("op")
-        joiner = " and " if op == "==" else " or "
-        parts = [f"{expr}.{field} {op} empty({field_type})" for field, field_type in struct_fields.items()]
-        replacement = f"({joiner.join(parts)})"
+        fields = [(f".{field}", typ) for field, typ in struct_fields.items()]
+        replacement = _empty_comparison(expr, struct_name, op, fields, source, helpers)
         edits.append(TextEdit(match.start(), match.end(), replacement))
         fixes.append(
             Fix(
@@ -121,7 +159,7 @@ def struct_empty_comparisons(
                 replacement,
             )
         )
-    return apply_edits(source, edits), fixes, []
+    return _apply_comparisons(source, edits, helpers), fixes, []
 
 
 RULES = (

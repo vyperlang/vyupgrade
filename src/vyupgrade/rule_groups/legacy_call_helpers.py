@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterator
 
 from ..models import Fix
+from ..rule_helpers import is_attribute_name
 from ..source import TextEdit, apply_edits, code_mask, find_matching, line_number, span_is_code
 
 
@@ -28,6 +29,10 @@ def iter_calls(
         mask = code_mask(source)
     for match in re.finditer(rf"\b{re.escape(call_name)}\s*\(", source):
         if not span_is_code(mask, match.start(), match.end()):
+            continue
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        is_definition = source[line_start:match.start()].strip() == "def"
+        if is_definition or is_attribute_name(source, match.start()):
             continue
         open_index = match.end() - 1
         close = find_matching(source, open_index)
