@@ -181,7 +181,12 @@ def _runtime_string_literals(rule_context: RuleContext) -> dict[tuple[int, int],
     # compilers emit one byte per code point for a runtime Str expression.
     source_ast = rule_context.config.source_ast
     floor = rule_context.migration.source_floor
-    if source_ast is None or floor is None or floor < VyperVersion("0.3.1"):
+    if (
+        source_ast is None
+        or rule_context.source != rule_context.original_source
+        or floor is None
+        or floor < VyperVersion("0.3.1")
+    ):
         return {}
 
     try:

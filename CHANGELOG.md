@@ -12,6 +12,8 @@
 - Preserve the original bytes of non-ASCII string literals in supported returns
   and revert reasons. Report `VYD024` when the source compiler and expression
   context do not establish a byte-preserving rewrite.
+- Use annotated error declarations from Vyper `0.5.0b1` to name positional
+  custom error arguments when migrating to `0.5.0b2` (`VY127`).
 
 ## 0.10.0 - 2026-11-07
 

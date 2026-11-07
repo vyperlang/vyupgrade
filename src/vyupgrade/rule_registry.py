@@ -50,6 +50,7 @@ class RuleContext:
     migration: MigrationContext
     path: Path | None
     rule_changes: Mapping[str, RuleChange]
+    original_source: str | None = None
 
     @cached_property
     def code_mask(self) -> list[bool]:
@@ -71,7 +72,7 @@ class RuleContext:
         if source == self.source:
             return self
         return RuleContext(
-            source, self.config, self.migration, self.path, self.rule_changes
+            source, self.config, self.migration, self.path, self.rule_changes, self.original_source
         )
 
     def is_enabled(self, rule: str) -> bool:

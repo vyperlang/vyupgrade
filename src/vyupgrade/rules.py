@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .models import Config, Diagnostic, Fix, RewriteResult
 from .rule_groups.comparisons import RULES as COMPARISON_RULES
+from .rule_groups.custom_errors import RULES as CUSTOM_ERROR_RULES
 from .rule_groups.data_lifecycle import (
     CONSTRUCTOR_RULES as DATA_CONSTRUCTOR_RULES,
     ENUM_RULES as DATA_ENUM_RULES,
@@ -56,7 +57,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     context = MigrationContext.from_specs(
         config.source_version or infer_pragma(source), config.target_version
     )
-    rule_context = RuleContext(source, config, context, path, RULE_CHANGES)
+    rule_context = RuleContext(source, config, context, path, RULE_CHANGES, original_source=source)
     if context.source_spec_unsupported():
         return _blocked_source_version_result(
             source,
@@ -105,6 +106,7 @@ METADATA_RULES = (
 )
 
 RULES = (
+    *CUSTOM_ERROR_RULES,
     *LEGACY_EARLY_RULES,
     *LEGACY_INTERFACE_RULES,
     *LEGACY_POST_INTERFACE_RULES,

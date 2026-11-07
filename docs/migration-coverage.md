@@ -35,9 +35,9 @@ modern Python interpreter.
   compiler-bundled `math` module, which Vyper resolves before any search path,
   is stateless. Unresolved modules and unsupported declarations remain
   unchanged and are checked by target validation.
-- Positional custom error arguments rejected: validation-only. No rewrite yet
-  converts positional arguments to keyword arguments, so target validation
-  rejects them.
+- Positional custom error arguments rejected. `VY127` inserts field names
+  from a compiler-resolved custom error declaration when the annotated source
+  matches the captured input. Target validation handles calls without this evidence.
 - Zero-length `DynArray`s added: no-op. This is newly accepted source.
 - Ternary expressions in constant initializers added: no-op. This is newly
   accepted source.

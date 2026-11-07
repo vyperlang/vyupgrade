@@ -25,6 +25,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from uv import find_uv_bin
 
+from .ast_facts import iter_nodes
 from .models import (
     DEFAULT_NETWORK_TIMEOUT_SECONDS,
     CompilerAuthority,
@@ -291,9 +292,12 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         command, suppress_warnings = _prepare_command(
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
-        return _run_compile_with_formats(
+        result = _run_compile_with_formats(
             command, staged, compile_config, SOURCE_FORMATS, (), suppress_warnings,
             project_compiler=True, allow_format_retries=False, environment_path=path,
+        )
+        return _add_source_rewrite_evidence(
+            result, command, staged, path, compile_config, suppress_warnings
         )
 
 
@@ -1090,9 +1094,114 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
             )
             artifact = (result.artifacts or {}).get(output_format)
             if result.status == "passed" and isinstance(artifact, dict):
-                return replace(result, artifacts={"ast": artifact})
+                return _add_source_rewrite_evidence(
+                    replace(result, artifacts={"ast": artifact}),
+                    command,
+                    staged,
+                    path,
+                    compile_config,
+                    suppress_warnings,
+                    already_annotated=output_format == "annotated_ast",
+                )
         assert result is not None
         return result
+
+
+def _source_evidence_format(result: CompileResult, config: Config, root: dict) -> str | None:
+    # Source pragmas may span several releases. Select compiler capabilities by
+    # the identity of the compiler that actually accepted this snapshot.
+    try:
+        source_version = Version(result.resolved_compiler or "").public
+    except InvalidVersion:
+        return None
+    if source_version != "0.5.0b1":
+        return None
+    target = parse_version(compiler_version_for_spec(config.target_version))
+    if target is not None and target >= Version("0.5.0b2"):
+        if (config.select and "VY127" not in config.select) or "VY127" in config.ignore:
+            return None
+        for node in iter_nodes(root):
+            if node.get("ast_type") not in ("Raise", "Assert"):
+                continue
+            reason = node.get("exc") or node.get("msg")
+            if isinstance(reason, dict) and reason.get("ast_type") == "Call" and reason.get("args"):
+                return "annotated_ast"
+    return None
+
+
+def _add_source_rewrite_evidence(
+    result: CompileResult,
+    command: list[str],
+    staged: Path,
+    path: Path,
+    config: Config,
+    suppress_warnings: bool,
+    *,
+    already_annotated: bool = False,
+) -> CompileResult:
+    # Keep optional tooling output separate from required validation artifacts.
+    # A failed probe must never rescue, hide or invalidate a real compile.
+    if (
+        result.status != "passed"
+        or result.compiler_identity is None
+        or result.compiler_identity.version != result.resolved_compiler
+        or len(result.validated_sources) != 1
+    ):
+        return result
+    artifacts = result.artifacts or {}
+    ast = artifacts.get("ast")
+    root = ast.get("ast") if isinstance(ast, dict) else None
+    if (
+        not isinstance(root, dict)
+        or root.get("ast_type") != "Module"
+        or not isinstance(root.get("body"), list)
+    ):
+        return result
+    output = _source_evidence_format(result, config, root)
+    if output is None:
+        return result
+    if already_annotated and output == "annotated_ast":
+        evidence = ast
+    else:
+        # prepare_migrations pins imported bytes. A direct caller may instead
+        # compile a live tree; its imports could change before this second query.
+        if config.source_snapshot is None and any(
+            node.get("ast_type") in {"Import", "ImportFrom"}
+            for node in root.get("body", [])
+            if isinstance(node, dict)
+        ):
+            return result
+        try:
+            probe = _run_compile_with_formats(
+                command,
+                staged,
+                config,
+                (output,),
+                (),
+                suppress_warnings,
+                project_compiler=True,
+                allow_format_retries=False,
+                environment_path=path,
+            )
+        except (OSError, UnicodeError):
+            return result
+        if (
+            probe.status != "passed"
+            or probe.compiler_identity != result.compiler_identity
+            or probe.validated_sources != result.validated_sources
+            or probe.dependency_context != result.dependency_context
+        ):
+            return result
+        evidence = (probe.artifacts or {}).get(output)
+    if not isinstance(evidence, dict):
+        return result
+    identity = evidence.get("ast") if output == "annotated_ast" else evidence
+    if (
+        not isinstance(identity, dict)
+        or identity.get("source_sha256sum") != result.validated_sources[0].sha256
+    ):
+        return result
+    return replace(result, artifacts={**artifacts, output: evidence})
 
 
 @dataclass(frozen=True)

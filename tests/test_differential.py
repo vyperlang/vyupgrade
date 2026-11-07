@@ -427,6 +427,51 @@ def write(i: uint256, x: uint256):
     assert [blocker.code for blocker in decision.blockers] == ["storage_layout_changed"]
 
 
+def test_positional_imported_custom_error_preserves_revert_payload(tmp_path):
+    (tmp_path / "errors.vy").write_text(
+        "#pragma version >=0.5.0b1\nerror InsufficientBalance:\n"
+        "    available: uint256\n    required: uint256\n"
+    )
+    source = """#pragma version 0.5.0b1
+import errors
+
+@external
+def withdraw(amount: uint256):
+    # The fullwidth "a" binds to the same name and occupies three UTF-8 bytes.
+    assert \uff41mount == 0, errors.InsufficientBalance(
+        (self.balance),  # observed balance
+        amount,
+    )
+
+@external
+def observe(amount: uint256) -> Bytes[68]:
+    ok: bool = False
+    data: Bytes[68] = b""
+    ok, data = raw_call(
+        self, concat(method_id("withdraw(uint256)"), convert(amount, bytes32)),
+        max_outsize=68, revert_on_failure=False,
+    )
+    assert not ok
+    return data
+"""
+    path = tmp_path / "entry.vy"
+    path.write_text(source)
+    config = Config(paths=(path,), target_version="0.5.0b2")
+    batch = engine.prepare_migrations([engine.bounded_migration_request(path, source, config)], config)
+    assert engine.validate_migrations(batch, config).status == "passed", batch.reports
+    migration = batch.files[0]
+    assert "available=(self.balance),  # observed balance" in migration.rewrite.source
+    assert "required=amount," in migration.rewrite.source
+
+    selector = keccak(text="InsufficientBalance(uint256,uint256)")[:4]
+    for code, version in ((source, "0.5.0b1"), (migration.rewrite.source, "0.5.0b2")):
+        vm, sender, address = _deploy(path, code, version)
+        result = vm.call({"from": sender, "to": address, "data": _calldata("observe(uint256)", (37,))})
+        expected = selector + bytes(32) + (37).to_bytes(32, "big")
+        header = (32).to_bytes(32, "big") + len(expected).to_bytes(32, "big")
+        assert bytes.fromhex(result[2:]) == header + expected.ljust(96, b"\0")
+
+
 def test_beta_factory_deploys_forwarder_after_explicit_opt_in(tmp_path):
     path = tmp_path / "factory.vy"
     source = """# @version 0.1.0b8

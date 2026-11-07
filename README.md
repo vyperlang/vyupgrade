@@ -221,6 +221,9 @@ diagnostic instead of being applied.
   offset, and `VY224` preserves non-ASCII return and revert bytes for
   compiler-confirmed literal contexts. `VYD024` identifies other literals
   that need review.
+- For `0.5.0b1` sources migrating to `0.5.0b2`, `VY127` uses the source
+  compiler's annotated declaration to name positional custom error arguments,
+  including errors defined in imported Vyper modules.
 - [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
   change mapped to a rule, diagnostic, explicit no-op, or validation-only
   behavior.
