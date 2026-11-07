@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vyupgrade.rules import apply_rules
 
 
@@ -38,6 +40,90 @@ def f(target: address):
 
     assert "create_from_blueprint(target, code_offset=0)" in result.source
     assert any(fix.rule == "VY080" for fix in result.fixes)
+
+
+@pytest.mark.parametrize(("original", "migrated"), [
+    ('blueprint, "code_offset=1"', 'blueprint, "code_offset=1", code_offset=0'),
+    ("blueprint, code_offset_hint", "blueprint, code_offset_hint, code_offset=0"),
+    ("blueprint, code_offset == 1,", "blueprint, code_offset == 1, code_offset=0,"),
+    ("nested(code_offset=1)", "nested(code_offset=1), code_offset=0"),
+    ("blueprint, \N{FULLWIDTH LATIN SMALL LETTER C}ode_offset=7",
+     "blueprint, \N{FULLWIDTH LATIN SMALL LETTER C}ode_offset=7"),
+    (
+        "create_from_blueprint(blueprint)",
+        "create_from_blueprint(blueprint, code_offset=0), code_offset=0",
+    ),
+    (
+        "create_from_blueprint(blueprint), code_offset=3",
+        "create_from_blueprint(blueprint, code_offset=0), code_offset=3",
+    ),
+    (
+        "\n        blueprint  # code_offset=1\n    ",
+        "\n        blueprint,  # code_offset=1\n        code_offset=0\n    ",
+    ),
+    (
+        "\n        blueprint,  # code_offset=1\n    ",
+        "\n        blueprint,  # code_offset=1\n        code_offset=0,\n    ",
+    ),
+])
+def test_blueprint_offset_only_reads_own_keywords(config, original, migrated):
+    def source(arguments):
+        return f"@external\ndef f(blueprint: address):\n    create_from_blueprint({arguments})\n"
+
+    selected = config(source_version="0.3.10", select=frozenset({"VY080"}))
+    first = apply_rules(source(original), selected)
+    assert first.source == source(migrated)
+    second = apply_rules(first.source, selected)
+    assert second.source == first.source
+    assert not second.fixes
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_blueprint_offset_preserves_parenthesized_callee_and_line_endings(config, newline):
+    source = """@external
+def f(blueprint: address):
+    ((create_from_blueprint))(
+        blueprint,  # headerless
+    )
+""".replace("\n", newline)
+    selected = config(source_version="0.3.10", select=frozenset({"VY080"}))
+    expected = source.replace("    )", "        code_offset=0," + newline + "    )")
+    assert apply_rules(source, selected).source == expected
+
+
+def test_blueprint_offset_skips_non_builtin_uses_and_explicit_keyword(config):
+    source = '''"""
+create_from_blueprint(blueprint)
+"""
+interface Factory:
+    def create_from_blueprint(target: address) -> address: nonpayable
+
+@external
+def f(blueprint: address):
+    # create_from_blueprint(blueprint)
+    a: address = Factory(blueprint).create_from_blueprint(blueprint)
+    b: address = (Factory(blueprint).
+                  create_from_blueprint(blueprint))
+    c: address = create_from_blueprint(blueprint,
+        # already specified
+        code_offset = 7,
+    )
+'''
+    selected = config(source_version="0.3.10", select=frozenset({"VY080"}))
+    result = apply_rules(source, selected)
+    assert result.source == source
+    assert not result.fixes
+
+
+@pytest.mark.parametrize(("source_version", "target_version"), [
+    ("0.3.9", "0.3.10"), ("0.4.0", "0.4.3"),
+])
+def test_blueprint_offset_only_applies_across_default_change(config, source_version, target_version):
+    source = "@external\ndef f(blueprint: address):\n    create_from_blueprint(blueprint)\n"
+    selected = config(
+        source_version=source_version, target_version=target_version, select=frozenset({"VY080"}),
+    )
+    assert apply_rules(source, selected).source == source
 
 
 def test_max_value_bound_storage_array_requires_aggressive(config) -> None:

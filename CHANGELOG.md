@@ -7,6 +7,11 @@
   the decorators are left unchanged. A single lock name is still rewritten.
 - Stop reporting `VYD003` for the argument of an interface cast such as
   `ERC20(token).decimals()`, whose call mutability is already resolved.
+- Preserve the legacy `create_from_blueprint` offset when comments, strings,
+  or nested arguments mention `code_offset`.
+- Preserve the original bytes of non-ASCII string literals in supported returns
+  and revert reasons. Report `VYD024` when the source compiler and expression
+  context do not establish a byte-preserving rewrite.
 
 ## 0.10.0 - 2026-11-07
 

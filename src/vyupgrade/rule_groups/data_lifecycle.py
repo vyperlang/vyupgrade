@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import re
+import tokenize
+import unicodedata
+from bisect import bisect_left
+from collections.abc import Iterator
 
 from ..analysis import SourceFacts, parse_source_facts
 from ..models import Diagnostic, Fix
@@ -19,7 +23,9 @@ from ..source import (
     code_mask,
     find_matching,
     line_number,
+    logical_statement_tokens,
     replace_identifier,
+    split_top_level_arg_spans,
     split_top_level_args,
     span_is_code,
 )
@@ -816,33 +822,83 @@ def _ordered_kwarg_string(
     )
 
 
+def _blueprint_default_calls(
+    source: str, offsets: list[int],
+) -> Iterator[tuple[int, list[tokenize.TokenInfo]]]:
+    """Yield calls missing the keyword, from their first argument through the closing paren."""
+    for tokens in logical_statement_tokens(source):
+        words = [
+            unicodedata.normalize("NFKC", token.string) if token.type == tokenize.NAME else token.string
+            for token in tokens
+        ]
+        if "create_from_blueprint" not in words:
+            continue
+        starts = [offsets[t.start[0] - 1] + t.start[1] for t in tokens]
+        for i, word in enumerate(words):
+            if word != "create_from_blueprint":
+                continue
+            left, right = i - 1, i + 1
+            while left >= 0 and right < len(words) and words[left] == "(" and words[right] == ")":
+                left -= 1
+                right += 1
+            if right >= len(words) or words[right] != "(":
+                continue
+            if left >= 0 and words[left] in {".", "def"}:
+                continue
+            open_at = starts[right]
+            close_at = find_matching(source, open_at)
+            if close_at is None:
+                continue
+            spans = split_top_level_arg_spans(source[open_at + 1:close_at])
+            if not spans:
+                continue
+            heads = (bisect_left(starts, open_at + 1 + start) for start, _, _ in spans)
+            if any(words[head:head + 2] == ["code_offset", "="] for head in heads):
+                continue
+            close = bisect_left(starts, close_at)
+            if close > right + 1 and words[right + 1] != ",":
+                yield tokens[i].start[0], tokens[right + 1:close + 1]
+
+
 def _create_from_blueprint(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     diagnostics: list[Diagnostic] = []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    mask = rule_context.code_mask
-    for match in re.finditer(r"\bcreate_from_blueprint\s*\(", source):
-        if not span_is_code(mask, match.start(), match.end()):
-            continue
-        close = find_matching(source, source.find("(", match.start()))
-        if close is None:
-            continue
-        args = source[match.end() : close]
-        if "code_offset" in args:
-            continue
+    if source.isascii() and "create_from_blueprint" not in source:
+        return source, fixes, diagnostics
+    # Tokenize also accepts Vyper's CR-only files after this width-preserving normalization.
+    lexical_source = re.sub(r"\r(?!\n)", "\n", source)
+    offsets = rule_context.with_source(lexical_source).line_offsets
+    for line, tokens in _blueprint_default_calls(lexical_source, offsets):
+        close = tokens[-1]
+        trailing_comma = tokens[-2].string == ","
+        last = tokens[-3] if trailing_comma else tokens[-2]
+        end = offsets[last.end[0] - 1] + last.end[1]
+        close_indent = close.line[:close.start[1]]
+        if close_indent.strip():
+            edits.append(TextEdit(end, end, ", code_offset=0"))
+        else:
+            if not trailing_comma:
+                edits.append(TextEdit(end, end, ","))
+            start = offsets[close.start[0] - 1]
+            indent = re.match(r"[ \t]*", tokens[0].line)[0]
+            if len(indent) <= len(close_indent):
+                indent = close_indent + "    "
+            newline = "\r\n" if source[start - 2:start] == "\r\n" else source[start - 1]
+            keyword = "code_offset=0," if trailing_comma else "code_offset=0"
+            edits.append(TextEdit(start, start, indent + keyword + newline))
         diagnostics.append(
             Diagnostic(
                 "VY080",
-                line_number(source, match.start()),
+                line,
                 "create_from_blueprint default code_offset changed from 0 to 3",
             )
         )
-        edits.append(TextEdit(close, close, ", code_offset=0"))
         fixes.append(
             Fix(
                 "VY080",
-                line_number(source, match.start()),
+                line,
                 "added code_offset=0 to preserve 0.3.x behavior",
                 "",
                 "code_offset=0",
