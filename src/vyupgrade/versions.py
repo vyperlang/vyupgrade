@@ -129,17 +129,24 @@ def compiler_version_for_spec(spec: str | None) -> str | None:
     return str(version) if version else None
 
 
-def compiler_version_for_source_validation(
-    spec: str | None, target_spec: str, _source: str
-) -> str | None:
-    """Select the newest known satisfying release that is no newer than the target."""
+def compiler_versions_for_source_validation(
+    spec: str | None, target_spec: str
+) -> tuple[str | None, ...]:
+    """Order source compilers: the newest target-bounded release, then the floor.
+
+    Broad pragmas usually track newer syntax, so the newest release is tried
+    first. Rules gate on the spec's floor, though, and may repair syntax that a
+    later release of the same range rejects, so the floor is the fallback.
+    """
     versions = known_versions_satisfying(spec)
     if not versions:
-        return compiler_version_for_spec(spec)
+        return (compiler_version_for_spec(spec),)
 
     target = parse_version(compiler_version_for_spec(target_spec)) or parse_version(target_spec)
     candidates = tuple(version for version in versions if target is None or version <= target)
-    return str(candidates[-1] if candidates else versions[-1])
+    if not candidates:
+        return (str(versions[-1]),)
+    return tuple(dict.fromkeys((str(candidates[-1]), str(candidates[0]))))
 
 
 def default_evm_version_for_spec(spec: str | None) -> str | None:

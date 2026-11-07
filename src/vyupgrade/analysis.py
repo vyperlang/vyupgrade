@@ -48,6 +48,7 @@ class SourceFacts:
     flags_or_enums: set[str] = field(default_factory=set)
     storage_vars: dict[str, str] = field(default_factory=dict)
     global_vars: dict[str, str] = field(default_factory=dict)
+    local_declarations: dict[int, tuple[str, str]] = field(default_factory=dict)
     function_vars: dict[int, dict[str, str]] = field(default_factory=dict)
     function_loop_vars: dict[int, set[str]] = field(default_factory=dict)
     function_ends: dict[int, int] = field(default_factory=dict)
@@ -251,12 +252,10 @@ def parse_source_facts(source: str) -> SourceFacts:
         if current_function_line is not None:
             loop_var = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^:]+?)\s+in\b", stripped)
             if loop_var:
-                facts.function_vars[current_function_line][loop_var.group(1)] = loop_var.group(
-                    2
-                ).strip()
-                facts.function_loop_vars.setdefault(current_function_line, set()).add(
-                    loop_var.group(1)
-                )
+                name, typ = loop_var.group(1), loop_var.group(2).strip()
+                facts.local_declarations[line_no] = (name, typ)
+                facts.function_vars[current_function_line][name] = typ
+                facts.function_loop_vars[current_function_line].add(name)
                 continue
 
         decl = _parse_var_decl(stripped, _known_type_names(facts))
@@ -269,6 +268,7 @@ def parse_source_facts(source: str) -> SourceFacts:
             if storage_type:
                 facts.storage_vars[name] = storage_type
         else:
+            facts.local_declarations[line_no] = (name, type_name)
             facts.function_vars[current_function_line][name] = type_name
 
     if current_function_line is not None:
@@ -289,7 +289,7 @@ def _record_function(
         name: decorator_line for name, decorator_line in decorators
     }
     params = _parse_params(def_match.group(2))
-    facts.function_vars[line_no] = params
+    facts.function_vars[line_no] = params.copy()
     facts.function_params[name] = params
     facts.function_loop_vars[line_no] = set()
     if def_match.group(3):

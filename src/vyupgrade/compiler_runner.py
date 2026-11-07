@@ -239,7 +239,7 @@ def _resolved_compiler(command: list[str], managed: bool) -> tuple[str, dict[str
             raise RuntimeError("version query returned no version")
         version = match.group(0)
     executable = (
-        _managed_executable_identity(command[0])
+        _managed_executable_identity("vyper")
         if managed
         else _file_identity(_resolved_executable(command[0]))
     )

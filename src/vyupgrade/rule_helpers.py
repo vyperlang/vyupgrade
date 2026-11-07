@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -9,12 +10,26 @@ from .source import (
     TextEdit,
     apply_edits,
     code_mask,
+    find_matching,
     find_matching_open as find_matching_open,
     line_number,
     line_starts_in_code,
     span_is_code,
 )
 from .versions import MigrationContext, VyperVersion
+
+
+def operator_operand(expr: str) -> str:
+    """Preserve a call argument's grouping when moving it into an operator."""
+    if expr.startswith("(") and find_matching(expr, 0) == len(expr) - 1:
+        return expr
+    try:
+        node = ast.parse(expr, mode="eval").body
+    except (SyntaxError, ValueError, RecursionError):
+        return f"({expr})"
+    if isinstance(node, (ast.Name, ast.Constant, ast.Call, ast.Attribute, ast.Subscript)):
+        return expr
+    return f"({expr})"
 
 
 def line_match_starts_outside_string(source: str, mask: list[bool], start: int) -> bool:

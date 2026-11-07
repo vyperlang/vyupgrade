@@ -6,6 +6,7 @@ import ast
 import re
 
 from ..analysis import SourceFacts, infer_expr_type, is_integer_type, normalize_type
+from ..rule_helpers import operator_operand
 from ..source import TextEdit, apply_edits, find_matching
 from .numeric_types import is_signed_integer_type, is_unsigned_integer_type
 
@@ -33,7 +34,7 @@ def constant_shift_replacement(value: str, amount: int) -> str:
     word = amount % 2**256
     signed_amount = word - 2**256 if word >= 2**255 else word
     operator = "<<" if signed_amount >= 0 else ">>"
-    return f"({_operand(value)} {operator} {abs(signed_amount)})"
+    return f"({operator_operand(value)} {operator} {abs(signed_amount)})"
 
 
 def runtime_shift_replacement(
@@ -53,7 +54,7 @@ def runtime_shift_replacement(
         return None
     amount_type = integer_expression_type(amount, vars_for_line, facts, constant_values)
     amount = _inline_integer_constants(amount, constant_values or {})
-    shifted, distance = _operand(value), _operand(amount)
+    shifted, distance = operator_operand(value), operator_operand(amount)
     if is_signed_integer_type(amount_type):
         magnitude = f"unsafe_sub(0, convert(convert({amount}, bytes32), uint256))"
         return (
@@ -133,24 +134,6 @@ def _pure(expr: str) -> bool:
         ):
             return False
     return True
-
-
-def _operand(expr: str) -> str:
-    """Parenthesize ``expr`` unless it is a name, literal, call, subscript, or attribute."""
-    return expr if re.fullmatch(r"[\w.]*", _outside_brackets(expr)) else f"({expr})"
-
-
-def _outside_brackets(expr: str) -> str:
-    depth = 0
-    kept: list[str] = []
-    for char in expr:
-        if char in "([":
-            depth += 1
-        elif char in ")]":
-            depth -= 1
-        elif depth == 0:
-            kept.append(char)
-    return "".join(kept)
 
 
 def _arithmetic_operands(expr: str) -> list[str]:

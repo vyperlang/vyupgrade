@@ -30,8 +30,11 @@ modern Python interpreter.
   redundant initializations are removed when those modules are also being
   migrated. Concrete `.vy` modules take precedence over interface files. If
   an absolute import has multiple captured candidates, every candidate must
-  be stateless before removing its initialization. Unresolved modules and
-  unsupported declarations remain unchanged and are checked by target validation.
+  be stateless before removing its initialization. A dotted initializer such as
+  `initializes: lib.leaf` resolves `leaf` through the imports of `lib`, and the
+  compiler-bundled `math` module, which Vyper resolves before any search path,
+  is stateless. Unresolved modules and unsupported declarations remain
+  unchanged and are checked by target validation.
 - Positional custom error arguments rejected: validation-only. No rewrite yet
   converts positional arguments to keyword arguments, so target validation
   rejects them.
@@ -205,13 +208,14 @@ modern Python interpreter.
 
 - Constructor visibility changed to `@deploy`: `VY002` removes invalid
   constructor visibility decorators and inserts `@deploy`.
-- Named reentrancy locks removed: `VY090` removes the single-lock case,
-  reserves legacy lock storage slots, and emits a review diagnostic. `VYD002`
+- Named reentrancy locks removed. `VY090` preserves the guard on internal
+  and external functions and removes its name. `VYD002`
   flags multiple named locks because global-lock behavior may change callback
   assumptions.
 - Storage arrays bounded by `max_value(uint256)` or the max-uint256 literal:
-  `VY091` lowers top-level declarations to `HashMap[uint256, T]` while
-  preserving public getter shape.
+  `VYD020` flags the storage addressing and index-bound changes. With
+  `--aggressive`, `VY091` converts the declaration to `HashMap[uint256, T]`.
+  Storage comparison reports the incompatible layout.
 - Unreachable code validation is stricter: `VY092` removes code in a block
   after unconditional terminators and after exhaustive terminating if-chains.
 - `_abi_encode` and `_abi_decode` renamed: `VY010` and `VY011`.
@@ -233,7 +237,8 @@ modern Python interpreter.
 - Fixed-size array equality remains unsupported for some element types:
   `VY213` expands comparisons against `empty(T[N])` into elementwise checks.
 - Struct equality remains unsupported: `VY214` expands comparisons against
-  `empty(Struct)` into field-wise checks.
+  `empty(Struct)` into field-wise checks. Both comparison rules evaluate
+  complex indexed operands once, including in short-circuit expressions.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
   arithmetic expressions. It also casts signed operands of `unsafe_sub(...)`
@@ -496,8 +501,8 @@ modern Python interpreter.
 - Dynamic byte and string type names capitalized: `VY207`.
 - Byte and string literals are no longer interchangeable: `VYD210`.
 - `assert_modifiable()` and `as_unitless_number()` removed: `VY208`.
-- `create_with_code_of()` renamed: `VY208` rewrites it to
-  `create_copy_of()`.
+- `VYD021` flags legacy `create_with_code_of()` factories for review.
+  `VY208` requires `--aggressive` to switch to the target compiler’s forwarder.
 - Function input name `value` reserved: `VY212` renames legacy inputs and
   updates local references. `VYD211` remains for cases the fixer cannot handle.
 - Builtin names `min_value` and `max_value` reserved: `VY222` renames colliding
@@ -521,7 +526,8 @@ modern Python interpreter.
 - `empty()` added: no-op.
 - `@pure` added: no-op.
 - `raise` can omit a reason string: no-op.
-- `method_id()` type argument made optional: `VY209`.
+- The `method_id()` type argument became optional. For targets from 0.3.4,
+  `VY209` preserves the leading zero padding of legacy `bytes32` selectors.
 - `raw_call` can perform `STATICCALL`: no-op.
 - Interfaces can be split into generated `.vyi` files: `VY120`.
 
@@ -576,8 +582,9 @@ modern Python interpreter.
 
 - List constants added: no-op. This is newly accepted constant syntax.
 - `sha256()` added: no-op. This is new opt-in builtin syntax.
-- `create_with_code_of()` renamed to `create_forwarder_to()`: `VY208` handles
-  the modern `create_copy_of()` spelling used by supported targets.
+- `create_with_code_of()` became `create_forwarder_to()`, later
+  `create_minimal_proxy_to()`. Review differences in child bytecode and
+  returndata before opting in to `VY208` (`VYD021`).
 - `@nonreentrant` added: no-op for beta targets. Later reentrancy syntax
   migrations are covered by `VY090`, `VY210`, and `VYD002`.
 

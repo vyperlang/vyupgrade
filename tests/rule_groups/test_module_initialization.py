@@ -268,3 +268,27 @@ def test_absolute_import_requires_every_candidate_to_be_stateless(
     )
     assert bool(result.fixes) == removed
     assert ("initializes: middle" not in result.source) == removed
+
+
+def test_cr_only_line_endings_keep_stateful_module_initialized(tmp_path: Path) -> None:
+    result = _migrate(tmp_path, "#pragma version 0.4.3\rcounter: public(uint256)\r")
+    assert result.source == SOURCE
+    assert not result.fixes
+
+
+@pytest.mark.parametrize(("leaf", "removed"), [("X: constant(uint256) = 1\n", True), ("x: uint256\n", False)])
+def test_dotted_initialization_resolves_through_intermediate_module(
+    tmp_path: Path, leaf: str, removed: bool
+) -> None:
+    (tmp_path / "leaf.vy").write_text(leaf)
+    source = "#pragma version 0.4.3\nfrom . import lib\ninitializes: lib.leaf\n"
+    result = _migrate(tmp_path, "from . import leaf\n", source)
+    assert ("initializes: lib.leaf" not in result.source) == removed
+    assert bool(result.fixes) == removed
+
+
+def test_builtin_stdlib_module_initialization_is_dropped(tmp_path: Path) -> None:
+    source = "#pragma version 0.4.3\nimport math\ninitializes: math\n"
+    result = _migrate(tmp_path, "", source)
+    assert result.source == "#pragma version 0.4.3\nimport math\n\n"
+    assert [fix.rule for fix in result.fixes] == ["VY126"]

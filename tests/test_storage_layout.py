@@ -113,3 +113,13 @@ def test_transient_lock_move_is_equal_but_remains_visible() -> None:
         "moved storage to transient: $nonreentrant:0 slot 0 nonreentrant lock "
         "-> $nonreentrant:0 slot 0 nonreentrant lock",
     )
+
+
+def test_parse_storage_layout_accepts_zero_bound_dynarray() -> None:
+    layout = parse_storage_layout(
+        {"storage_layout": {"empty": {"slot": 0, "type": "DynArray[uint256, 0]", "n_slots": 1}}}
+    )
+
+    assert layout == StorageLayout(
+        persistent={"empty": StorageValue(0, "DynArray[uint256, 0]", 1)}, transient={}
+    )

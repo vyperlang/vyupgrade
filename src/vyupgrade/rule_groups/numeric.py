@@ -15,6 +15,7 @@ from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
     insert_import as _insert_import,
     line_match_starts_outside_string as _line_match_starts_outside_string,
+    operator_operand,
 )
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
@@ -28,7 +29,7 @@ from ..source import (
     span_is_code,
 )
 from .numeric_constant_helpers import integer_constant_values
-from .numeric_scope import vars_for_argument as _vars_for_argument
+from .numeric_scope import shift_call_bindings, vars_for_argument as _vars_for_argument
 from .numeric_shift import constant_shift_replacement, runtime_shift_replacement
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
@@ -421,9 +422,9 @@ def _replace_builtin_call(
         if args is None:
             continue
         if unary and len(args) == 1:
-            replacement = f"(~{args[0]})"
+            replacement = f"(~{operator_operand(args[0])})"
         elif not unary and len(args) == 2:
-            replacement = f"({args[0]} {operator} {args[1]})"
+            replacement = f"({operator_operand(args[0])} {operator} {operator_operand(args[1])})"
         else:
             continue
         edits.append(TextEdit(match.start(), close + 1, replacement))
@@ -444,11 +445,14 @@ def _replace_shift_builtin(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     current = rule_context.source
+    if "shift" not in current:
+        return current, [], []
     all_fixes: list[Fix] = []
     while True:
         mask = code_mask(current)
         constant_values = integer_constant_values(current, rule_context.config.source_ast)
         facts = parse_source_facts(current)
+        call_bindings = shift_call_bindings(current, facts)
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []
         edits: list[TextEdit] = []
@@ -479,7 +483,7 @@ def _replace_shift_builtin(
             replacement = (
                 constant_shift_replacement(value, amount)
                 if amount is not None else runtime_shift_replacement(
-                    value, shift_by, facts.vars_at_line(line_number(current, match.start())), facts,
+                    value, shift_by, call_bindings.get(line_number(current, match.start()), {}), facts,
                     constant_values,
                 )
             )

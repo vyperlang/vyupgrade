@@ -39,7 +39,7 @@ def _migration_pair(tmp_path: Path, source: str):
     decision = engine.validate_migrations(batch, config)
     assert decision.status == "passed", batch.reports
     target = batch.files[0].rewrite.source
-    return _deploy(path, source, "0.3.10"), _deploy(path, target, "0.4.3")
+    return _deploy(path, source, batch.files[0].source_compiler), _deploy(path, target, "0.4.3")
 
 
 def _call(deployment, signature: str, *args: int) -> int:
@@ -304,6 +304,148 @@ def f(x: uint256, n: uint256) -> uint256:
     for n in (0, 1, 7, 31, 32, 2**255 - 1, 2**255):
         actual = [_outcome(d, "f(uint256,uint256)", 2**256 - 1, n) for d in (original, migrated)]
         assert actual[0] == actual[1], (n, actual)
+
+
+def test_internal_guard_rejects_reentrant_callback(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+def f(n: uint256) -> bool:
+    return self._guard(n)
+
+@internal
+@nonreentrant("lock")
+def _guard(n: uint256) -> bool:
+    if n == 0:
+        return True
+    return raw_call(self, concat(method_id("f(uint256)"), empty(bytes32)), revert_on_failure=False)
+""")
+    assert [_call(d, "f(uint256)", 1) for d in deployments] == [0] * 2
+
+
+def test_raw_call_preserves_literal_payload(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+def f() -> uint256:
+    return convert(raw_call(self, b"outsize=", max_outsize=32), uint256)
+
+@external
+def __default__() -> uint256:
+    return len(msg.data)
+""")
+    assert [_call(d, "f()") for d in deployments] == [8] * 2
+
+
+def test_bitwise_operators_preserve_operand_grouping(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+@pure
+def f(x: uint256, y: uint256) -> uint256:
+    return bitwise_not(x + y)
+
+@external
+@pure
+def both(x: uint256, y: uint256) -> uint256:
+    return bitwise_and(x | y, x | 4)
+""")
+    assert [_call(d, "f(uint256,uint256)", 1, 2) for d in deployments] == [-4] * 2
+    assert [_call(d, "both(uint256,uint256)", 1, 2) for d in deployments] == [1] * 2
+
+
+def test_boundary_folding_respects_modulo_precedence(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+@pure
+def f() -> int128:
+    return 2**127 - 1 % 2
+""")
+    assert [_call(d, "f()") for d in deployments] == [2**127 - 1] * 2
+
+
+def test_array_comparison_evaluates_index_once(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.1
+items: uint256[2][2]
+num: uint256
+@internal
+def idx() -> uint256:
+    self.num += 1
+    return 0
+@external
+def f(skip: bool) -> uint256:
+    assert skip or self.items[self.idx()] == empty(uint256[2])
+    return self.num
+""")
+    for skip, calls in ((True, 0), (False, 1)):
+        assert [_call(d, "f(bool)", skip) for d in deployments] == [calls] * 2
+
+
+def test_shift_amount_uses_current_branch_type(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+@pure
+def f(x: uint256, n: uint256, wide: bool) -> uint256:
+    if wide:
+        amount: uint256 = n
+        return shift(x, amount + 0)
+    else:
+        amount: uint8 = 1
+        return shift(x, amount)
+""")
+    for wide, expected in ((True, 8), (False, 32)):
+        assert [
+            _call(d, "f(uint256,uint256,bool)", 16, 2**256 - 1, wide) for d in deployments
+        ] == [expected] * 2
+
+
+def test_method_id_preserves_all_32_bytes(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.1
+@external
+@pure
+def f(data: bytes32) -> bool:
+    return data == method_id("transfer(address,uint256)", output_type=bytes32)
+""")
+    selector = int.from_bytes(keccak(text="transfer(address,uint256)")[:4], "big")
+    for word in (selector, selector << 224, selector << 224 | 1, 0):
+        assert [_call(d, "f(bytes32)", word) for d in deployments] == [int(word == selector)] * 2
+
+
+def test_max_length_array_to_mapping_blocks_write(tmp_path):
+    path = tmp_path / "entry.vy"
+    source = """# @version 0.3.7
+slots: public(uint256[max_value(uint256)])
+@external
+def write(i: uint256, x: uint256):
+    self.slots[i] = x
+"""
+    path.write_text(source)
+    config = Config(paths=(path,), target_version="0.4.3", aggressive=True)
+    batch = engine.prepare_migrations([engine.bounded_migration_request(path, source, config)], config)
+    decision = engine.validate_migrations(batch, config)
+    report = batch.files[0].report
+    assert report.source_compile == report.target_compile == "passed"
+    assert report.abi_equal and report.method_ids_equal
+    assert report.storage_layout_equal is False
+    assert [blocker.code for blocker in decision.blockers] == ["storage_layout_changed"]
+
+
+def test_beta_factory_deploys_forwarder_after_explicit_opt_in(tmp_path):
+    path = tmp_path / "factory.vy"
+    source = """# @version 0.1.0b8
+@public
+def child(target: address) -> address:
+    return create_with_code_of(target)
+"""
+    migrated = apply_rules(source, Config(paths=(path,), aggressive=True))
+    for code, version in ((source, "0.1.0b8"), (migrated.source, "0.4.3")):
+        vm, sender, address = _deploy(path, code, version)
+        message = {
+            "from": sender, "to": address, "gas": 1_000_000,
+            "data": _calldata("child(address)", (int(address, 16),)),
+        }
+        child = "0x" + vm.call(message)[-40:]
+        assert vm.get_transaction_receipt(vm.send_transaction(message))["status"] == 1
+        child_code = vm.get_code(child)
+        assert address[2:].lower() in child_code.lower()
+        assert child_code != vm.get_code(address)
 
 
 def test_stateless_initializer_removal_preserves_embedded_nonreentrancy_pragma(
