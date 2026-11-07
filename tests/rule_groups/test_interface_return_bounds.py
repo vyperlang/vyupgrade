@@ -1282,6 +1282,47 @@ def test_branch_local_receivers_ignore_lines_that_do_not_start_statements(
     assert result.diagnostics == []
 
 
+def test_branch_local_receiver_declared_in_a_spelling_the_rule_misses_blocks(config) -> None:
+    # The function's other `ref` is the sibling branch's, so it must not type this one.
+    source = BRANCH_LOCAL_INTERFACES.replace(
+        "        ref: Narrow = Narrow(a)\n", "        (ref): Narrow = Narrow(a)\n"
+    )
+    assert source != BRANCH_LOCAL_INTERFACES
+
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[1]: view\n" in result.source
+    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+
+
+def test_receiver_parameter_is_typed_by_the_function_header(config) -> None:
+    source = """#pragma version 0.4.3
+interface IFoo:
+    def data() -> Bytes[1]: view
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"hello"
+
+@external
+@view
+def read(
+    a: address,
+    ref: IFoo,
+) -> uint256:
+    return len(staticcall ref.data())
+"""
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[...]: view\n" in result.source
+    assert "    return len(self.__vyupgrade_return_bound(staticcall ref.data()))\n" in (
+        result.source
+    )
+
+
 UNRESOLVED_INLINE_RECEIVER = """#pragma version 0.4.3
 interface IFoo:
     def data() -> Bytes[1]: view

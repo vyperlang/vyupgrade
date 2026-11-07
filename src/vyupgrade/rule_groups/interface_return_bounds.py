@@ -945,11 +945,12 @@ def _expression_type(
         return normalize_type(facts.storage_vars[expression[5:]]).strip("() ")
     variables = facts.vars_at_line(line_number(source, offset))
     root = re.match(r"[A-Za-z_][A-Za-z0-9_]*", expression)
-    # A local is typed by its declaration in scope, not the function's last one.
-    # Vyper forbids shadowing, so a name without one in scope is a parameter.
+    # A local is typed by its declaration in scope or the function's parameter,
+    # not the function's last declaration of that name. Vyper forbids
+    # shadowing, so any other name must be declared at module level.
     if root is not None and root.group() != "self":
         scoped = _scoped_local_type(source, offset, root.group())
-        if scoped == "":
+        if scoped == "" or (scoped is None and root.group() not in facts.global_vars):
             return ""
         if scoped is not None:
             variables[root.group()] = scoped
@@ -958,12 +959,13 @@ def _expression_type(
 
 
 def _scoped_local_type(source: str, offset: int, name: str) -> str | None:
-    """Type of the declaration of ``name`` in a block enclosing ``offset``.
+    """Type of the declaration of ``name`` in a block enclosing ``offset``, or parameter.
 
     Walks back through the function's logical lines: one indented deeper than
     the innermost enclosing block so far belongs to a block that has already
-    closed. None when no enclosing block declares ``name``; "" when the source
-    cannot be split into logical lines.
+    closed. None when neither an enclosing block nor the function declares
+    ``name``; "" when that can't be told (a declaration this walk doesn't
+    recognize is then missed, so a name it misses must not be typed otherwise).
     """
     logical = _logical_line_numbers(source)
     if logical is None:
@@ -993,10 +995,31 @@ def _scoped_local_type(source: str, offset: int, name: str) -> str | None:
         if found is not None:
             return found.group("type")
         if indent < limit:
-            if _DEF_RE.match(line):
-                # Parameters are typed once for the whole function.
-                return None
+            header = _DEF_RE.match(line)
+            if header is not None:
+                return _parameter_type(source, start + header.end() - 1, name)
             limit = indent
+    return None
+
+
+def _parameter_type(source: str, open_paren: int, name: str) -> str | None:
+    """Annotation of parameter ``name`` of the function whose parameters open at ``open_paren``.
+
+    None when it has no such parameter; "" when the parameters can't be parsed.
+    """
+    close = find_matching(source, open_paren)
+    if close is None:
+        return ""
+    header = f"def f({source[open_paren + 1 : close]}): pass"
+    try:
+        function = ast.parse(header).body[0]
+    except SyntaxError:
+        return ""
+    assert isinstance(function, ast.FunctionDef)
+    for argument in function.args.args:
+        if argument.arg == name:
+            annotation = argument.annotation
+            return (ast.get_source_segment(header, annotation) or "") if annotation else ""
     return None
 
 
