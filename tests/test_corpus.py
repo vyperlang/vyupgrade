@@ -1002,7 +1002,7 @@ def test_smoke_uses_manifest_pragma_as_source_version(monkeypatch, tmp_path: Pat
     }
     seen: dict[str, str | None] = {}
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["source_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
@@ -1058,7 +1058,7 @@ def test_smoke_records_artifact_diff_details_for_mismatches(monkeypatch, tmp_pat
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
+        lambda source, config, path, *, compiler_facts: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
     monkeypatch.setattr(
         corpus.engine,
@@ -1098,7 +1098,7 @@ def test_smoke_tries_lowest_broad_pragma_compiler_before_syntax_hint(
     }
     seen: dict[str, object] = {"compile_versions": []}
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["rewrite_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
@@ -1182,7 +1182,7 @@ def multiplyHoldings() -> bool:
         status = "passed" if source_version == "0.3.3" else "failed"
         return CompileResult(status=status, artifacts={}, stderr=None)
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["rewrite_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
@@ -1228,7 +1228,7 @@ def test_smoke_reports_winning_source_compiler_instead_of_manifest_hint(
         status = "passed" if source_version == "0.3.4" else "failed"
         return CompileResult(status=status, artifacts={}, stderr=None)
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["rewrite_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
@@ -1276,7 +1276,7 @@ def test_smoke_preserves_source_provenance_when_target_validation_raises(
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
+        lambda source, config, path, *, compiler_facts: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
 
     def fail_target_validation(batch, config):
@@ -1323,7 +1323,7 @@ def test_smoke_uses_valid_manifest_compiler_when_pragma_is_unusable(
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
+        lambda source, config, path, *, compiler_facts: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
     monkeypatch.setattr(
         corpus.engine,
@@ -1366,7 +1366,7 @@ def test_smoke_fails_closed_without_usable_source_version(
     monkeypatch.setattr(
         corpus.engine,
         "apply_rules",
-        lambda source, config, path: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
+        lambda source, config, path, *, compiler_facts: SimpleNamespace(source=source, fixes=[], diagnostics=[]),
     )
     monkeypatch.setattr(
         corpus.engine,
@@ -1404,7 +1404,7 @@ def test_smoke_retries_broad_pragma_with_newer_source_compiler(monkeypatch, tmp_
             return CompileResult(status="failed", artifacts=None, stderr="old compiler failed")
         return CompileResult(status="passed", artifacts={}, stderr=None)
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["rewrite_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
@@ -1440,7 +1440,7 @@ def test_smoke_uses_standard_json_compiler_version_for_source(monkeypatch, tmp_p
     }
     seen: dict[str, str | None] = {}
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["rewrite_version"] = config.source_version
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 
@@ -1493,7 +1493,7 @@ def test_smoke_uses_standard_json_search_paths(monkeypatch, tmp_path: Path) -> N
     }
     seen: dict[str, tuple[Path, ...]] = {}
 
-    def fake_apply_rules(source, config, path):
+    def fake_apply_rules(source, config, path, *, compiler_facts):
         seen["rewrite_paths"] = config.compiler_search_paths
         return SimpleNamespace(source=source, fixes=[], diagnostics=[])
 

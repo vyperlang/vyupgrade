@@ -20,6 +20,7 @@ from .interfaces import split_interfaces_to_vyi
 from .models import (
     CompileAttempt,
     CompilerDeclaration,
+    CompilerFacts,
     ContentIdentity,
     DeclaredSpec,
     DependencyContext,
@@ -175,20 +176,11 @@ def prepare_migrations(
         source_compiler = source_compile.resolved_compiler or (
             attempt.compiler_label if attempt is not None else None
         )
-        artifacts = source_compile.artifacts or {}
-        source_ast = artifacts.get("ast")
-        annotated_ast = artifacts.get("annotated_ast")
-        external_calls = artifacts.get("external_calls_v1")
-        # Config.source_ast remains the compatibility bridge for rules, but this
-        # derived config belongs to this file and is never reused by another file.
-        file_config = replace(
-            config,
-            source_version=source_version,
-            source_ast=source_ast if isinstance(source_ast, dict) else None,
-            source_annotated_ast=annotated_ast if isinstance(annotated_ast, dict) else None,
-            source_external_calls=external_calls if isinstance(external_calls, dict) else None,
+        file_config = replace(config, source_version=source_version, source_ast=None)
+        facts = CompilerFacts.from_artifacts(
+            source_compile.artifacts if source_compile.status in {"passed", "degraded"} else None
         )
-        rewrite = apply_rules(request.original, file_config, request.path)
+        rewrite = apply_rules(request.original, file_config, request.path, compiler_facts=facts)
         if (
             config.split_interfaces
             and request.path.suffix == ".vy"
@@ -381,10 +373,7 @@ def _compile_source(
     first_result: CompileResult | None = None
     compile_source = compile_source_ast if request.role == "dependency" else compile_source_file
     for attempt in request.source_attempts:
-        attempt_config = replace(
-            config, source_version=attempt.rule_version, source_ast=None,
-            source_annotated_ast=None, source_external_calls=None,
-        )
+        attempt_config = replace(config, source_version=attempt.rule_version, source_ast=None)
         result = compile_source(request.path, attempt_config, attempt.compile_version)
         if first_result is None:
             first_attempt = attempt

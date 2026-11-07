@@ -35,7 +35,7 @@ def _request(
     )
 
 
-def _unchanged_rewrite(source, config, path) -> RewriteResult:
+def _unchanged_rewrite(source, config, path, *, compiler_facts) -> RewriteResult:
     return RewriteResult(source, [], [])
 
 
@@ -69,7 +69,7 @@ def test_prepare_uses_first_passing_retry_and_its_rule_version(monkeypatch, tmp_
             return CompileResult("failed", stderr="first failed")
         return CompileResult("passed", artifacts=SOURCE_ARTIFACTS)
 
-    def apply(source, config, path):
+    def apply(source, config, path, *, compiler_facts):
         seen["rule_version"] = config.source_version
         return RewriteResult(source, [], [])
 
@@ -94,7 +94,7 @@ def test_prepare_retains_first_failure_when_all_retries_fail(monkeypatch, tmp_pa
         seen["compile"].append(source_version)
         return CompileResult("failed", stderr=f"failed {source_version}")
 
-    def apply(source, config, path):
+    def apply(source, config, path, *, compiler_facts):
         seen["rule_version"] = config.source_version
         return RewriteResult(source, [], [])
 
@@ -116,31 +116,25 @@ def test_source_ast_and_semantic_evidence_are_owned_by_each_file(monkeypatch, tm
     asts: dict[str, object] = {}
 
     def compile_source(path, config, source_version):
-        assert (config.source_ast, config.source_annotated_ast, config.source_external_calls) == (
-            None, None, None
-        )
+        assert config.source_ast is None
         artifacts = dict(VALIDATION_ARTIFACTS)
-        if path == first:
-            artifacts["ast"] = {"owner": "first"}
-            artifacts["annotated_ast"] = {"annotated": "first"}
-            artifacts["external_calls_v1"] = {"calls": []}
-        return CompileResult("passed", artifacts=artifacts)
+        artifacts["ast"] = {"owner": path.name}
+        artifacts["annotated_ast"] = {"annotated": path.name}
+        artifacts["external_calls_v1"] = {"calls": []}
+        return CompileResult("passed" if path == first else "failed", artifacts=artifacts)
 
-    def apply(source, config, path):
-        asts[path.name] = config.source_ast, config.source_annotated_ast, config.source_external_calls
+    def apply(source, config, path, *, compiler_facts):
+        asts[path.name] = compiler_facts.ast, compiler_facts.annotated_ast, compiler_facts.external_calls
         return RewriteResult(source, [], [])
 
     monkeypatch.setattr(engine, "compile_source_file", compile_source)
     monkeypatch.setattr(engine, "apply_rules", apply)
-    config = _config(
-        tmp_path, source_ast={"stale": True}, source_annotated_ast={"stale": True},
-        source_external_calls={"stale": True},
-    )
+    config = _config(tmp_path, source_ast={"stale": True})
 
     engine.prepare_migrations((_request(first), _request(second)), config)
 
     assert asts == {
-        "First.vy": ({"owner": "first"}, {"annotated": "first"}, {"calls": []}),
+        "First.vy": ({"owner": "First.vy"}, {"annotated": "First.vy"}, {"calls": []}),
         "Second.vy": (None, None, None),
     }
     assert config.source_ast == {"stale": True}
@@ -206,7 +200,7 @@ def test_candidate_override_and_revalidation_reset_only_engine_diagnostics(
     monkeypatch.setattr(
         engine,
         "apply_rules",
-        lambda source, config, path: RewriteResult(source + "# rewritten\n", [], [rule_diagnostic]),
+        lambda source, config, path, *, compiler_facts: RewriteResult(source + "# rewritten\n", [], [rule_diagnostic]),
     )
 
     def compile_target(path, source, config, overlay):
@@ -258,7 +252,7 @@ def test_generated_interface_and_cross_file_sources_share_one_overlay(
         lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
     )
 
-    def apply(source, config, path):
+    def apply(source, config, path, *, compiler_facts):
         generated = []
         if path == first:
             generated.append(
@@ -440,7 +434,7 @@ def test_validation_rejects_duplicate_resolved_destinations(monkeypatch, tmp_pat
         lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
     )
 
-    def apply(source, config, path):
+    def apply(source, config, path, *, compiler_facts):
         declaration = "one" if path == first else "two"
         generated = GeneratedFile(
             interface,
@@ -636,7 +630,7 @@ def test_validate_migrations_threads_closure_mode(monkeypatch, tmp_path: Path) -
         lambda *_args: CompileResult("passed", artifacts={"ast": {}}),
     )
 
-    def apply(source, config, path):
+    def apply(source, config, path, *, compiler_facts):
         rewritten = rewritten_dependency if path == dependency else source
         return RewriteResult(rewritten, [], [])
 

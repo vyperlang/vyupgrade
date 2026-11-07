@@ -13,6 +13,7 @@ from .source import (
     find_matching,
     find_matching_open as find_matching_open,
     line_number,
+    line_offsets as line_offsets,
     line_starts_in_code,
     span_is_code,
 )
@@ -53,13 +54,6 @@ def innermost_non_overlapping(
         selected.append((edit, fix))
     selected.sort(key=lambda item: item[0].start)
     return [edit for edit, _fix in selected], [fix for _edit, fix in selected]
-
-
-def line_offsets(source: str) -> list[int]:
-    offsets = [0]
-    for match in re.finditer("\n", source):
-        offsets.append(match.end())
-    return offsets
 
 
 def strip_arg_comments(raw_args: str) -> str:

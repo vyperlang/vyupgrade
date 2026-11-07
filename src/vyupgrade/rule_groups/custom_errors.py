@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import re
 from typing import Any
 
-from ..ast_facts import SourceSpan, iter_nodes, node_span
+from ..ast_facts import CompilerSource, SourceSpan, iter_nodes
 from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
     TextEdit,
     apply_edits,
     find_matching_open,
-    line_number,
+    lone_cr_as_lf,
     split_top_level_arg_spans,
 )
 
@@ -60,32 +59,6 @@ def _declarations(modules: list[Any]) -> dict[tuple[int, int], tuple[str, ...] |
     return declarations
 
 
-def _source_span(context: RuleContext, node: dict[str, Any]) -> SourceSpan | None:
-    """b1's src combines character line starts with CPython's UTF-8 byte columns."""
-    raw = node_span(node)
-    if raw is None:
-        return None
-    offsets = context.line_offsets
-    positions = []
-    for row, column, raw_position in (
-        (node.get("lineno"), node.get("col_offset"), raw.start),
-        (node.get("end_lineno"), node.get("end_col_offset"), raw.end),
-    ):
-        if type(row) is not int or not 1 <= row <= len(offsets) or type(column) is not int:
-            return None
-        start = offsets[row - 1]
-        stop = offsets[row] if row < len(offsets) else len(context.source)
-        line_bytes = context.source[start:stop].encode()
-        if raw_position != start + column or not 0 <= column <= len(line_bytes):
-            return None
-        try:
-            positions.append(start + len(line_bytes[:column].decode()))
-        except UnicodeDecodeError:
-            return None
-    start, end = positions
-    return SourceSpan(start, end - start, raw.source_id) if start < end else None
-
-
 def _same_callee(text: str, node: Any) -> bool:
     # Python parses Vyper's dotted names, including comments, grouping and NFKC
     # identifier normalization. Check the spelling at the proposed edit site.
@@ -106,10 +79,11 @@ def _same_callee(text: str, node: Any) -> bool:
 
 
 def _name_arguments(
-    context: RuleContext, call: SourceSpan, node: dict[str, Any], fields: tuple[str, ...]
+    source: CompilerSource, call: SourceSpan, node: dict[str, Any], fields: tuple[str, ...]
 ) -> str | None:
     args = node["args"]
-    text = context.source[call.start : call.end]
+    original = source.original[call.start : call.end]
+    text = lone_cr_as_lf(original)  # Keep offsets and every original line ending.
     if not text.endswith(")"):
         return None
     opening = find_matching_open(text, len(text) - 1)
@@ -128,27 +102,27 @@ def _name_arguments(
 
     edits = []
     for (start, end), arg, field in zip(bounds, args, fields, strict=True):
-        span = _source_span(context, arg) if isinstance(arg, dict) else None
-        if (
-            span is None
-            or span.source_id != call.source_id
-            or not (call.start + start <= span.start < span.end <= call.start + end)
-        ):
+        span = (
+            source.span(arg, source_id=call.source_id, byte_columns=True)
+            if isinstance(arg, dict)
+            else None
+        )
+        if span is None or not (call.start + start <= span.start < span.end <= call.start + end):
             return None
         edits.append(TextEdit(start, start, f"{field}="))
-    return apply_edits(text, edits)
+    return apply_edits(original, edits)
 
 
 def _rewrite_positional_custom_errors(
     context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = context.source
-    output = context.config.source_annotated_ast or {}
+    output = context.compiler_facts.annotated_ast or {}
     root = output.get("ast")
-    if (
-        not isinstance(root, dict)
-        or root.get("source_sha256sum") != hashlib.sha256(source.encode()).hexdigest()
-    ):
+    if not isinstance(root, dict) or root.get("ast_type") != "Module":
+        return source, [], []
+    compiler_source = CompilerSource(source)
+    if not compiler_source.matches_digest(root.get("source_sha256sum")):
         return source, [], []
     imports = output.get("imports", [])
     if not isinstance(imports, list):
@@ -172,21 +146,17 @@ def _rewrite_positional_custom_errors(
             continue
         fields = declarations.get((ref["source_id"], ref["node_id"]))
         args = call.get("args")
-        span = _source_span(context, call)
+        span = compiler_source.span(call, source_id=root.get("source_id"), byte_columns=True)
         if not fields or not isinstance(args, list) or span is None:
             continue
-        if span.source_id != root.get("source_id") or not (
-            0 <= span.start < span.end <= len(source)
-        ):
-            continue
-        after = _name_arguments(context, span, call, fields)
+        after = _name_arguments(compiler_source, span, call, fields)
         if after is not None:
             before = source[span.start : span.end]
             edits.append(TextEdit(span.start, span.end, after))
             fixes.append(
                 Fix(
                     "VY127",
-                    line_number(source, span.start),
+                    call["lineno"],
                     "named custom error arguments",
                     before,
                     after,

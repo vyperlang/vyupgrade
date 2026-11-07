@@ -376,8 +376,23 @@ class Config:
     source_ast: dict[str, Any] | None = None
     source_snapshot: ImportClosure | None = None
     strip_pragma: bool = False
-    source_annotated_ast: dict[str, Any] | None = None
-    source_external_calls: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CompilerFacts:
+    """Optional rewrite evidence from one source compilation."""
+
+    ast: dict[str, Any] | None = None
+    annotated_ast: dict[str, Any] | None = None
+    external_calls: dict[str, Any] | None = None
+
+    @classmethod
+    def from_artifacts(cls, artifacts: dict[str, object] | None) -> CompilerFacts:
+        def output(name: str) -> dict[str, Any] | None:
+            value = artifacts.get(name) if artifacts else None
+            return value if isinstance(value, dict) else None
+
+        return cls(output("ast"), output("annotated_ast"), output("external_calls_v1"))
 
 
 @dataclass

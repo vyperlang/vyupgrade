@@ -12,7 +12,6 @@ from ..analysis import (
 )
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
-    function_start_at_line as _function_start_at_line,
     line_match_starts_outside_string as _line_match_starts_outside_string,
     literal_integer as _literal_integer,
 )
@@ -49,7 +48,7 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
     pattern = re.compile(
         r"^([ \t]*)for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+(.+?):", re.MULTILINE
     )
-    inferred_loop_vars: dict[int, dict[str, str]] = {}
+    inferred_loop_types: dict[int, str] = {}
 
     for match in pattern.finditer(source):
         if not _line_match_starts_outside_string(source, mask, match.start()):
@@ -58,10 +57,7 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
         if ":" in source[match.start() : match.end()].split(" in ", 1)[0]:
             continue
         line = line_number(source, match.start())
-        function_start = _function_start_at_line(facts, line)
-        vars_for_line = facts.vars_at_line(line)
-        if function_start is not None:
-            vars_for_line.update(inferred_loop_vars.get(function_start, {}))
+        vars_for_line = facts.vars_at_line(line, inferred_loop_types)
         flag_member_list = _literal_flag_member_list(iterable, flag_member_values)
         if flag_member_list is not None:
             var_type = "uint256"
@@ -91,8 +87,7 @@ def _typed_range_loops(rule_context: RuleContext) -> tuple[str, list[Fix], list[
                 after,
             )
         )
-        if function_start is not None:
-            inferred_loop_vars.setdefault(function_start, {})[match.group(2)] = var_type
+        inferred_loop_types[line] = var_type
 
     return apply_edits(source, edits), fixes, []
 
@@ -141,9 +136,8 @@ def _signed_negative_range_bounds(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    config = rule_context.config
     facts = rule_context.facts
-    constant_values = integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, rule_context.compiler_facts.ast)
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
@@ -392,7 +386,7 @@ def _sentinel_range_bound(
     source = rule_context.source
     config = rule_context.config
     mask = rule_context.code_mask
-    constant_values = integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, rule_context.compiler_facts.ast)
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     edits: list[TextEdit] = []
@@ -586,7 +580,6 @@ def _range_bound(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    config = rule_context.config
     facts = rule_context.facts
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -621,7 +614,7 @@ def _range_bound(
         if _literal_integer(args[0]) and _literal_integer(args[1]):
             continue
         bound = _infer_range_bound(
-            args[0], args[1], integer_constant_values(source, config.source_ast)
+            args[0], args[1], integer_constant_values(source, rule_context.compiler_facts.ast)
         )
         if bound is None:
             if rule_context.is_enabled("VYD011"):

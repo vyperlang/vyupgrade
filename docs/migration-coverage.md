@@ -208,10 +208,10 @@ modern Python interpreter.
   `staticcall`. `VY042` parenthesizes keyworded calls before subscripting.
   `VY057` assigns ignored `staticcall` results to a generated local variable
   when the interface return type is known. `VYD003` flags calls whose mutability
-  cannot be inferred. On supported managed `0.3.10` inputs the prototype
-  uses compiler-proven call modes in functions whose signature and body still
-  match the captured source. Earlier interface edits, missing evidence, or
-  unsupported call shapes can leave a function on the existing rewrite path.
+  cannot be inferred. Managed `0.3.10` supplies resolved call modes and return
+  types. The rule matches call spans to the candidate after earlier edits,
+  including known interface renames, and checks the target declaration.
+  Other cases use block-scoped source facts.
 - Integer division uses `//`: `VY050` rewrites proven integer division.
   `VYD004` flags ambiguous `/` expressions.
 - Redundant integer `convert(...)` calls rejected by modern Vyper: `VY051`

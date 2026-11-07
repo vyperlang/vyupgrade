@@ -5,6 +5,7 @@ import re
 import tokenize
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -19,7 +20,15 @@ class TextEdit:
 
 
 def line_number(source: str, offset: int) -> int:
-    return source.count("\n", 0, offset) + 1
+    lines = source.count("\n", 0, offset)
+    if "\r" in source:
+        # A CRLF pair ends at its LF, even for an offset between its two bytes.
+        lines += source.count("\r", 0, offset) - source.count("\r\n", 0, offset + 1)
+    return lines + 1
+
+
+def line_offsets(source: str) -> list[int]:
+    return [0, *(match.end() for match in re.finditer(r"\r\n|[\r\n]", source))]
 
 
 def lone_cr_as_lf(source: str) -> str:
@@ -27,14 +36,14 @@ def lone_cr_as_lf(source: str) -> str:
 
     Each lone CR is replaced in place, so offsets stay valid in the original source.
     """
-    return _LONE_CR.sub("\n", source)
+    return _LONE_CR.sub("\n", source) if "\r" in source else source
 
 
 def logical_statement_tokens(source: str) -> Iterator[list[tokenize.TokenInfo]]:
     """Yield the code tokens of each complete logical statement."""
     statement = []
     try:
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        for token in tokenize.generate_tokens(io.StringIO(lone_cr_as_lf(source)).readline):
             if token.type == tokenize.NEWLINE:
                 if statement:
                     yield statement
@@ -59,6 +68,7 @@ def code_mask(source: str) -> list[bool]:
 
 
 def _scan_source(source: str) -> tuple[list[bool], bool]:
+    source = lone_cr_as_lf(source)
     mask = [True] * len(source)
     i = 0
     string_quote: str | None = None
@@ -109,7 +119,7 @@ def span_is_code(mask: list[bool], start: int, end: int) -> bool:
 
 def line_starts_in_code(source: str, mask: list[bool], offset: int) -> bool:
     """Return whether the line containing ``offset`` begins outside a string."""
-    line_start = source.rfind("\n", 0, offset) + 1
+    line_start = max(source.rfind("\n", 0, offset), source.rfind("\r", 0, offset)) + 1
     if line_start > 0 and not mask[line_start - 1]:
         return False
     first = line_start
@@ -200,6 +210,30 @@ _CLOSERS = {"(": ")", "[": "]", "{": "}"}
 _OPENERS = {close: opening for opening, close in _CLOSERS.items()}
 
 
+# Rules interleave whole-file lookups with lookups on short expression slices.
+@lru_cache(maxsize=4)
+def _delimiter_pairs(source: str) -> dict[int, int]:
+    """Index both ends of locally balanced pairs in this exact source revision."""
+    mask = code_mask(source)
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for offset, char in enumerate(source):
+        if not mask[offset]:
+            continue
+        if char in _CLOSERS:
+            stack.append(offset)
+        elif char in _OPENERS:
+            if stack and source[stack[-1]] == _OPENERS[char]:
+                opening = stack.pop()
+                pairs[opening] = offset
+                pairs[offset] = opening
+            else:
+                # No pending opener can form a balanced pair across this mismatch.
+                # Previously completed pairs, and pairs after it, are still valid.
+                stack.clear()
+    return pairs
+
+
 def _matching_delimiter(
     source: str, index: int, opening: str, closing: str, *, reverse: bool = False
 ) -> int | None:
@@ -208,23 +242,7 @@ def _matching_delimiter(
         return None
     if not 0 <= index < len(source) or source[index] != opening:
         return None
-    mask = code_mask(source)
-    if not mask[index]:
-        return None
-    stack: list[str] = []
-    indices = range(index, -1, -1) if reverse else range(index, len(source))
-    for offset in indices:
-        if not mask[offset]:
-            continue
-        char = source[offset]
-        if char in pairs:
-            stack.append(pairs[char])
-        elif char in pairs.values():
-            if not stack or stack.pop() != char:
-                return None
-            if not stack:
-                return offset
-    return None
+    return _delimiter_pairs(source).get(index)
 
 
 def find_matching(

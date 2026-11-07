@@ -2,6 +2,7 @@ import hashlib
 
 import pytest
 
+from vyupgrade.models import CompilerFacts
 from vyupgrade.rules import apply_rules
 
 
@@ -69,10 +70,10 @@ def _migrate(config, source, evidence, *, target="0.5.0b2"):
     return apply_rules(
         source,
         config(
-            source_annotated_ast=evidence,
             select=frozenset({"VY127"}),
             target_version=target,
         ),
+        compiler_facts=CompilerFacts(annotated_ast=evidence),
     )
 
 
@@ -177,7 +178,25 @@ def test_custom_error_rule_respects_version_and_selection(config):
     source = "#pragma version 0.5.0b1\n@external\ndef check(x: uint256):\n    raise " + call + "\n"
     evidence = _evidence(source, call, ("x", "x"))
     assert _migrate(config, source, evidence, target="0.5.0b1").source == source
-    ignored = config(
-        target_version="0.5.0b2", source_annotated_ast=evidence, ignore=frozenset({"VY127"})
+    ignored = config(target_version="0.5.0b2", ignore=frozenset({"VY127"}))
+    assert (
+        call
+        in apply_rules(source, ignored, compiler_facts=CompilerFacts(annotated_ast=evidence)).source
     )
-    assert call in apply_rules(source, ignored).source
+
+
+@pytest.mark.parametrize("endings", [("\r\n",), ("\r",), ("\r", "\r\n", "\n")])
+def test_named_arguments_preserve_exact_mixed_line_endings(config, endings):
+    call = "Problem(\n        # π\n        (x),\n        x + 1,\n    )"
+    normalized = (
+        "#pragma version 0.5.0b1\n# β\n@external\ndef check(x: uint256):\n"
+        "    assert x == 0, " + call + "\n"
+    )
+    output = _evidence(normalized, call, ("x", "x + 1"))
+    lines = normalized.splitlines()
+    original = "".join(line + endings[i % len(endings)] for i, line in enumerate(lines))
+    result = _migrate(config, original, output)
+    assert result.source == original.replace("(x),", "available=(x),").replace(
+        "x + 1,", "required=x + 1,"
+    )
+    assert [(fix.rule, fix.line) for fix in result.fixes] == [("VY127", 5)]

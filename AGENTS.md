@@ -143,9 +143,10 @@ again before returning.
 - Use `RuleContext.facts` for lightweight source facts such as interfaces,
   structs, storage variables, function decorators, loop variables, and return
   types.
-- Use `config.source_ast` plus helpers in `ast_facts.py` when compiler spans or
-  parsed constants are needed. `engine.prepare_migrations()` populates a
-  per-file AST-backed config from source compilation when available.
+- Use `context.compiler_facts` for evidence from the original source compiler.
+  `engine.prepare_migrations()` passes a separate snapshot to each rewrite.
+  Use `CompilerSource` in `ast_facts.py` to translate compiler spans to the
+  original text. Use `context.facts` for bindings in the current revision.
 - Prefer local helpers over hand-rolled parsing when splitting arguments,
   inserting imports, finding matching delimiters, or computing line numbers.
 - If a rewrite depends on mutability or return types of external calls, update

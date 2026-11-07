@@ -1,205 +1,458 @@
-"""Use 0.3.10 call-site facts on the exact program the source compiler analyzed."""
+"""Plan external call edits from the source compiler's per-use evidence."""
 
 from __future__ import annotations
 
+from bisect import bisect_right
+from collections import defaultdict
 import re
-from hashlib import sha256
-from itertools import pairwise
+from dataclasses import dataclass, field
+from tokenize import NAME, TokenInfo
 from typing import Any
 
-from ..ast_facts import iter_nodes, node_span
+from ..analysis import SourceFacts, parse_source_facts
+from ..ast_facts import CompilerSource, iter_nodes, node_span
 from ..models import Fix
 from ..rule_registry import RuleContext
-from ..source import TextEdit, apply_edits, line_number
-from ..versions import PRAGMA_RE
+from ..source import (
+    TextEdit,
+    apply_edits,
+    code_identifiers,
+    line_offsets,
+    logical_statement_tokens,
+    lone_cr_as_lf,
+)
+from .legacy_interfaces import IMPORT_RENAMES
 
 
-_NEXT_CODE_LINE = re.compile(r"^([ \t]*)(?=[^ \t\r\n#])", re.MULTILINE)
+@dataclass
+class _Tokens:
+    source: str
+    lines: list[int] = field(init=False)
+    functions: dict[str, list[list[TokenInfo]]] = field(default_factory=dict)
+    imports: list[tuple[str, ...]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        text = lone_cr_as_lf(self.source)
+        self.lines = line_offsets(text)
+        function = None
+        for statement in logical_statement_tokens(text):
+            first = statement[0]
+            if first.start[1] == 0:
+                function = None
+                if first.string == "def" and len(statement) > 1:
+                    name = statement[1].string
+                    if name in self.functions:
+                        self.functions[name] = []
+                    else:
+                        function = []
+                        self.functions[name] = function
+                elif first.string in {"from", "import"}:
+                    self.imports.append(tuple(t.string for t in statement))
+            if function is not None:
+                function.append(statement)
+
+    def offset(self, position: tuple[int, int]) -> int:
+        row, column = position
+        return self.lines[row - 1] + column
 
 
-def _without_version_header(source: str) -> str:
-    offset = 0
-    for line in source.splitlines(keepends=True):
-        if PRAGMA_RE.fullmatch(line):
-            return source[:offset] + source[offset + len(line) :]
-        if line.strip() and not line.lstrip().startswith("#"):
-            break
-        offset += len(line)
-    return source
-
-
-def proven_call_keywords(context: RuleContext) -> tuple[str, list[Fix], set[int]] | None:
-    evidence = context.config.source_external_calls
-    ast = context.config.source_ast
-    if not evidence or not ast:
+def _align(
+    original: _Tokens,
+    current: _Tokens,
+    name: str,
+    renames: set[tuple[str, str]],
+    statements: set[tuple[str, str]],
+    original_names: set[int],
+    changed_bindings: set[str],
+) -> tuple[dict[int, int], dict[int, int]] | None:
+    """Match the entire function, including its signature, statement order and scopes."""
+    old = original.functions.get(name)
+    new = current.functions.get(name)
+    if not old or not new or len(old) != len(new):
         return None
-    original = context.original_source
-    # The 0.3.10 CLI normalizes line endings before reporting `src`. CRLF
-    # offsets cannot index the captured bytes without a separate position map.
+    starts, ends = {}, {}
+    for left, right in zip(old, new, strict=True):
+        if left[0].line[: left[0].start[1]] != right[0].line[: right[0].start[1]]:
+            return None
+        if any(token.type == NAME and token.string in changed_bindings for token in left):
+            return None
+        if len(left) == len(right) and all(
+            a.string == b.string
+            or (
+                a.type == b.type == NAME
+                and original.offset(a.start) in original_names
+                and (a.string, b.string) in renames
+            )
+            for a, b in zip(left, right, strict=True)
+        ):
+            for a, b in zip(left, right, strict=True):
+                starts[original.offset(a.start)] = current.offset(b.start)
+                ends[original.offset(a.end)] = current.offset(b.end)
+            continue
+        # This exact statement was replaced earlier. Its interior has no
+        # provenance; later sites in the same function can still use their spans.
+        before = original.source[original.offset(left[0].start) : original.offset(left[-1].end)]
+        after = current.source[current.offset(right[0].start) : current.offset(right[-1].end)]
+        if (before, after) not in statements:
+            return None
+    return starts, ends
+
+
+@dataclass(frozen=True)
+class _Site:
+    src: str
+    method: str
+    interface: str | None = None
+    mode: str | None = None
+    returns: str | None = None
+
+
+def _sites(rows: object, *, members: bool = False) -> dict[int, _Site] | None:
+    if not isinstance(rows, list):
+        return None
+    sites = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        node_id, method = row.get("node_id"), row.get("method")
+        if (
+            type(node_id) is not int
+            or node_id < 0
+            or node_id in sites
+            or node_span(row) is None
+            or not isinstance(method, str)
+            or not method.isidentifier()
+        ):
+            return None
+        if members:
+            if method not in {"append", "pop"}:
+                return None
+            sites[node_id] = _Site(row["src"], method)
+        else:
+            interface, mode, returns = (
+                row.get("interface"),
+                row.get("mutability"),
+                row.get("return_type"),
+            )
+            if (
+                not isinstance(interface, str)
+                or not interface.isidentifier()
+                or mode not in ("view", "pure", "nonpayable", "payable")
+                or (
+                    returns is not None
+                    and (
+                        not isinstance(returns, str) or not re.fullmatch(r"[\w.,()\[\] ]+", returns)
+                    )
+                )
+            ):
+                return None
+            sites[node_id] = _Site(row["src"], method, interface, mode, returns)
+    return sites
+
+
+@dataclass(frozen=True)
+class _Program:
+    source: CompilerSource
+    source_id: int
+    current: _Tokens
+    external: dict[int, _Site]
+    members: dict[int, _Site]
+    local_interfaces: set[str]
+    aliases: dict[str, str]
+
+
+def proven_call_keywords(context: RuleContext) -> tuple[str, list[Fix], set[str]] | None:
+    facts = context.compiler_facts
+    evidence = facts.external_calls
+    module = (facts.ast or {}).get("ast")
     if (
-        original is None
-        or "\r" in original
-        or evidence.get("source_sha256sum") != sha256(original.encode()).hexdigest()
+        not isinstance(evidence, dict)
+        or not isinstance(module, dict)
+        or context.original_source is None
     ):
         return None
-    sites = evidence.get("calls")
-    if not isinstance(sites, list) or not sites:
+    source = CompilerSource(context.original_source)
+    if not source.matches_digest(evidence.get("source_sha256sum")):
         return None
-    by_id = {
-        site.get("node_id"): site
-        for site in sites
-        if isinstance(site, dict) and type(site.get("node_id")) is int
-    }
-    if len(by_id) != len(sites):
-        return None
-
-    module = ast.get("ast")
-    if not isinstance(module, dict) or not isinstance(module.get("body"), list):
-        return None
+    external = _sites(evidence.get("calls"))
+    members = _sites(evidence.get("member_calls", []), members=True)
     module_span = node_span(module)
-    if module_span is None:
+    if (
+        not external
+        or members is None
+        or external.keys() & members.keys()
+        or module_span is None
+        or not isinstance(module.get("body"), list)
+        or not all(isinstance(n, dict) for n in module["body"])
+    ):
         return None
-    exact_program = original == context.source or (
-        _without_version_header(original) == _without_version_header(context.source)
+    original, current = _Tokens(context.original_source), _Tokens(context.source)
+    if not _same_import_bindings(original, current, context.prior_fixes):
+        return None
+    before = parse_source_facts(context.original_source)
+    module_body = module["body"]
+    renames = _identifier_renames(context, module_body, before)
+    aliases = dict(renames)
+    changed_bindings = _changed_bindings(before, context.facts, aliases)
+    original_names = {
+        span.start
+        for n in iter_nodes(module, "Name")
+        if isinstance(n.get("id"), str)
+        and n["id"] in aliases
+        and (span := source.span(n, source_id=module_span.source_id))
+    }
+    statements = {
+        (fix.before.strip(), fix.after.strip())
+        for fix in context.prior_fixes
+        if fix.rule in {"VY070", "VY112"}
+    }
+    local_interfaces = {
+        n["name"]
+        for n in module_body
+        if n.get("ast_type") == "InterfaceDef" and isinstance(n.get("name"), str)
+    }
+    program = _Program(
+        source, module_span.source_id, current, external, members, local_interfaces, aliases
     )
-    edits: list[TextEdit] = []
-    fixes: list[Fix] = []
-    protected_lines: set[int] = set()
-    # Use an existing function-name index only to locate the candidate. Its
-    # original signature and implementation must still match byte-for-byte.
-    names = {}
-    for row, name in context.facts.function_names.items():
-        names[name] = None if name in names else row
-    for function in module["body"]:
-        if not isinstance(function, dict) or function.get("ast_type") != "FunctionDef":
+    taken = code_identifiers(context.source)
+    edits, fixes, owned = [], [], set()
+    local_vars = {
+        name: before.function_vars.get(row, {}) for row, name in before.function_names.items()
+    }
+    for function in module_body:
+        if function.get("ast_type") != "FunctionDef":
             continue
-        row = names.get(function.get("name"))
-        span = node_span(function)
-        if (
-            not row
-            or span is None
-            or span.source_id != module_span.source_id
-            or not 0 <= span.start < span.end <= len(original)
-        ):
+        name = function.get("name")
+        if not isinstance(name, str) or not name.isidentifier():
+            return None
+        local = local_vars.get(name, {})
+        safe_renames = {(a, b) for a, b in renames if a not in local and b not in local}
+        aligned = _align(
+            original, current, name, safe_renames, statements, original_names, changed_bindings
+        )
+        if aligned is None:
             continue
-        start = context.line_offsets[row - 1]
-        last_newline = original.find("\n", span.end)
-        end = len(original) if last_newline < 0 else last_newline + 1
-        original_function = original[span.start : end]
-        candidate_end = start + len(original_function)
+        next_taken = taken.copy()
+        planned = _function_edits(context, function, aligned, program, next_taken)
+        if planned is not None:
+            local_edits, local_fixes = planned
+            edits.extend(local_edits)
+            fixes.extend(local_fixes)
+            owned.add(name)
+            taken = next_taken
+    return (apply_edits(context.source, edits), fixes, owned) if owned else None
+
+
+def _same_import_bindings(original: _Tokens, current: _Tokens, fixes: tuple[Fix, ...]) -> bool:
+    def tokens(text: str) -> tuple[str, ...]:
+        return tuple(t.string for part in logical_statement_tokens(text) for t in part)
+
+    import_updates = {
+        (tokens(f.before), tokens(f.after))
+        for f in fixes
+        if f.rule == "VY020" and f.before.startswith("from ")
+    }
+    return len(original.imports) == len(current.imports) and all(
+        old == new or (old, new) in import_updates
+        for old, new in zip(original.imports, current.imports, strict=True)
+    )
+
+
+def _identifier_renames(
+    context: RuleContext, module_body: list[dict], before: SourceFacts
+) -> set[tuple[str, str]]:
+    source_names = code_identifiers(context.original_source)
+    immutables = {
+        n["target"]["id"]
+        for n in module_body
+        if n.get("ast_type") == "VariableDecl"
+        and n.get("is_immutable")
+        and isinstance(n.get("target"), dict)
+        and isinstance(n["target"].get("id"), str)
+    }
+    builtin_imports = {
+        n.get("name")
+        for n in module_body
+        if n.get("ast_type") == "ImportFrom"
+        and n.get("module") == "vyper.interfaces"
+        and not n.get("alias")
+        and isinstance(n.get("name"), str)
+    }
+    renames = set()
+    for fix in context.prior_fixes:
+        a, b = fix.before, fix.after
+        if a not in source_names or b in source_names:
+            continue
+        if fix.rule == "VY020" and a in builtin_imports and IMPORT_RENAMES.get(a) == b:
+            renames.add((a, b))
         if (
-            not context.source.startswith(original_function, start)
-            or not context.code_mask[start]
-            or not original_function.startswith("def ")
-            or (
-                last_newline < 0
-                and context.source[candidate_end : candidate_end + 1] not in {"", "\n"}
+            fix.rule == "VY013"
+            and a in immutables
+            and b.isidentifier()
+            and (
+                before.global_vars.get(a) == context.facts.global_vars.get(b)
+                and b in context.facts.global_vars
             )
         ):
-            continue
-        # A matching prefix alone can conceal a newly appended statement.
-        following = _NEXT_CODE_LINE.search(context.source, candidate_end)
-        if following and following.group(1):
-            continue
-        delta = start - span.start
-        planned = _function_edits(context, function, by_id, original, delta, exact_program)
-        if planned is None:
-            continue
-        local_edits, local_fixes = planned
-        edits.extend(local_edits)
-        fixes.extend(local_fixes)
-        last_row = line_number(context.source, candidate_end - 1)
-        protected_lines.update(range(row, last_row + 1))
-    if not protected_lines:
-        return None
-    return apply_edits(context.source, edits), fixes, protected_lines
+            renames.add((a, b))
+    return renames
+
+
+def _changed_bindings(before: SourceFacts, after: SourceFacts, aliases: dict[str, str]) -> set[str]:
+    def migrated_type(typ: str) -> str:
+        return re.sub(r"\b\w+\b", lambda m: aliases.get(m[0], m[0]), typ)
+
+    changed_bindings = set()
+    for old_map, new_map in (
+        (before.global_vars, after.global_vars),
+        (before.function_return_names, after.function_return_names),
+    ):
+        for symbol, typ in old_map.items():
+            new_name = symbol if symbol in new_map else aliases.get(symbol, symbol)
+            if migrated_type(typ) != new_map.get(new_name):
+                changed_bindings.add(symbol)
+    for struct, fields in before.struct_fields.items():
+        updated = after.struct_fields.get(struct, {})
+        for name, typ in fields.items():
+            if migrated_type(typ) != updated.get(name):
+                changed_bindings.add(name)
+    return changed_bindings
 
 
 def _function_edits(
     context: RuleContext,
     function: dict[str, Any],
-    by_id: dict[int, dict],
-    original: str,
-    delta: int,
-    exact_program: bool,
+    aligned: tuple[dict[int, int], dict[int, int]],
+    program: _Program,
+    taken: set[str],
 ) -> tuple[list[TextEdit], list[Fix]] | None:
-    function_span = node_span(function)
-    edits: list[TextEdit] = []
+    source, source_id = program.source, program.source_id
+    starts, ends = aligned
+    function_span = source.span(function, source_id=source_id)
+    if function_span is None or function_span.start not in starts:
+        return None
+    # Sort prefixes outermost-first when a receiver chain shares a start.
+    prefixes: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    closings: list[TextEdit] = []
     fixes: list[Fix] = []
-    ranges: list[tuple[int, int]] = []
-    postfix_calls = set()
+    grouped, discarded = set(), {}
     for parent in iter_nodes(function):
-        if parent.get("ast_type") not in {"Subscript", "Attribute"}:
-            continue
         base = parent.get("value")
-        if isinstance(base, dict) and base.get("ast_type") == "Call":
-            # When a caller supplied parentheses, the parent starts at the
-            # opening paren rather than at the nested Call; reuse those parens.
-            outer = node_span(parent)
-            inner = node_span(base)
-            if inner is not None and outer is not None and outer.start == inner.start:
-                postfix_calls.add(base.get("node_id"))
-    for node in iter_nodes(function, "Call"):
-        func = node.get("func")
+        if (
+            not isinstance(base, dict)
+            or base.get("ast_type") != "Call"
+            or type(base.get("node_id")) is not int
+        ):
+            continue
+        if parent.get("ast_type") == "Expr":
+            discarded[base.get("node_id")] = parent
+        if parent.get("ast_type") in ("Subscript", "Attribute"):
+            inner, outer = node_span(base), node_span(parent)
+            if inner and outer and inner.start == outer.start:
+                grouped.add(base.get("node_id"))
+    consumed = False
+    for call in iter_nodes(function, "Call"):
+        func = call.get("func")
         if not isinstance(func, dict):
             return None
-        if func.get("ast_type") != "Attribute":
+        if func.get("ast_type") == "Name":
             continue
-        receiver = func.get("value")
-        if not isinstance(receiver, dict):
+        if func.get("ast_type") != "Attribute" or not isinstance(func.get("value"), dict):
             return None
-        if receiver.get("ast_type") == "Name" and receiver.get("id") == "self":
-            continue
-        site = by_id.get(node.get("node_id"))
-        span = node_span(node)
+        method = func.get("attr")
+        call_id = call.get("node_id")
+        if type(call_id) is not int or not isinstance(method, str) or not method.isidentifier():
+            return None
+        proof = program.external.get(call_id)
+        if proof is None:
+            receiver = func.get("value", {})
+            if (
+                isinstance(receiver, dict)
+                and receiver.get("ast_type") == "Name"
+                and receiver.get("id") == "self"
+            ):
+                continue
+            member = program.members.get(call_id)
+            if (
+                member
+                and method in {"append", "pop"}
+                and member.src == call.get("src")
+                and member.method == method
+                and source.span(call, source_id=source_id) is not None
+            ):
+                continue
+            return None
+        span = source.span(call, source_id=source_id)
         if (
-            site is None
-            or site.get("src") != node.get("src")
-            or site.get("method") != func.get("attr")
-            or span is None
-            or span.source_id != function_span.source_id
+            span is None
             or not function_span.start <= span.start < span.end <= function_span.end
+            or proof.src != call.get("src")
+            or proof.method != method
+            or span.start not in starts
+            or span.end not in ends
         ):
             return None
-        mode = site.get("mutability")
-        if mode not in ("view", "pure", "nonpayable", "payable"):
+        start, end = starts[span.start], ends[span.end]
+        mode = proof.mode
+        interface = program.aliases.get(proof.interface, proof.interface)
+        if (
+            proof.interface in program.local_interfaces or interface != proof.interface
+        ) and context.facts.interfaces.get(interface, {}).get(method) != mode:
             return None
-        if not exact_program:
-            # Another pass can intentionally change a local interface's call
-            # mode (VY014). Unknown imports also lack target-side evidence.
-            methods = context.facts.interfaces.get(site.get("interface"), {})
-            if methods.get(site["method"]) != mode:
-                return None
-        start, end = span.start + delta, span.end + delta
-        before = original[span.start : span.end]
-        if context.source[start:end] != before:
-            return None
-        ranges.append((start, end))
+        consumed = True
         keyword, code = (
-            ("staticcall", "VY041") if mode in ("view", "pure") else ("extcall", "VY040")
+            ("staticcall", "VY041") if mode in {"view", "pure"} else ("extcall", "VY040")
         )
         if not context.is_enabled(code):
             continue
-        line = line_number(context.source, start)
+        row = bisect_right(program.current.lines, start)
+        before = context.source[start:end]
         after = f"{keyword} {before}"
-        fixes.append(Fix(code, line, f"added {keyword} to {mode} external call", before, after))
-        if node["node_id"] in postfix_calls and context.is_enabled("VY042"):
-            edits.extend((TextEdit(start, start, f"({keyword} "), TextEdit(end, end, ")")))
+        prefix = keyword + " "
+        fixes.append(Fix(code, row, f"added {keyword} to {mode} external call", before, after))
+        if call_id in grouped and context.is_enabled("VY042"):
+            prefix = "(" + prefix
+            closings.append(TextEdit(end, end, ")"))
             fixes.append(
                 Fix(
                     "VY042",
-                    line,
+                    row,
                     "parenthesized external call before member access",
                     after,
                     f"({after})",
                 )
             )
-        else:
-            edits.append(TextEdit(start, start, keyword + " "))
-
-    # A nested receiver can give two Call nodes the same start and require
-    # precedence-sensitive parentheses. Delegate nested calls to the legacy pass.
-    ranges.sort()
-    if not ranges or any(end > right for (_, end), (right, _) in pairwise(ranges)):
+        return_type = proof.returns
+        if call_id in discarded and code == "VY041" and return_type and context.is_enabled("VY057"):
+            expr = source.span(discarded[call_id], source_id=source_id)
+            if expr is None or expr.start not in starts:
+                return None
+            type_name = (
+                context.facts.interface_returns.get(interface, {}).get(method) or return_type
+            )
+            variable = discard_assignment_name(row, taken)
+            assignment = f"{variable}: {type_name} = "
+            prefixes[starts[expr.start]].append((-(len(context.source) + 1), assignment))
+            fixes.append(
+                Fix(
+                    "VY057", row, "assigned ignored external call result", after, assignment + after
+                )
+            )
+        prefixes[start].append((-end, prefix))
+    if not consumed:
         return None
-    return edits, fixes
+    edits = [
+        TextEdit(pos, pos, "".join(s for _, s in sorted(parts))) for pos, parts in prefixes.items()
+    ]
+    return [*closings, *edits], fixes
+
+
+def discard_assignment_name(line_no: int, taken: set[str]) -> str:
+    base = f"__vyupgrade_discard_{line_no}"
+    candidate = base
+    suffix = 2
+    while candidate in taken:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    taken.add(candidate)
+    return candidate

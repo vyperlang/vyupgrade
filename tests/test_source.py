@@ -1,13 +1,24 @@
 import pytest
 
+from vyupgrade import source as source_tools
+
 from vyupgrade.source import (
     code_mask,
     find_matching,
     find_matching_open,
+    line_number,
+    line_offsets,
     replace_identifier,
     split_top_level_args,
     split_top_level_arg_spans,
 )
+
+
+def test_physical_line_offsets_and_numbers_share_all_newline_conventions():
+    source = "a\rb\r\nc\nd"
+    assert line_offsets(source) == [0, 2, 5, 7]
+    assert [line_number(source, i) for i in range(len(source) + 1)] == [1, 1, 2, 2, 2, 3, 3, 4, 4]
+    assert code_mask("# note\rname") == [False] * 6 + [True] * 5
 
 
 @pytest.mark.parametrize(
@@ -72,3 +83,42 @@ def test_matching_only_requires_the_requested_expression_to_be_complete() -> Non
     assert find_matching('(ok) + "unfinished', 0) == 3
     assert find_matching("x", -1) is None
     assert find_matching("x", 5) is None
+
+
+def test_matching_recovers_balanced_pairs_around_mismatches_and_incomplete_input():
+    source = "]([ok]}[(a)](\"unclosed"
+    first = source.index("[")
+    last = source.rindex("[")
+    for start, end, opening, closing in (
+        (first, first + 3, "[", "]"),
+        (last, last + 4, "[", "]"),
+        (last + 1, last + 3, "(", ")"),
+    ):
+        assert find_matching(source, start, opening, closing) == end
+        assert find_matching_open(source, end, opening, closing) == start
+    assert find_matching(source, 1) is None
+    assert find_matching_open(source, 0, "[", "]") is None
+
+
+def test_matching_does_not_reuse_positions_after_a_same_length_edit():
+    before = "([x])"
+    after = "([x)]"
+    assert find_matching(before, 0) == 4
+    assert find_matching(after, 0) is None
+    assert find_matching_open(after, 3) is None
+    assert find_matching_open(before, 4) == 0
+
+
+def test_forward_and_reverse_lookups_share_an_index(monkeypatch):
+    text = "call(one(), two[0])"
+    scanned = []
+
+    def count_mask(source):
+        scanned.append(source)
+        return code_mask(source)
+
+    monkeypatch.setattr(source_tools, "code_mask", count_mask)
+    for start, end, opening, closing in ((4, 18, "(", ")"), (8, 9, "(", ")"), (15, 17, "[", "]")):
+        assert find_matching(text, start, opening, closing) == end
+        assert find_matching_open(text, end, opening, closing) == start
+    assert scanned == [text]

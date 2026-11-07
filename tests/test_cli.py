@@ -347,8 +347,8 @@ def test_formatter_runs_on_staged_candidates_and_final_bytes_are_revalidated(
     compiled: list[str] = []
     original_apply_rules = engine.apply_rules
 
-    def apply_rules_with_diagnostic(source, config, path):
-        result = original_apply_rules(source, config, path)
+    def apply_rules_with_diagnostic(source, config, path, *, compiler_facts):
+        result = original_apply_rules(source, config, path, compiler_facts=compiler_facts)
         result.diagnostics.append(Diagnostic("TEST001", 1, "preserve this diagnostic"))
         return result
 

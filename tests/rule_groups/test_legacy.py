@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from vyupgrade.rules import apply_rules
+from vyupgrade.versions import infer_pragma
 
 
 def test_docstring_only_function_body_gets_pass_for_0_4_target(config) -> None:
@@ -257,6 +260,21 @@ def f():
 
     assert "# @version 0.3.8" in before.source
     assert "#pragma version 0.3.10" in after.source
+
+
+@pytest.mark.parametrize("newline", ["\r", "\r\n", "\n"])
+def test_version_directive_edits_preserve_physical_source_lines(config, newline):
+    header = '"""\n# @version 0.2.8\n"""\n# documentation\n'.replace("\n", newline)
+    directive = "# @version 0.3.10" + newline
+    body = "@external" + newline + "def run(): pass" + newline
+    source = header + directive + body
+    assert infer_pragma(source) == "0.3.10"
+    only_pragma = {"select": frozenset({"VY001"})}
+    assert apply_rules(source, config(**only_pragma)).source == (
+        header + "#pragma version 0.4.3" + newline + body
+    )
+    assert apply_rules(source, config(strip_pragma=True, **only_pragma)).source == header + body
+    assert apply_rules(body, config(**only_pragma)).source == "#pragma version 0.4.3" + newline + body
 
 
 def test_pragma_updates_existing_pragma_version(config) -> None:

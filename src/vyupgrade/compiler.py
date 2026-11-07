@@ -25,7 +25,8 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from uv import find_uv_bin
 
-from .ast_facts import iter_nodes
+from .ast_facts import compiler_source_sha256, iter_nodes
+from .compiler_runner import SOURCE_EVIDENCE_FORMATS
 from .models import (
     DEFAULT_NETWORK_TIMEOUT_SECONDS,
     CompilerAuthority,
@@ -161,6 +162,7 @@ class _CompilerProcess:
     completion_status: CompletionStatus = "not-started"
     exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
     validated_sources: tuple[ContentIdentity, ...] = ()
+    rewrite_evidence: object = None
 
 
 @dataclass(frozen=True)
@@ -296,9 +298,11 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
             command, staged, compile_config, SOURCE_FORMATS, (), suppress_warnings,
             project_compiler=True, allow_format_retries=False, environment_path=path,
         )
-        return _add_source_rewrite_evidence(
-            result, command, staged, path, compile_config, suppress_warnings
-        )
+        if config.source_vyper and _needs_public_error_evidence(result, config):
+            return _add_explicit_error_evidence(
+                result, command, staged, path, compile_config, suppress_warnings
+            )
+        return result
 
 
 def compile_target_source(
@@ -1087,141 +1091,139 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
         result: CompileResult | None = None
-        for output_format in ("annotated_ast", "ast"):
+        formats = ("annotated_ast", "ast")
+        if _command_vyper_version(command) == "0.3.10" and not _project_declares_vyper(
+            _nearest_pyproject(path.parent)
+        ):
+            formats = ("ast",)  # This exact managed compiler only exposes a raw AST.
+        for output_format in formats:
             result = _run_compile_with_formats(
-                command, staged, compile_config, (output_format,), (), suppress_warnings,
-                allow_unsupported_formats=True, project_compiler=True, environment_path=path,
+                command,
+                staged,
+                compile_config,
+                (output_format,),
+                (),
+                suppress_warnings,
+                allow_unsupported_formats=True,
+                project_compiler=True,
+                environment_path=path,
             )
             artifact = (result.artifacts or {}).get(output_format)
             if result.status == "passed" and isinstance(artifact, dict):
-                return _add_source_rewrite_evidence(
-                    replace(result, artifacts={"ast": artifact}),
-                    command,
-                    staged,
-                    path,
-                    compile_config,
-                    suppress_warnings,
-                    already_annotated=output_format == "annotated_ast",
-                )
+                facts = {**(result.artifacts or {}), "ast": artifact}
+                if output_format == "annotated_ast":
+                    facts.pop("annotated_ast")
+                    if _needs_public_error_evidence(
+                        result, config, ast=artifact
+                    ) and _matches_source(result, staged, artifact.get("ast")):
+                        facts["annotated_ast"] = artifact
+                return replace(result, artifacts=facts)
         assert result is not None
         return result
 
 
-def _source_evidence_format(result: CompileResult, config: Config, root: dict) -> str | None:
-    # Source pragmas may span several releases. Select private capabilities by
-    # the identity of the compiler that actually accepted this snapshot.
-    try:
-        source_version = Version(result.resolved_compiler or "").public
-    except InvalidVersion:
-        return None
-    if source_version not in {"0.3.10", "0.5.0b1"}:
-        return None
+def _source_evidence_formats(config: Config) -> tuple[str, ...]:
     target = parse_version(compiler_version_for_spec(config.target_version))
     if target is None:
-        return None
-    if source_version == "0.3.10" and target >= Version("0.4.0"):
-        if config.source_vyper or result.compiler_authority == "explicit-executable":
-            return None
-        codes = {"VY040", "VY041", "VYD003"}
-        selected = (config.select & codes) if config.select else codes
-        if not (selected - config.ignore):
-            return None
-        for node in iter_nodes(root, "Call"):
-            callee = node.get("func")
-            if isinstance(callee, dict) and callee.get("ast_type") == "Attribute":
-                receiver = callee.get("value")
-                if (
-                    isinstance(receiver, dict)
-                    and receiver.get("ast_type") == "Name"
-                    and receiver.get("id") == "self"
-                ):
-                    continue
-                return "external_calls_v1"
-    if source_version == "0.5.0b1" and target >= Version("0.5.0b2"):
-        if (config.select and "VY127" not in config.select) or "VY127" in config.ignore:
-            return None
-        for node in iter_nodes(root):
-            if node.get("ast_type") not in ("Raise", "Assert"):
-                continue
+        return ()
+    formats = []
+    call_codes = {"VY040", "VY041", "VYD003", "VY057"}
+    selected = (call_codes & config.select) if config.select else call_codes
+    if target >= Version("0.4.0") and selected - config.ignore:
+        formats.append("external_calls_v1")
+    if (
+        target >= Version("0.5.0b2")
+        and "VY127" not in config.ignore
+        and (not config.select or "VY127" in config.select)
+    ):
+        formats.append("annotated_ast")
+    return tuple(formats)
+
+
+def _needs_public_error_evidence(result: CompileResult, config: Config, *, ast=None) -> bool:
+    if result.status != "passed" or result.compiler_identity is None:
+        return False
+    try:
+        version = Version(result.resolved_compiler or "").public
+    except InvalidVersion:
+        return False
+    if (
+        SOURCE_EVIDENCE_FORMATS.get(version) != "annotated_ast"
+        or "annotated_ast" not in _source_evidence_formats(config)
+    ):
+        return False
+    ast = ast if ast is not None else (result.artifacts or {}).get("ast")
+    root = ast.get("ast") if isinstance(ast, dict) else None
+    if not isinstance(root, dict) or not isinstance(root.get("body"), list):
+        return False
+    for node in iter_nodes(root):
+        if node.get("ast_type") in ("Raise", "Assert"):
             reason = node.get("exc") or node.get("msg")
             if isinstance(reason, dict) and reason.get("ast_type") == "Call" and reason.get("args"):
-                return "annotated_ast"
-    return None
+                return True
+    return False
 
 
-def _add_source_rewrite_evidence(
+def _matches_source(result: CompileResult, staged: Path, identity: object) -> bool:
+    if (
+        result.compiler_identity is None
+        or result.compiler_identity.version != result.resolved_compiler
+        or len(result.validated_sources) != 1
+        or not isinstance(identity, dict)
+    ):
+        return False
+    try:
+        raw = staged.read_bytes()
+        file_digest = hashlib.sha256(raw).hexdigest()
+        compiler_digest = compiler_source_sha256(raw.decode("utf-8"))
+        return result.validated_sources[0].sha256 == file_digest and (
+            identity.get("source_sha256sum") == compiler_digest
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def _add_explicit_error_evidence(
     result: CompileResult,
     command: list[str],
     staged: Path,
     path: Path,
     config: Config,
     suppress_warnings: bool,
-    *,
-    already_annotated: bool = False,
 ) -> CompileResult:
-    # Keep optional tooling output separate from required validation artifacts.
-    # A failed probe must never rescue, hide or invalidate a real compile.
-    if (
-        result.status != "passed"
-        or result.compiler_identity is None
-        or result.compiler_identity.version != result.resolved_compiler
-        or len(result.validated_sources) != 1
-    ):
-        return result
+    # Reuse the captured imports and identity of the successful executable.
     artifacts = result.artifacts or {}
-    ast = artifacts.get("ast")
-    root = ast.get("ast") if isinstance(ast, dict) else None
-    if (
-        not isinstance(root, dict)
-        or root.get("ast_type") != "Module"
-        or not isinstance(root.get("body"), list)
+    root = artifacts["ast"]["ast"]
+    if config.source_snapshot is None and any(
+        isinstance(node, dict) and node.get("ast_type") in {"Import", "ImportFrom"}
+        for node in root["body"]
     ):
         return result
-    output = _source_evidence_format(result, config, root)
-    if output is None:
+    try:
+        probe = _run_compile_with_formats(
+            command,
+            staged,
+            config,
+            ("annotated_ast",),
+            (),
+            suppress_warnings,
+            project_compiler=True,
+            allow_format_retries=False,
+            environment_path=path,
+        )
+    except (OSError, UnicodeError):
         return result
-    if already_annotated and output == "annotated_ast":
-        evidence = ast
-    else:
-        # prepare_migrations pins imported bytes. A direct caller may instead
-        # compile a live tree; its imports could change before this second query.
-        if config.source_snapshot is None and any(
-            node.get("ast_type") in {"Import", "ImportFrom"}
-            for node in root.get("body", [])
-            if isinstance(node, dict)
-        ):
-            return result
-        try:
-            probe = _run_compile_with_formats(
-                command,
-                staged,
-                config,
-                (output,),
-                (),
-                suppress_warnings,
-                project_compiler=True,
-                allow_format_retries=False,
-                environment_path=path,
-            )
-        except (OSError, UnicodeError):
-            return result
-        if (
-            probe.status != "passed"
-            or probe.compiler_identity != result.compiler_identity
-            or probe.validated_sources != result.validated_sources
-            or probe.dependency_context != result.dependency_context
-        ):
-            return result
-        evidence = (probe.artifacts or {}).get(output)
-    if not isinstance(evidence, dict):
-        return result
-    identity = evidence.get("ast") if output == "annotated_ast" else evidence
+    evidence = (probe.artifacts or {}).get("annotated_ast")
     if (
-        not isinstance(identity, dict)
-        or identity.get("source_sha256sum") != result.validated_sources[0].sha256
+        probe.status == "passed"
+        and probe.compiler_identity == result.compiler_identity
+        and probe.validated_sources == result.validated_sources
+        and probe.dependency_context == result.dependency_context
+        and isinstance(evidence, dict)
+        and _matches_source(result, staged, evidence.get("ast"))
     ):
-        return result
-    return replace(result, artifacts={**artifacts, output: evidence})
+        return replace(result, artifacts={**artifacts, "annotated_ast": evidence})
+    return result
 
 
 @dataclass(frozen=True)
@@ -1684,6 +1686,11 @@ def _run_compile_with_formats(
         full.extend(["-W", "none"])
     full.append(str(path))
     source_text = path.read_bytes().decode("utf-8") if path.is_file() else None
+    requested_evidence = (
+        _source_evidence_formats(config)
+        if project_compiler and "ast" in formats and not config.source_vyper
+        else ()
+    )
     process = _run_compiler_process(
         full,
         environment_path,
@@ -1692,6 +1699,7 @@ def _run_compile_with_formats(
         compiler_timeout=config.compiler_timeout,
         network_timeout=config.network_timeout,
         source_text=source_text,
+        requested_evidence=requested_evidence,
     )
     if process.compiler_started and path.is_file():
         process = replace(
@@ -1781,7 +1789,7 @@ def _run_compile_with_formats(
             f"could not parse compiler output: {exc}",
             unavailable_formats,
         )
-    return CompileResult(
+    result = CompileResult(
         "degraded"
         if any(name not in optional_formats for name in unavailable_formats)
         else "passed",
@@ -1799,6 +1807,15 @@ def _run_compile_with_formats(
         exit_status=process.exit_status,
         validated_sources=process.validated_sources,
     )
+    if result.status == "passed" and isinstance(process.rewrite_evidence, dict):
+        for name in requested_evidence:
+            evidence = process.rewrite_evidence.get(name)
+            if not isinstance(evidence, dict):
+                continue
+            identity = evidence.get("ast") if name == "annotated_ast" else evidence
+            if _matches_source(result, path, identity):
+                artifacts[name] = evidence
+    return result
 
 
 def _failed_compile_result(
@@ -1908,6 +1925,7 @@ def _run_compiler_process(
     python_pin: str | None = None,
     cwd: Path | None = None,
     source_text: str | None = None,
+    requested_evidence: tuple[str, ...] = (),
 ) -> _CompilerProcess:
     pyproject = _nearest_pyproject(path.parent)
     marker_environment: Mapping[str, str] | None = None
@@ -1990,6 +2008,7 @@ def _run_compiler_process(
             full,
             context,
             managed_compiler=managed_compiler,
+            requested_evidence=requested_evidence,
             compiler_authority=authority,
             compiler_declarations=declarations,
             coherence_spec=coherence,
@@ -2177,6 +2196,7 @@ def _run_compiler_adapter(
     context: DependencyContext,
     *,
     managed_compiler: bool,
+    requested_evidence: tuple[str, ...] = (),
     compiler_authority: CompilerAuthority,
     compiler_declarations: tuple[CompilerDeclaration, ...],
     coherence_spec: str | None,
@@ -2199,6 +2219,11 @@ def _run_compiler_adapter(
         f"{compiler_timeout:g}",
         "managed" if managed_compiler else "explicit",
         coherence_spec or "",
+        *(
+            ("--source-evidence", ",".join(requested_evidence))
+            if managed_compiler and requested_evidence
+            else ()
+        ),
         *_compiler_runner_command(command),
     ]
     try:
@@ -2315,6 +2340,7 @@ def _compiler_process_from_payload(
     )
     return _CompilerProcess(
         command=command,
+        rewrite_evidence=payload.get("rewrite_evidence"),
         context=_context_with_resolved_packages(context, payload),
         returncode=returncode,
         stdout=_payload_string(payload, "stdout") or "",
