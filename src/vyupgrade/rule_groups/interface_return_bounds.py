@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import re
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,7 +65,8 @@ _FROM_IMPORT_RE = re.compile(
     r"^[ \t]*from[ \t]+(?P<package>[.\w]+)[ \t]+import[ \t]+(?P<names>[^#\n]+)", re.MULTILINE
 )
 _IMPORTED_NAME_RE = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\s+as\s+(?P<alias>[A-Za-z_]\w*))?")
-_METHOD_CALL_RE = re.compile(r"\.\s*(?P<method>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# Any identifier: Vyper normalizes identifiers to NFKC, so fullwidth letters spell ASCII names.
+_METHOD_CALL_RE = re.compile(r"\.\s*(?P<method>[^\W\d]\w*)\s*\(")
 _CALL_KEYWORDS = frozenset({"staticcall", "extcall"})
 _ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
 _BOUND_FUNCTION = "__vyupgrade_return_bound"
@@ -676,7 +678,7 @@ def _call_sites(
     }
     sites: list[_CallSite] = []
     for match in _METHOD_CALL_RE.finditer(code):
-        method = match.group("method")
+        method = unicodedata.normalize("NFKC", match.group("method"))
         if method not in methods or not span_is_code(mask, match.start(), match.start() + 1):
             continue
         target = _call_target(source, mask, match.start(), facts, modules, module_casts)
@@ -733,9 +735,22 @@ def _closure_blockers(
     def wraps(consumer: Path | None, consumer_source: str) -> bool:
         if consumer == own:
             return True
-        version = config.source_version or infer_pragma(consumer_source)
-        migration = MigrationContext.from_specs(version, config.target_version)
-        return is_enabled("VY125", config, migration, rule_context.rule_changes)
+        # A captured dependency is rewritten only with --include-dependencies.
+        if snapshot is not None and consumer not in snapshot.roots and not config.include_dependencies:
+            return False
+        # The engine gives each file's rules that file's own source version, so
+        # config.source_version here is either a --source-version override or
+        # this declaration's version. Wrap only when both readings enable VY125.
+        versions = {config.source_version, infer_pragma(consumer_source)} - {None} or {None}
+        return all(
+            is_enabled(
+                "VY125",
+                config,
+                MigrationContext.from_specs(version, config.target_version),
+                rule_context.rule_changes,
+            )
+            for version in versions
+        )
 
     for consumer, consumer_source in consumers.items():
         exceeded = (

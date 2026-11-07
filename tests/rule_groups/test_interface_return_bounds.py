@@ -739,6 +739,26 @@ def measured(a: address) -> uint256:
     ) in result.source
 
 
+def test_call_spelling_the_method_with_compatibility_characters_is_wrapped(
+    tmp_path: Path, config
+) -> None:
+    # Vyper normalizes identifiers to NFKC, so this calls `version`.
+    caller = """#pragma version 0.4.3
+from . import IFoo
+
+@external
+@view
+def measured(a: address) -> uint256:
+    return len(staticcall IFoo(a).\uff56\uff45\uff52\uff53\uff49\uff4f\uff4e())
+"""
+    result = _migrate_caller(tmp_path, config, caller)
+
+    assert (
+        "    return len(self.__vyupgrade_return_bound(staticcall IFoo(a)."
+        "\uff56\uff45\uff52\uff53\uff49\uff4f\uff4e()))\n"
+    ) in result.source
+
+
 def test_parenthesized_call_after_the_keyword_is_wrapped_with_it(
     tmp_path: Path, config
 ) -> None:
@@ -1387,9 +1407,71 @@ def wide(a: address) -> Bytes[10]:
     assert [diagnostic.rule for diagnostic in result.diagnostics] == ["VYD020"]
 
 
-def test_call_in_a_contract_already_on_the_target_keeps_the_bound(tmp_path: Path, config) -> None:
+@pytest.mark.parametrize("include_dependencies", [False, True])
+def test_call_in_a_captured_dependency_needs_it_migrated(
+    tmp_path: Path, config, include_dependencies: bool
+) -> None:
     files = {
         "IFoo.vyi": "@external\n@view\ndef data() -> Bytes[1]: ...\n",
+        "Foo.vy": """#pragma version 0.4.3
+from . import IFoo
+from . import Lib
+
+implements: IFoo
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+@view
+def wide(a: address) -> Bytes[10]:
+    return Lib.wide(a)
+""",
+        "Lib.vy": """#pragma version 0.4.3
+from . import IFoo
+
+@internal
+@view
+def wide(a: address) -> Bytes[10]:
+    return staticcall IFoo(a).data()
+""",
+    }
+    sources = {tmp_path / name: source for name, source in files.items()}
+    for path, source in sources.items():
+        path.write_text(source, encoding="utf-8")
+    # Only the interface and its implementation are requested; Lib is captured.
+    requested = {path: source for path, source in sources.items() if path.name != "Lib.vy"}
+    snapshot = resolve_import_closure(requested, (tmp_path,))
+    assert (tmp_path / "Lib.vy").resolve() in snapshot.dependencies
+    path = tmp_path / "IFoo.vyi"
+
+    result = apply_rules(
+        sources[path],
+        config(
+            target_version="0.5.0a3",
+            source_snapshot=snapshot,
+            include_dependencies=include_dependencies,
+        ),
+        path,
+    )
+
+    if include_dependencies:
+        assert "def data() -> Bytes[...]: ..." in result.source
+    else:
+        assert "def data() -> Bytes[1]: ..." in result.source
+        assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+
+
+# The engine hands the declaration's rules its own resolved source version.
+@pytest.mark.parametrize("interface_version", [None, ">=0.4.3"])
+def test_call_in_a_contract_already_on_the_target_keeps_the_bound(
+    tmp_path: Path, config, interface_version: str | None
+) -> None:
+    pragma = f"#pragma version {interface_version}\n" if interface_version else ""
+    files = {
+        "IFoo.vyi": f"{pragma}@external\n@view\ndef data() -> Bytes[1]: ...\n",
         "Foo.vy": """#pragma version 0.4.3
 from . import IFoo
 
@@ -1410,7 +1492,7 @@ def wide(a: address) -> Bytes[10]:
 """,
     }
 
-    result = _migrate(tmp_path, config, files, "IFoo.vyi")
+    result = _migrate(tmp_path, config, files, "IFoo.vyi", source_version=interface_version)
 
     assert "def data() -> Bytes[1]: ..." in result.source
     assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
