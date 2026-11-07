@@ -1108,16 +1108,36 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
 
 
 def _source_evidence_format(result: CompileResult, config: Config, root: dict) -> str | None:
-    # Source pragmas may span several releases. Select compiler capabilities by
+    # Source pragmas may span several releases. Select private capabilities by
     # the identity of the compiler that actually accepted this snapshot.
     try:
         source_version = Version(result.resolved_compiler or "").public
     except InvalidVersion:
         return None
-    if source_version != "0.5.0b1":
+    if source_version not in {"0.3.10", "0.5.0b1"}:
         return None
     target = parse_version(compiler_version_for_spec(config.target_version))
-    if target is not None and target >= Version("0.5.0b2"):
+    if target is None:
+        return None
+    if source_version == "0.3.10" and target >= Version("0.4.0"):
+        if config.source_vyper or result.compiler_authority == "explicit-executable":
+            return None
+        codes = {"VY040", "VY041", "VYD003"}
+        selected = (config.select & codes) if config.select else codes
+        if not (selected - config.ignore):
+            return None
+        for node in iter_nodes(root, "Call"):
+            callee = node.get("func")
+            if isinstance(callee, dict) and callee.get("ast_type") == "Attribute":
+                receiver = callee.get("value")
+                if (
+                    isinstance(receiver, dict)
+                    and receiver.get("ast_type") == "Name"
+                    and receiver.get("id") == "self"
+                ):
+                    continue
+                return "external_calls_v1"
+    if source_version == "0.5.0b1" and target >= Version("0.5.0b2"):
         if (config.select and "VY127" not in config.select) or "VY127" in config.ignore:
             return None
         for node in iter_nodes(root):

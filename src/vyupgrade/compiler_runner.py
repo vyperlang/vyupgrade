@@ -175,6 +175,14 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
             try:
                 vyper_compile = importlib.import_module("vyper.cli.vyper_compile")
                 vyper_exception_type = importlib.import_module("vyper.exceptions").VyperException
+                if (
+                    command[1:3] == ["-f", "external_calls_v1"]
+                    and importlib.metadata.version("vyper") == "0.3.10"
+                ):
+                    # Reuse this CLI's settings, import resolution and source text.
+                    # The formatter lives only in this optional query's subprocess.
+                    compiler = importlib.import_module("vyper.compiler")
+                    compiler.OUTPUT_FORMATS["external_calls_v1"] = _external_calls_0310
                 vyper_compile._parse_args(command[1:])
                 returncode = 0
                 origin = None
@@ -199,6 +207,54 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
             "stdout": stdout.read(),
             "stderr": stderr.read(),
         }
+
+
+def _external_calls_0310(compiler_data):
+    from vyper import ast as vy_ast
+    from vyper.semantics.analysis.base import FunctionVisibility
+    from vyper.semantics.types.function import ContractFunctionT
+    from vyper.semantics.types.user import InterfaceT
+
+    # Vyper 0.3.10's compile_files reads with universal newlines and appends
+    # exactly one newline. The caller verifies the resulting hash against the
+    # validated file. This declines offsets when CRLF was normalized.
+    source = compiler_data.source_code
+    if not source.endswith("\n"):
+        return {}
+    source_sha256sum = hashlib.sha256(source[:-1].encode("utf-8")).hexdigest()
+    # The regular semantic phase folds constants, including array bounds.
+    # Only export calls whose ID, full span and method survive that transformation.
+    original = {
+        (node.node_id, node.src, node.func.attr)
+        for node in compiler_data.vyper_module.get_descendants(vy_ast.Call)
+        if isinstance(node.func, vy_ast.Attribute)
+    }
+    calls = []
+    for node in compiler_data.vyper_module_folded.get_descendants(vy_ast.Call):
+        callee = node.func
+        if (
+            not isinstance(callee, vy_ast.Attribute)
+            or (node.node_id, node.src, callee.attr) not in original
+        ):
+            continue
+        function = callee._metadata.get("type")
+        interface = callee.value._metadata.get("type")
+        if (
+            isinstance(function, ContractFunctionT)
+            and function.visibility is FunctionVisibility.EXTERNAL
+            and isinstance(interface, InterfaceT)
+            and function.name == callee.attr
+        ):
+            calls.append(
+                {
+                    "node_id": node.node_id,
+                    "src": node.src,
+                    "method": callee.attr,
+                    "interface": str(interface),
+                    "mutability": function.mutability.value,
+                }
+            )
+    return {"source_sha256sum": source_sha256sum, "calls": calls}
 
 
 def _run_explicit_compiler(command: list[str], timeout: float) -> dict[str, object]:

@@ -377,6 +377,7 @@ class Config:
     source_snapshot: ImportClosure | None = None
     strip_pragma: bool = False
     source_annotated_ast: dict[str, Any] | None = None
+    source_external_calls: dict[str, Any] | None = None
 
 
 @dataclass

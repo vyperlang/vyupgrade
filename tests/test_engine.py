@@ -110,28 +110,39 @@ def test_prepare_retains_first_failure_when_all_retries_fail(monkeypatch, tmp_pa
     assert batch.files[0].source_compile.stderr == "failed 0.3.0"
 
 
-def test_source_ast_is_owned_by_each_file(monkeypatch, tmp_path: Path) -> None:
+def test_source_ast_and_semantic_evidence_are_owned_by_each_file(monkeypatch, tmp_path: Path) -> None:
     first = tmp_path / "First.vy"
     second = tmp_path / "Second.vy"
     asts: dict[str, object] = {}
 
     def compile_source(path, config, source_version):
+        assert (config.source_ast, config.source_annotated_ast, config.source_external_calls) == (
+            None, None, None
+        )
         artifacts = dict(VALIDATION_ARTIFACTS)
         if path == first:
             artifacts["ast"] = {"owner": "first"}
+            artifacts["annotated_ast"] = {"annotated": "first"}
+            artifacts["external_calls_v1"] = {"calls": []}
         return CompileResult("passed", artifacts=artifacts)
 
     def apply(source, config, path):
-        asts[path.name] = config.source_ast
+        asts[path.name] = config.source_ast, config.source_annotated_ast, config.source_external_calls
         return RewriteResult(source, [], [])
 
     monkeypatch.setattr(engine, "compile_source_file", compile_source)
     monkeypatch.setattr(engine, "apply_rules", apply)
-    config = _config(tmp_path, source_ast={"stale": True})
+    config = _config(
+        tmp_path, source_ast={"stale": True}, source_annotated_ast={"stale": True},
+        source_external_calls={"stale": True},
+    )
 
     engine.prepare_migrations((_request(first), _request(second)), config)
 
-    assert asts == {"First.vy": {"owner": "first"}, "Second.vy": None}
+    assert asts == {
+        "First.vy": ({"owner": "first"}, {"annotated": "first"}, {"calls": []}),
+        "Second.vy": (None, None, None),
+    }
     assert config.source_ast == {"stale": True}
 
 

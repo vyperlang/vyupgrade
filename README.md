@@ -224,6 +224,9 @@ diagnostic instead of being applied.
 - For `0.5.0b1` sources migrating to `0.5.0b2`, `VY127` uses the source
   compiler's annotated declaration to name positional custom error arguments,
   including errors defined in imported Vyper modules.
+- The [compiler facts pilot](docs/compiler-facts-pilot.md) also uses managed
+  Vyper `0.3.10` to resolve external call modes in unchanged functions.
+  The pilot notes describe its fallback behavior and corpus results.
 - [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
   change mapped to a rule, diagnostic, explicit no-op, or validation-only
   behavior.

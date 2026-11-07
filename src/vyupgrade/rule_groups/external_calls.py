@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from ..analysis import infer_expr_type, normalize_type, unwrap_type
+from ..analysis import SourceFacts, infer_expr_type, normalize_type, unwrap_type
 from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, RuleContext, crossing
@@ -15,6 +15,7 @@ from ..source import (
     line_number,
     span_is_code,
 )
+from .compiler_calls import proven_call_keywords
 from .external_call_helpers import external_call_matches
 
 
@@ -177,22 +178,35 @@ def _split_inline_comment_preserving_strings(line: str) -> tuple[str, str]:
 
 
 def _external_call_keywords(
-    rule_context: RuleContext,
+    rule_context: RuleContext, protected_lines: set[int],
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     current = rule_context.source
     all_fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     for _ in range(3):
         current_context = rule_context.with_source(current)
-        current, fixes, diagnostics = _external_call_keywords_once(current_context)
+        current, fixes, diagnostics = _external_call_keywords_once(current_context, protected_lines)
         all_fixes.extend(fixes)
         if not fixes:
             break
     return current, all_fixes, diagnostics
 
 
+def _has_conflicting_local_types(facts: SourceFacts, name: str, line: int) -> bool:
+    if not name.isidentifier():
+        return False
+    for start, end in facts.function_ends.items():
+        if start <= line <= end:
+            types = {
+                typ for row, (var, typ) in facts.local_declarations.items()
+                if start <= row <= end and var == name
+            }
+            return len(types) > 1
+    return False
+
+
 def _external_call_keywords_once(
-    rule_context: RuleContext,
+    rule_context: RuleContext, protected_lines: set[int],
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     facts = rule_context.facts
@@ -206,7 +220,10 @@ def _external_call_keywords_once(
         prefix = source[max(0, start - 16) : start]
         if target == "self" or method in {"append", "pop"}:
             continue
-        vars_for_line = facts.vars_at_line(line_number(source, start))
+        row = line_number(source, start)
+        if row in protected_lines:
+            continue
+        vars_for_line = facts.vars_at_line(row)
         if target.startswith("self."):
             target_type = facts.storage_vars.get(target[5:]) or infer_expr_type(
                 target, vars_for_line, facts
@@ -219,7 +236,7 @@ def _external_call_keywords_once(
                 diagnostics.append(
                     Diagnostic(
                         "VYD003",
-                        line_number(source, start),
+                        row,
                         f"cannot infer mutability for external call {target}.{method}",
                     )
                 )
@@ -232,6 +249,10 @@ def _external_call_keywords_once(
         if existing_keyword is not None:
             if existing_keyword.group("keyword") == keyword:
                 continue
+            # A whole-function lookup cannot overrule an explicit call mode
+            # when different branches declare distinct types for this receiver.
+            if _has_conflicting_local_types(facts, target, row):
+                continue
             keyword_start = start - (len(prefix) - existing_keyword.start("keyword"))
             edits.append(
                 TextEdit(
@@ -241,7 +262,7 @@ def _external_call_keywords_once(
             fixes.append(
                 Fix(
                     rule,
-                    line_number(source, start),
+                    row,
                     f"changed external call keyword to {keyword}",
                     existing_keyword.group("keyword"),
                     keyword,
@@ -252,7 +273,7 @@ def _external_call_keywords_once(
         fixes.append(
             Fix(
                 rule,
-                line_number(source, start),
+                row,
                 f"added {keyword} to {mutability} external call",
                 source[start:end].rstrip(),
                 keyword + " " + source[start:end].rstrip(),
@@ -263,13 +284,18 @@ def _external_call_keywords_once(
     return apply_edits(source, selected_edits), selected_fixes, diagnostics
 
 
-def _external_call_subscripts(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+def _external_call_subscripts(
+    rule_context: RuleContext, protected_lines: set[int]
+) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
     for match in re.finditer(r"\b(?:staticcall|extcall)\s+", source):
         if not span_is_code(mask, match.start(), match.end()):
+            continue
+        row = line_number(source, match.start())
+        if row in protected_lines:
             continue
         expression_end = external_call_expression_end(source, match.end())
         if expression_end is None:
@@ -282,7 +308,7 @@ def _external_call_subscripts(rule_context: RuleContext) -> tuple[str, list[Fix]
         fixes.append(
             Fix(
                 "VY042",
-                line_number(source, match.start()),
+                row,
                 "parenthesized external call before subscript",
                 before,
                 after,
@@ -290,23 +316,39 @@ def _external_call_subscripts(rule_context: RuleContext) -> tuple[str, list[Fix]
         )
     return apply_edits(source, edits), fixes, []
 
+
+def _external_call_syntax(context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
+    keywords = context.any_enabled({"VY040", "VY041", "VYD003"})
+    proven = proven_call_keywords(context) if keywords else None
+    source, fixes, protected_lines = proven if proven is not None else (context.source, [], set())
+    diagnostics: list[Diagnostic] = []
+    if keywords:
+        source, first_fixes, diagnostics = _external_call_keywords(
+            context.with_source(source), protected_lines
+        )
+        fixes.extend(first_fixes)
+    if context.is_enabled("VY042"):
+        source, subscript_fixes, _ = _external_call_subscripts(
+            context.with_source(source), protected_lines
+        )
+        fixes.extend(subscript_fixes)
+    if keywords:
+        source, more_fixes, more_diagnostics = _external_call_keywords(
+            context.with_source(source), protected_lines
+        )
+        fixes.extend(more_fixes)
+        diagnostics.extend(more_diagnostics)
+    return source, fixes, diagnostics
+
+
 RULES = (
     Rule(
-        "external_call_keywords",
-        runner=_external_call_keywords,
+        "external_call_syntax",
+        runner=_external_call_syntax,
         changes=(
             crossing("VY040", (0, 4, 0)),
             crossing("VY041", (0, 4, 0)),
-            crossing("VYD003", (0, 4, 0)),
-        ),
-    ),
-    Rule("external_call_subscripts", runner=_external_call_subscripts, changes=(crossing("VY042", (0, 4, 0)),)),
-    Rule(
-        "external_call_keywords_after_subscripts",
-        runner=_external_call_keywords,
-        changes=(
-            crossing("VY040", (0, 4, 0)),
-            crossing("VY041", (0, 4, 0)),
+            crossing("VY042", (0, 4, 0)),
             crossing("VYD003", (0, 4, 0)),
         ),
     ),
