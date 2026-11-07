@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_LONE_CR = re.compile(r"\r(?!\n)")
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,14 @@ class TextEdit:
 
 def line_number(source: str, offset: int) -> int:
     return source.count("\n", 0, offset) + 1
+
+
+def lone_cr_as_lf(source: str) -> str:
+    """Spell Vyper's CR-only line breaks as LF, which tokenize requires.
+
+    Each lone CR is replaced in place, so offsets stay valid in the original source.
+    """
+    return _LONE_CR.sub("\n", source)
 
 
 def logical_statement_tokens(source: str) -> Iterator[list[tokenize.TokenInfo]]:

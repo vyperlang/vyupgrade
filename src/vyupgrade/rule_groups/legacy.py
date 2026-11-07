@@ -34,6 +34,7 @@ from ..source import (
     find_matching,
     line_number,
     logical_statement_tokens,
+    lone_cr_as_lf,
     split_top_level_args,
     span_is_code,
 )
@@ -225,7 +226,8 @@ def _ascii_string_literals(rule_context: RuleContext) -> tuple[str, list[Fix], l
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
-    for token in _expression_strings(source):
+    lexical = rule_context.with_source(lone_cr_as_lf(source))
+    for token in _expression_strings(lexical.source):
         if token.string.isascii() and "\\" not in token.string:
             continue
         try:
@@ -235,7 +237,7 @@ def _ascii_string_literals(rule_context: RuleContext) -> tuple[str, list[Fix], l
         if not isinstance(value, str) or value.isascii():
             continue
         line, column = token.start
-        start = rule_context.line_offsets[line - 1] + column
+        start = lexical.line_offsets[line - 1] + column
         end = start + len(token.string)
         if runtime_values.get((start, end)) != value or any(ord(c) > 255 for c in value):
             if rule_context.is_enabled("VYD024"):

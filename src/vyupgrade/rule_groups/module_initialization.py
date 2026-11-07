@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from ..models import Config, Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
-from ..source import TextEdit, apply_edits, code_mask, line_number
+from ..source import TextEdit, apply_edits, code_mask, line_number, lone_cr_as_lf
 from ..versions import MigrationContext, infer_pragma
 
 if TYPE_CHECKING:
@@ -42,9 +42,7 @@ class _ModuleFacts:
 def _module_facts(source: str) -> _ModuleFacts:
     """Read logical top-level statements; unknown forms keep initialization intact."""
     facts = _ModuleFacts()
-    # Vyper accepts CR-only line endings; tokenize only splits on LF. A lone CR
-    # becomes LF in place, so offsets into the original source stay valid.
-    source = re.sub(r"\r(?!\n)", "\n", source)
+    source = lone_cr_as_lf(source)
     offsets = [0] + [index + 1 for index, char in enumerate(source) if char == "\n"]
     statement: list[tokenize.TokenInfo] = []
     decorators: set[str] = set()

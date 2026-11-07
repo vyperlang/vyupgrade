@@ -24,6 +24,7 @@ from ..source import (
     find_matching,
     line_number,
     logical_statement_tokens,
+    lone_cr_as_lf,
     replace_identifier,
     split_top_level_arg_spans,
     split_top_level_args,
@@ -867,8 +868,7 @@ def _create_from_blueprint(rule_context: RuleContext) -> tuple[str, list[Fix], l
     edits: list[TextEdit] = []
     if source.isascii() and "create_from_blueprint" not in source:
         return source, fixes, diagnostics
-    # Tokenize also accepts Vyper's CR-only files after this width-preserving normalization.
-    lexical_source = re.sub(r"\r(?!\n)", "\n", source)
+    lexical_source = lone_cr_as_lf(source)
     offsets = rule_context.with_source(lexical_source).line_offsets
     for line, tokens in _blueprint_default_calls(lexical_source, offsets):
         close = tokens[-1]
