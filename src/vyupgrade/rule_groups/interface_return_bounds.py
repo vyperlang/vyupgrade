@@ -55,7 +55,6 @@ if TYPE_CHECKING:
 # Position of the length argument of each bounded type constructor.
 _BOUND_ARGUMENT = {"String": 0, "Bytes": 0, "DynArray": 1}
 _TYPE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|\S")
-_DEF_RE = re.compile(r"[ \t]*def[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*\(")
 _RETURN_RE = re.compile(r"[ \t]*->[ \t]*(?P<type>[^:#\n]*[^:#\s])[ \t]*:")
 _IMPLEMENTS_RE = re.compile(r"^[ \t]*implements[ \t]*:", re.MULTILINE)
 _MAX_IMPLEMENTS_LINES = 64
@@ -72,6 +71,7 @@ _IMPORTED_NAME_RE = re.compile(r"(?P<name>[A-Za-z_]\w*)(?:\s+as\s+(?P<alias>[A-Z
 # letters or a dashed low line spell ASCII names.
 _IDENTIFIER = r"(?:[^\W\d]|[^\x00-\x7f])(?:\w|[^\x00-\x7f])*"
 _METHOD_CALL_RE = re.compile(rf"\.\s*(?P<method>{_IDENTIFIER})\s*\(")
+_DEF_RE = re.compile(rf"[ \t]*def[ \t]+(?P<name>{_IDENTIFIER})[ \t]*\(")
 _BARE_MODULE_NAME_RE = re.compile(r"\b(?:constant|immutable)\s*\(")
 _CALL_KEYWORDS = frozenset({"staticcall", "extcall"})
 _ANNOTATED_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<type>.+?)\s*=")
@@ -364,10 +364,11 @@ def _interface_functions(source: str, path: Path | None) -> Iterator[tuple[str |
         if def_match is None:
             continue
         open_index = line_offset + def_match.end() - 1
+        name = unicodedata.normalize("NFKC", def_match.group("name"))
         if module_is_interface and top_level:
-            yield None, def_match.group("name"), open_index
+            yield None, name, open_index
         elif not module_is_interface and interface is not None and not top_level:
-            yield interface, def_match.group("name"), open_index
+            yield interface, name, open_index
 
 
 def _implementation_returns_by_interface(
@@ -980,18 +981,60 @@ def _expression_type(
 def _scoped_local_type(source: str, offset: int, name: str) -> str | None:
     """Type of the declaration of ``name`` in a block enclosing ``offset``, or parameter.
 
-    Walks back through the function's logical lines: one indented deeper than
-    the innermost enclosing block so far belongs to a block that has already
-    closed. None when neither an enclosing block nor the function declares
-    ``name``; "" when that can't be told (a declaration this walk doesn't
-    recognize is then missed, so a name it misses must not be typed otherwise).
+    None when neither an enclosing block nor the function declares ``name``;
+    "" when that can't be told (a declaration this walk doesn't recognize is
+    then missed, so a name it misses must not be typed otherwise).
     """
-    logical = _logical_line_numbers(source)
-    if logical is None:
+    lines = _enclosing_lines(source, offset)
+    if lines is None:
         return ""
     declaration = re.compile(
         rf"(?:for[ \t]+)?{re.escape(name)}[ \t]*:[ \t]*(?P<type>.+?)[ \t]*(?:=|[ \t]in[ \t]|$)"
     )
+    for start, line, opens_block in lines:
+        found = declaration.match(line.strip().split("#", 1)[0].rstrip())
+        if found is not None:
+            return found.group("type")
+        if opens_block:
+            header = _DEF_RE.match(line)
+            if header is not None:
+                parameters = _function_header(source, start + header.end() - 1)
+                if parameters is None:
+                    return ""
+                function, text = parameters
+                for argument in function.args.args:
+                    if argument.arg == name:
+                        annotation = argument.annotation
+                        return (ast.get_source_segment(text, annotation) or "") if annotation else ""
+                return None
+    return ""
+
+
+def _enclosing_return_type(source: str, offset: int) -> str | None:
+    """Return type of the function enclosing ``offset``, or None if it can't be told."""
+    for start, line, opens_block in _enclosing_lines(source, offset) or ():
+        header = _DEF_RE.match(line) if opens_block else None
+        if header is not None:
+            parsed = _function_header(source, start + header.end() - 1)
+            if parsed is None or parsed[0].returns is None:
+                return None
+            function, text = parsed
+            return ast.get_source_segment(text, function.returns)
+    return None
+
+
+def _enclosing_lines(source: str, offset: int) -> list[tuple[int, str, bool]] | None:
+    """The logical lines before ``offset`` in the function's blocks enclosing it, nearest first.
+
+    Each comes with its start offset and whether it opens a block enclosing
+    ``offset``: a line indented deeper than the innermost enclosing block so
+    far belongs to a block that has already closed. Stops at the first line
+    opening a block at the top level, the function's header. None when
+    ``source`` doesn't tokenize or ``offset`` is at the top level.
+    """
+    logical = _logical_line_numbers(source)
+    if logical is None:
+        return None
     number = line_number(source, offset)
     line_start = source.rfind("\n", 0, offset) + 1
     # A call on a continuation line belongs to the logical line it continues.
@@ -1000,6 +1043,9 @@ def _scoped_local_type(source: str, offset: int, name: str) -> str | None:
         number -= 1
     current = source[line_start:].split("\n", 1)[0]
     limit = len(current) - len(current.lstrip())
+    if limit == 0:
+        return None
+    lines = []
     for line_end in _line_starts_before(source, line_start):
         number -= 1
         if number not in logical:
@@ -1010,36 +1056,32 @@ def _scoped_local_type(source: str, offset: int, name: str) -> str | None:
         indent = len(line) - len(line.lstrip())
         if indent > limit:
             continue
-        found = declaration.match(line.strip().split("#", 1)[0].rstrip())
-        if found is not None:
-            return found.group("type")
-        if indent < limit:
-            header = _DEF_RE.match(line)
-            if header is not None:
-                return _parameter_type(source, start + header.end() - 1, name)
-            limit = indent
-    return None
+        lines.append((start, line, indent < limit))
+        if indent == 0:
+            break
+        limit = min(limit, indent)
+    return lines
 
 
-def _parameter_type(source: str, open_paren: int, name: str) -> str | None:
-    """Annotation of parameter ``name`` of the function whose parameters open at ``open_paren``.
+def _function_header(source: str, open_paren: int) -> tuple[ast.FunctionDef, str] | None:
+    """The function whose parameters open at ``open_paren``, parsed with its text.
 
-    None when it has no such parameter; "" when the parameters can't be parsed.
+    None when its header can't be parsed.
     """
     close = find_matching(source, open_paren)
     if close is None:
-        return ""
-    header = f"def f({source[open_paren + 1 : close]}): pass"
+        return None
+    colon = source.find(":", close)
+    returns = source[close + 1 : colon]
+    if colon == -1 or "\n" in returns.replace("\\\n", ""):
+        return None
+    text = f"def f({source[open_paren + 1 : close]}){returns}: pass"
     try:
-        function = ast.parse(header).body[0]
+        function = ast.parse(text).body[0]
     except SyntaxError:
-        return ""
+        return None
     assert isinstance(function, ast.FunctionDef)
-    for argument in function.args.args:
-        if argument.arg == name:
-            annotation = argument.annotation
-            return (ast.get_source_segment(header, annotation) or "") if annotation else ""
-    return None
+    return function, text
 
 
 @functools.lru_cache(maxsize=16)
@@ -1201,7 +1243,7 @@ def _expected_type(
         return None
     prefix = source[line_start:call_start].strip()
     if prefix == "return":
-        return facts.return_type_at_line(line_number(source, call_start))
+        return _enclosing_return_type(source, call_start)
     annotated = _ANNOTATED_ASSIGNMENT_RE.fullmatch(prefix)
     return None if annotated is None else annotated.group("type")
 

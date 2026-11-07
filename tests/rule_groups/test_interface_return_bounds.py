@@ -1359,6 +1359,18 @@ def test_local_named_like_a_storage_variable_is_not_typed_by_it(config) -> None:
     assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
 
 
+def test_storage_shadow_under_a_compatibility_character_function_name_blocks(config) -> None:
+    source = STORAGE_NAMED_LIKE_A_LOCAL.format(
+        module_type="Wide",
+        init="self.ref = Wide(a)",
+        local="(ref): Narrow = Narrow(a)\n    ",
+    ).replace("def wide(", "def \uff57ide(")
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[1]: view\n" in result.source
+    assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+
+
 def test_module_immutable_receiver_is_typed_by_its_declaration(config) -> None:
     source = STORAGE_NAMED_LIKE_A_LOCAL.format(
         module_type="immutable(Narrow)", init="ref = Narrow(a)", local=""
@@ -1757,3 +1769,31 @@ def wide(a: address) -> Bytes[10]:
     assert "def data() -> Bytes[1]: ..." in result.source
     assert [fix.rule for fix in result.fixes if fix.rule.startswith("VY12")] == []
     assert "VYD020" in [diagnostic.rule for diagnostic in result.diagnostics]
+
+
+def test_return_is_typed_by_its_own_function_header_with_a_hash_default(config) -> None:
+    source = """#pragma version 0.4.3
+interface Narrow:
+    def data() -> Bytes[1]: view
+
+implements: Narrow
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+@view
+def narrow(a: address) -> Bytes[1]:
+    return b"a"
+
+@external
+@view
+def wide(a: address, tag: String[1] = "#") -> Bytes[10]:
+    return staticcall Narrow(a).data()
+"""
+    result = apply_rules(source, config(target_version="0.5.0a3"))
+
+    assert "    def data() -> Bytes[...]: view\n" in result.source
+    assert "    return self.__vyupgrade_return_bound(staticcall Narrow(a).data())\n" in result.source
