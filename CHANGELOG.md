@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Compile sources pinned below Vyper `0.2.16` without requesting the `layout`
+  output those compilers lack, so their ABI and method identifiers are compared
+  and the source compile is `degraded` instead of `failed`.
+  `--allow-storage-layout-change` now also accepts a source whose only missing
+  validation artifact is its storage layout.
+
 ## 0.10.0 - 2026-11-07
 
 - Add opt-in support for Vyper `0.5.0b1` and `0.5.0b2` as source and target

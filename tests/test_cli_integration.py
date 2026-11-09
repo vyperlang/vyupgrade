@@ -812,6 +812,44 @@ def __init__():
     assert validation["decision"]["status"] == "passed"
 
 
+# Vyper < 0.2.16 has no layout output, so its source compile skips it and the
+# storage layout stays unchecked unless a layout or source waiver accepts that.
+def test_real_compiler_before_0_2_16_compares_abi_without_layout(tmp_path: Path) -> None:
+    contract = tmp_path / "Owned.vy"
+    contract.write_text(
+        """# @version 0.2.4
+
+owner: public(address)
+
+@external
+def __init__():
+    self.owner = msg.sender
+""",
+        encoding="utf-8",
+    )
+    blocked = tmp_path / "blocked.json"
+    waived = tmp_path / "waived.json"
+
+    assert main([str(contract), "--report-json", str(blocked)]) == 3
+    assert (
+        main([str(contract), "--allow-storage-layout-change", "--report-json", str(waived)])
+        == 0
+    )
+
+    validation = json.loads(blocked.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "degraded"
+    assert validation["source_unavailable_formats"] == ["layout"]
+    assert validation["source_unavailable_artifacts"] == ["layout"]
+    assert validation["abi_equal"] is True
+    assert validation["method_ids_equal"] is True
+    assert validation["decision"]["status"] == "blocked"
+    decision = json.loads(waived.read_text())["files"][0]["validation"]["decision"]
+    assert decision["status"] == "waived"
+    assert [(issue["code"], issue["waiver"]) for issue in decision["waivers"]] == [
+        ("source_artifacts_unavailable", "--allow-storage-layout-change")
+    ]
+
+
 def test_real_python38_compiler_reports_vyper_exception(tmp_path: Path) -> None:
     contract = tmp_path / "Broken.vy"
     contract.write_text(

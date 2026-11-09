@@ -1135,6 +1135,59 @@ def test_compile_source_file_does_not_retry_or_transform_final_newline(
     assert contract.read_text(encoding="utf-8") == source
 
 
+@pytest.mark.parametrize("version", ["0.1.0b17", "0.2.4", "0.2.15"])
+def test_compile_source_file_omits_layout_for_compilers_before_0_2_16(
+    monkeypatch, tmp_path, version: str
+) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text(f"# @version {version}\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(command, *_args, **_kwargs):
+        calls.append(command)
+        return _compiler_process(command, stdout="[]\n{}\n{}\n")
+
+    monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
+
+    result = compile_source_file(contract, Config(paths=(contract,)), version)
+
+    assert [command[command.index("-f") + 1] for command in calls] == [
+        "abi,method_identifiers,bytecode,ast"
+    ]
+    assert result.status == "degraded"
+    assert result.unavailable_formats == ("layout",)
+    assert unavailable_validation_artifacts(result) == ["layout"]
+
+
+@pytest.mark.parametrize(
+    ("version", "source_vyper"), [("0.2.16", None), ("0.2.4", "/opt/vyper")]
+)
+def test_compile_source_file_requests_layout_when_compiler_may_support_it(
+    monkeypatch, tmp_path, version: str, source_vyper: str | None
+) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text(f"# @version {version}\n", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(command, *_args, **_kwargs):
+        calls.append(command)
+        return _compiler_process(command, stdout="[]\n{}\n{}\n{}\n")
+
+    monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
+    monkeypatch.setattr("vyupgrade.compiler._run_compiler_process", fake_run)
+
+    result = compile_source_file(
+        contract, Config(paths=(contract,), source_vyper=source_vyper), version
+    )
+
+    assert [command[command.index("-f") + 1] for command in calls] == [
+        "abi,method_identifiers,layout,bytecode,ast"
+    ]
+    assert result.status == "passed"
+    assert result.unavailable_formats == ()
+
+
 def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")
