@@ -127,7 +127,8 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--check` — exit non-zero if any file would change; write nothing.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe
   (e.g. `enum` → `flag`, widening interface return bounds for Vyper 0.5,
-  switching legacy forwarders, or converting a max-length array to a mapping).
+  switching legacy forwarders, merging distinct named reentrancy locks into
+  the global lock, or converting a max-length array to a mapping).
   The array conversion also requires a storage-layout waiver before writing.
 - `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency modules are analyzed with compiler ASTs but validated through their consumer roots, and dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
 - `--closure-output DIR` — write the validated upgraded closure (project + dependencies, laid out import-root-relative so `vyper -p DIR` resolves every import) into DIR; requires `--include-dependencies`; overwrites files inside DIR, never deletes extras, never modifies dependency sources in place.

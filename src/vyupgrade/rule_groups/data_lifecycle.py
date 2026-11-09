@@ -873,9 +873,12 @@ def _nonreentrant(
             Diagnostic(
                 "VYD002",
                 line_number(source, first.start()),
-                "multiple named reentrancy locks found; 0.4.x uses a global lock",
+                "multiple named reentrancy locks found; 0.4.x uses a global lock, "
+                "so merging them changes callback behavior. Use --aggressive to apply VY090",
             )
         )
+    if len(locks) > 1 and not rule_context.config.aggressive:
+        return source, fixes, diagnostics
     if not rule_context.is_enabled("VY090"):
         return source, fixes, diagnostics
     diagnostics.extend(

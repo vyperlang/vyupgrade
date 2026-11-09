@@ -521,6 +521,37 @@ def f():
     assert "@nonreentrant\n@external" in result.source
 
 
+MULTI_LOCK_SOURCE = """# @version 0.3.10
+@nonreentrant("a")
+@external
+def f():
+    pass
+
+@nonreentrant("b")
+@external
+def g():
+    pass
+"""
+
+
+def test_multiple_named_reentrancy_locks_are_kept_by_default(config) -> None:
+    result = apply_rules(MULTI_LOCK_SOURCE, config())
+
+    assert "VYD002" in {diag.rule for diag in result.diagnostics}
+    assert "VY090" not in {fix.rule for fix in result.fixes}
+    assert '@nonreentrant("a")' in result.source
+    assert '@nonreentrant("b")' in result.source
+
+
+def test_multiple_named_reentrancy_locks_are_merged_with_aggressive(config) -> None:
+    result = apply_rules(MULTI_LOCK_SOURCE, config(aggressive=True))
+
+    assert "VYD002" in {diag.rule for diag in result.diagnostics}
+    assert [fix.rule for fix in result.fixes if fix.rule == "VY090"] == ["VY090", "VY090"]
+    assert "@nonreentrant\n@external\ndef f" in result.source
+    assert "@nonreentrant\n@external\ndef g" in result.source
+
+
 def test_nonreentrant_rewrite_ignores_non_code_text(config) -> None:
     source = '''# @version 0.3.10
 """

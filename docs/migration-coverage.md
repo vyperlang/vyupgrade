@@ -189,9 +189,10 @@ modern Python interpreter.
 - Constructor visibility changed to `@deploy`: `VY002` removes invalid
   constructor visibility decorators and inserts `@deploy`.
 - Named reentrancy locks removed. `VY090` preserves the guard on internal
-  and external functions and removes its name. `VYD002`
-  flags multiple named locks because global-lock behavior may change callback
-  assumptions.
+  and external functions and removes its name. A contract with one lock name
+  keeps its behavior. `VYD002` flags multiple distinct lock names, because
+  merging them into the global lock makes calls between functions with
+  different locks revert. With `--aggressive`, `VY090` rewrites them too.
 - Storage arrays bounded by `max_value(uint256)` or the max-uint256 literal:
   `VYD020` flags the storage addressing and index-bound changes. With
   `--aggressive`, `VY091` converts the declaration to `HashMap[uint256, T]`.
