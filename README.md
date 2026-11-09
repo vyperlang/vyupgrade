@@ -86,10 +86,12 @@ Vyper releases before 0.3.1 run under Python 3.8 with a `setuptools` release
 that still provides the `pkg_resources` module those compilers import. For
 `0.1.0b*` source compilers, `vyupgrade` also runs the compiler through a
 `typed-ast` compatibility wrapper so the legacy compiler sees pre-Python-3.8
-AST node classes without requiring a local Python 3.6 or 3.7 interpreter. When
-an old compiler cannot produce a modern validation output format, that format is
-dropped and reported as unavailable. Writes then remain blocked unless the
-source-validation gap is explicitly accepted with `--allow-unvalidated-source`.
+AST node classes without requiring a local Python 3.6 or 3.7 interpreter.
+Compilers before 0.2.16 cannot produce a storage layout, so their source compile
+does not request one and reports it as unavailable. Writes then remain blocked
+unless the gap is explicitly accepted: `--allow-storage-layout-change` accepts a
+missing source layout when the ABI and method identifiers were still compared,
+and `--allow-unvalidated-source` accepts any source-validation gap.
 Target compilers must produce every requested validation output.
 
 Source and target validation require deployment bytecode generation for entry
@@ -146,7 +148,7 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--allow-unvalidated-source` — write despite a failed source compile or unavailable source artifacts.
 - `--allow-abi-change` — write despite an ABI comparison mismatch.
 - `--allow-method-id-change` — write despite a method-identifier comparison mismatch.
-- `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch.
+- `--allow-storage-layout-change` — write despite a storage-layout comparison mismatch, or a source storage layout the source compiler could not produce.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
 JSON reports include a top-level `schema_version`. Version `6` adds per-file

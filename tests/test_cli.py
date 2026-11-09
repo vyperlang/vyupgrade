@@ -856,6 +856,135 @@ def test_missing_source_artifact_blocks_without_source_waiver(
     assert validation["source_unavailable_formats"] == ["method_identifiers"]
 
 
+def _layout_unavailable_source(monkeypatch) -> None:
+    monkeypatch.setattr(
+        engine,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "degraded",
+            artifacts={"abi": [], "method_identifiers": {}, "ast": {}},
+            unavailable_formats=("layout",),
+        ),
+    )
+
+
+def test_missing_source_layout_blocks_without_waiver(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "missing-source-layout.vy"
+    original = "# @version 0.2.4\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    _layout_unavailable_source(monkeypatch)
+
+    assert main([str(contract), "--write", "--report-json", str(report)]) == 3
+    assert contract.read_text(encoding="utf-8") == original
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "degraded"
+    assert validation["source_unavailable_artifacts"] == ["layout"]
+    assert [issue["code"] for issue in validation["decision"]["blockers"]] == [
+        "source_artifacts_unavailable"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("flags", "waiver"),
+    [
+        (["--allow-storage-layout-change"], "--allow-storage-layout-change"),
+        (["--allow-unvalidated-source"], "--allow-unvalidated-source"),
+        (
+            ["--allow-storage-layout-change", "--allow-unvalidated-source"],
+            "--allow-unvalidated-source",
+        ),
+    ],
+)
+def test_missing_source_layout_is_waived_by_layout_or_source_waiver(
+    tmp_path: Path, monkeypatch, passing_compiler, flags: list[str], waiver: str
+) -> None:
+    contract = tmp_path / "missing-source-layout.vy"
+    contract.write_text(
+        "# @version 0.2.4\n@external\ndef __init__():\n    pass\n", encoding="utf-8"
+    )
+    report = tmp_path / "report.json"
+    _layout_unavailable_source(monkeypatch)
+
+    assert main([str(contract), "--write", *flags, "--report-json", str(report)]) == 0
+
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["abi_equal"] is True
+    assert validation["method_ids_equal"] is True
+    assert validation["storage_layout_equal"] is None
+    assert validation["decision"]["status"] == "waived"
+    assert [
+        (issue["code"], issue["waiver"]) for issue in validation["decision"]["waivers"]
+    ] == [("source_artifacts_unavailable", waiver)]
+
+
+def test_layout_waiver_still_enforces_abi_and_method_identifiers(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "missing-source-layout.vy"
+    original = "# @version 0.2.4\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    _layout_unavailable_source(monkeypatch)
+    monkeypatch.setattr(
+        engine,
+        "compile_target_source",
+        lambda *_args: CompileResult(
+            "passed",
+            artifacts={
+                "abi": [{"type": "function", "name": "changed", "inputs": []}],
+                "method_identifiers": {"changed()": "0x12345678"},
+                "layout": {},
+            },
+        ),
+    )
+
+    code = main(
+        [str(contract), "--write", "--allow-storage-layout-change", "--report-json", str(report)]
+    )
+
+    assert code == 7
+    assert contract.read_text(encoding="utf-8") == original
+    decision = json.loads(report.read_text())["validation_decision"]
+    assert [issue["code"] for issue in decision["waivers"]] == ["source_artifacts_unavailable"]
+    assert [issue["code"] for issue in decision["blockers"]] == [
+        "abi_changed",
+        "method_identifiers_changed",
+    ]
+
+
+def test_layout_waiver_does_not_cover_other_missing_source_artifacts(
+    tmp_path: Path, monkeypatch, passing_compiler
+) -> None:
+    contract = tmp_path / "missing-source-artifacts.vy"
+    original = "# @version 0.2.4\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(
+        engine,
+        "compile_source_file",
+        lambda *_args: CompileResult(
+            "degraded",
+            artifacts={"abi": [], "ast": {}},
+            unavailable_formats=("method_identifiers", "layout"),
+        ),
+    )
+
+    code = main(
+        [str(contract), "--write", "--allow-storage-layout-change", "--report-json", str(report)]
+    )
+
+    assert code == 3
+    assert contract.read_text(encoding="utf-8") == original
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_unavailable_artifacts"] == ["method_identifiers", "layout"]
+    assert [issue["code"] for issue in validation["decision"]["blockers"]] == [
+        "source_artifacts_unavailable"
+    ]
+
+
 def test_optional_source_ast_unavailability_is_degraded_but_safe(
     tmp_path: Path, monkeypatch, passing_compiler
 ) -> None:

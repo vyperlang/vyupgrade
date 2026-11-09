@@ -145,12 +145,21 @@ def decide_file_validation(report: FileReport, config: Config) -> ValidationDeci
             waiver="--allow-unvalidated-source",
         )
     elif report.source_unavailable_artifacts:
+        # Accepting any storage layout change also accepts an unchecked layout,
+        # as long as the ABI and method identifiers were still compared.
+        layout_waived = (
+            report.source_unavailable_artifacts == ["layout"]
+            and report.abi_equal is not None
+            and report.method_ids_equal is not None
+            and config.allow_storage_layout_change
+            and not config.allow_unvalidated_source
+        )
         require(
             "source_artifacts_unavailable",
             "source compiler did not produce required artifacts: "
             + ", ".join(report.source_unavailable_artifacts),
-            allowed=config.allow_unvalidated_source,
-            waiver="--allow-unvalidated-source",
+            allowed=config.allow_unvalidated_source or layout_waived,
+            waiver="--allow-storage-layout-change" if layout_waived else "--allow-unvalidated-source",
         )
 
     comparisons = (
