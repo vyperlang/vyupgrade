@@ -26,7 +26,13 @@ def external_call_matches(
         (match.start(), match.end(), match.group("target"), match.group("method"), None)
         for match in variable_call_re.finditer(source)
     )
-    return sorted(matches)
+    # Matches ending at the same `.method(` describe one call. Keep the widest
+    # receiver: in `ERC20(token).decimals()` the cast's argument list
+    # `(token)` is not the receiver.
+    outermost: dict[int, tuple[int, int, str, str, str | None]] = {}
+    for match in sorted(matches):
+        outermost.setdefault(match[1], match)
+    return sorted(outermost.values())
 
 
 def _internal_call_result_matches(

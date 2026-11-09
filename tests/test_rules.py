@@ -86,6 +86,27 @@ def f(strategy: Strategy, amount: uint256, price: uint256):
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
 
 
+def test_interface_cast_call_reports_no_receiver_argument_diagnostic(config) -> None:
+    source = """# @version 0.3.10
+interface ERC20:
+    def decimals() -> uint256: view
+    def transfer(to: address, amount: uint256) -> bool: nonpayable
+
+token: address
+
+@external
+def f(token_addr: address) -> uint256:
+    assert ERC20(self.token).transfer(msg.sender, 1)
+    return ERC20(token_addr).decimals()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "extcall ERC20(self.token).transfer(msg.sender, 1)" in result.source
+    assert "return staticcall ERC20(token_addr).decimals()" in result.source
+    assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
+
+
 def test_erc721_import_migration_preserves_staticcall_inference(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC721
@@ -161,9 +182,9 @@ def g():
     assert "VYD003" in rules
     assert "VYD004" in rules
     assert "VY080" in rules
-    assert '@nonreentrant("a")' not in result.source
-    assert '@nonreentrant("b")' not in result.source
-    assert result.source.count("@nonreentrant") == 2
+    assert "VY090" not in {fix.rule for fix in result.fixes}
+    assert '@nonreentrant("a")' in result.source
+    assert '@nonreentrant("b")' in result.source
 
 
 def test_idempotent(config) -> None:

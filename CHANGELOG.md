@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Merging multiple distinct named reentrancy locks into the global lock
+  (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
+  the decorators are left unchanged. A single lock name is still rewritten.
+- Stop reporting `VYD003` for the argument of an interface cast such as
+  `ERC20(token).decimals()`, whose call mutability is already resolved.
+
 ## 0.10.0 - 2026-11-07
 
 - Add opt-in support for Vyper `0.5.0b1` and `0.5.0b2` as source and target
