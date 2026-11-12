@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ignore comments, string literals, and docstrings when reporting decimal usage
+  (`VYD001`) and `block.prevrandao` usage (`VYD010`).
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.
