@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from itertools import pairwise
 from typing import NamedTuple
 
+from .ast_facts import root_ast
+
 
 __all__ = (
     "StorageLayout",
@@ -386,6 +388,174 @@ def _ast_subscript_args(slice_node: object) -> list[object]:
     return [slice_node]
 
 
+@dataclass(frozen=True, slots=True)
+class _StorageTypeEvidence:
+    definitions: dict[str, dict[str, object]]
+    variables: dict[str, object]
+    constants: dict[str, object]
+
+    @classmethod
+    def from_ast(cls, ast: object) -> _StorageTypeEvidence:
+        if not isinstance(ast, dict):
+            return cls({}, {}, {})
+        try:
+            root = root_ast(ast)
+        except TypeError:
+            return cls({}, {}, {})
+        body = root.get("body")
+        if root.get("ast_type") != "Module" or not isinstance(body, list):
+            return cls({}, {}, {})
+        definitions: dict[str, dict[str, object]] = {}
+        variables: dict[str, object] = {}
+        constants: dict[str, object] = {}
+        for node in body:
+            if not isinstance(node, dict):
+                continue
+            if node.get("ast_type") in {"StructDef", "InterfaceDef", "EnumDef", "FlagDef"}:
+                name = node.get("name")
+                if not isinstance(name, str) or not name or name in definitions:
+                    return cls({}, {}, {})
+                definitions[name] = node
+            elif node.get("ast_type") in {"VariableDecl", "AnnAssign"}:
+                name = _ast_name(node.get("target"))
+                if name is None or name in variables:
+                    return cls({}, {}, {})
+                annotation = node.get("annotation")
+                variables[name] = annotation
+                if node.get("is_constant") is True or _constant_annotation(annotation):
+                    constants[name] = node.get("value")
+        return cls(definitions, variables, constants)
+
+    def profile(self, type_name: str, variable: str) -> object | None:
+        bindings = _target_annotation_interface_markers(
+            self.variables.get(variable), frozenset(self.definitions)
+        )
+        return self._layout_profile(type_name, bindings, (), nested=False)
+
+    def _layout_profile(
+        self,
+        type_name: str,
+        bindings: frozenset[_StorageInterfaceMarker],
+        path: tuple[int, ...],
+        *,
+        nested: bool,
+    ) -> object | None:
+        type_name = type_name.strip()
+        fixed = re.fullmatch(r"(?P<element>.+)\[(?P<length>[0-9]+)\]", type_name)
+        if fixed is not None and not type_name.startswith(("Bytes[", "String[")):
+            element = self._layout_profile(
+                fixed.group("element"), bindings, (*path, -1), nested=True
+            )
+            return ("array", element, fixed.group("length")) if element is not None else None
+        for generic in ("HashMap", "DynArray"):
+            args = _storage_generic_args(type_name, generic)
+            if args is None:
+                continue
+            if len(args) != 2:
+                return None
+            profiles = [
+                self._layout_profile(arg, bindings, (*path, index), nested=True)
+                if generic == "HashMap" or index == 0
+                else arg
+                for index, arg in enumerate(args)
+            ]
+            return (generic, *profiles) if all(p is not None for p in profiles) else None
+        if type_name.startswith("interface "):
+            return ("atom", type_name.removeprefix("interface "))
+        if _known_storage_width(type_name) not in {None, 0}:
+            return ("atom", type_name)
+        if type_name in self.definitions:
+            # A bare compiler type name must resolve at this exact grammar path
+            # in the root variable, never through an imported module's namesake.
+            if (path, type_name) not in bindings:
+                return None
+            return self._definition_profile(type_name, frozenset())
+        # Preserve the legacy top-level unknown-width comparison. Inside a
+        # container, identical names and widths do not prove identical layout.
+        return None if nested else ("opaque", type_name)
+
+    def _definition_profile(self, name: str, seen: frozenset[str]) -> object | None:
+        if name in seen:
+            return None
+        definition = self.definitions[name]
+        if definition.get("ast_type") != "StructDef":
+            return ("atom", name)
+        body = definition.get("body")
+        if not isinstance(body, list) or not body:
+            return None
+        members: list[tuple[str, object]] = []
+        for member in body:
+            if not isinstance(member, dict) or member.get("ast_type") != "AnnAssign":
+                return None
+            member_name = _ast_name(member.get("target"))
+            profile = self._annotation_profile(member.get("annotation"), seen | {name})
+            if member_name is None or profile is None:
+                return None
+            members.append((member_name, profile))
+        if len({member_name for member_name, _ in members}) != len(members):
+            return None
+        return ("struct", name, tuple(members))
+
+    def _annotation_profile(self, node: object, seen: frozenset[str]) -> object | None:
+        if not isinstance(node, dict):
+            return None
+        ast_type = node.get("ast_type")
+        if ast_type == "Name":
+            name = _ast_name(node)
+            if name in seen:
+                return None
+            if name in self.constants:
+                return self._annotation_profile(self.constants[name], seen | {name})
+            if name in self.definitions:
+                return self._definition_profile(name, seen)
+            if name is not None and (
+                name in {"HashMap", "DynArray", "Bytes", "String"}
+                or _known_storage_width(name) not in {None, 0}
+            ):
+                return ("atom", name)
+            return None
+        if ast_type in {"Int", "Num"}:
+            value = node.get("value") if ast_type == "Int" else node.get("n")
+            return ("int", value) if type(value) is int else None
+        if ast_type == "Subscript":
+            value = self._annotation_profile(node.get("value"), seen)
+            args = _ast_subscript_args(node.get("slice"))
+            profiles = tuple(self._annotation_profile(arg, seen) for arg in args)
+            if value is None or not args or any(p is None for p in profiles):
+                return None
+            return ("subscript", value, profiles)
+        if ast_type == "Call":
+            function = _ast_name(node.get("func"))
+            args = node.get("args")
+            if function not in {"min_value", "max_value"} or node.get("keywords"):
+                return None
+            if not isinstance(args, list) or len(args) != 1:
+                return None
+            integer = re.fullmatch(r"(u?)int([0-9]+)", _ast_name(args[0]) or "")
+            if integer is None or _known_storage_width(integer.group(0)) != 1:
+                return None
+            bits = int(integer.group(2))
+            unsigned = bool(integer.group(1))
+            if function == "min_value":
+                return ("int", 0 if unsigned else -(2 ** (bits - 1)))
+            return ("int", 2 ** (bits if unsigned else bits - 1) - 1)
+        return None
+
+
+def _constant_annotation(annotation: object) -> bool:
+    while isinstance(annotation, dict) and annotation.get("ast_type") == "Call":
+        wrapper = _ast_name(annotation.get("func"))
+        args = annotation.get("args")
+        if not isinstance(args, list) or len(args) != 1:
+            return False
+        if wrapper == "constant":
+            return True
+        if wrapper not in {"public", "reentrant"}:
+            return False
+        annotation = args[0]
+    return False
+
+
 def parse_storage_layout(layout: object) -> StorageLayout | None:
     classified = _classify_layout_artifact(layout)
     if classified is None:
@@ -724,22 +894,47 @@ def compare_storage_layouts(
     source: StorageLayout,
     target: StorageLayout,
     *,
+    source_ast: object | None = None,
     target_ast: object | None = None,
 ) -> StorageLayoutComparison:
-    """Compare two parsed layouts using target AST interface evidence."""
+    """Compare parsed layouts and recursively check compiler AST type evidence."""
 
-    differences = tuple(
+    interface_markers = _target_storage_interface_markers(target_ast)
+    source_evidence = _StorageTypeEvidence.from_ast(source_ast)
+    target_evidence = _StorageTypeEvidence.from_ast(target_ast)
+    differences = list(
         _storage_layout_diff(
             source.persistent,
             source.transient,
             target.persistent,
             target.transient,
-            target_interface_markers=_target_storage_interface_markers(target_ast),
+            target_interface_markers=interface_markers,
         )
     )
+    for label, before, after in (
+        ("storage", source.persistent, target.persistent),
+        ("transient storage", source.transient, target.transient),
+    ):
+        for name in sorted(before.keys() & after.keys()):
+            if not _storage_values_equal(
+                before[name],
+                after[name],
+                target_interface_markers=interface_markers.get(name, frozenset()),
+            ):
+                continue
+            source_profile = source_evidence.profile(before[name].type_name, name)
+            target_profile = target_evidence.profile(after[name].type_name, name)
+            if source_profile is None or target_profile is None:
+                differences.append(
+                    f"unverified {label} type definition: {name} ({before[name].type_name})"
+                )
+            elif source_profile != target_profile:
+                differences.append(
+                    f"changed {label} type definition: {name} ({before[name].type_name})"
+                )
     return StorageLayoutComparison(
         equal=all(line.startswith("moved storage to transient: ") for line in differences),
-        differences=differences,
+        differences=tuple(differences),
     )
 
 

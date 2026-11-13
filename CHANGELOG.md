@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Compare struct member definitions inside storage mappings and arrays. Changed
+  members or bounds now block writes unless `--allow-storage-layout-change` is
+  supplied; unresolved container types require the same waiver.
+
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.
