@@ -139,6 +139,17 @@ two otherwise identical legacy layouts that both omit it remain comparable,
 while their occupied span beyond the compiler-reported start slot is not
 independently provable.
 
+A mapping's one-slot width and a struct's name do not describe its member
+layout. Comparing user-defined types inside mappings or arrays therefore also
+requires source and target compiler AST evidence: each name must resolve through
+the same grammar path in the root variable's annotation to a local definition.
+Struct members are compared in declaration order, recursively expanding nested
+structs and bound constants; integer `min_value`/`max_value` calls are normalized.
+Enums, flags and interfaces remain scalar types. Missing, malformed, cyclic or
+imported definitions fail closed and require `--allow-storage-layout-change`.
+Unsupported bound expressions also require this waiver, even when their source
+text is unchanged.
+
 JSON reports use the existing top-level envelope with `schema_version: 6`.
 Within a schema version, fields may be added but existing
 fields are not renamed, removed, or type-changed. A missing version identifies

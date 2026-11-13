@@ -1128,7 +1128,10 @@ def compare_validation_artifacts(source: CompileResult, target: CompileResult) -
     layout = ArtifactComparison()
     if source_layout is not None and target_layout is not None:
         result = compare_storage_layouts(
-            source_layout, target_layout, target_ast=target.artifacts.get("ast")
+            source_layout,
+            target_layout,
+            source_ast=source.artifacts.get("ast"),
+            target_ast=target.artifacts.get("ast"),
         )
         layout = ArtifactComparison(result.equal, tuple(result.differences))
     source_abi = source.artifacts.get("abi")
