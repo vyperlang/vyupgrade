@@ -115,3 +115,21 @@ def test_write_transaction_rechecks_unmodified_dependency(tmp_path):
 def test_missing_or_malformed_bytecode_fails_output_parsing(raw):
     with pytest.raises(ValueError):
         compiler._parse_outputs(raw, ("bytecode",))
+
+
+def test_independent_projects_with_same_named_files_compile_separately(tmp_path):
+    paths = []
+    for name, value in (("a", 1), ("b", 2)):
+        root = tmp_path / name
+        root.mkdir()
+        (root / "pyproject.toml").write_text("[project]\nname = 'p'\nversion = '0.0.0'\n")
+        path = root / "Main.vy"
+        path.write_text(
+            f"#pragma version 0.4.2\n@external\n@pure\ndef f() -> uint256:\n    return {value}\n"
+        )
+        paths.append(path)
+    config = Config(paths=tuple(paths), target_version="0.4.3")
+    requests = [engine.bounded_migration_request(p, p.read_text(), config) for p in paths]
+    batch = engine.prepare_migrations(requests, config)
+    assert [f.source_compile.status for f in batch.files] == ["passed", "passed"]
+    assert engine.validate_migrations(batch, config).status == "passed"

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Compile each source against only its own import closure, so a batch of
+  independent projects that each hold a same-named file (such as `a/Main.vy`
+  and `b/Main.vy`) no longer aborts with an overlay layout conflict.
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.

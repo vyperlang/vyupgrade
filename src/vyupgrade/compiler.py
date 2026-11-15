@@ -275,13 +275,51 @@ def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Con
     if config.source_snapshot is None:
         yield path, config
         return
-    snapshot = config.source_snapshot
+    snapshot = _entry_closure(config.source_snapshot, path.resolve())
     with target_overlay(snapshot.sources, config.target_version, config.compiler_search_paths,
                         snapshot=snapshot, include_dependencies=True) as overlay:
         assert overlay is not None
         yield overlay.paths[path.resolve()], replace(
             config, compiler_search_paths=_overlay_search_paths(overlay, config.compiler_search_paths)
         )
+
+
+def _entry_closure(snapshot: ImportClosure, entry: Path) -> ImportClosure:
+    """Narrow a batch snapshot to ``entry`` and the members it imports, transitively.
+
+    Independent projects in one batch may hold files with the same
+    project-relative path, which would collide in a shared overlay.
+    """
+    # Walk from the root the batch walk placed ``entry`` under, so imports resolve
+    # exactly as they did there; a dependency may live outside every source root.
+    entry_root = entry.parents[len(snapshot.layouts[entry].parts) - 1]
+    members = {
+        path
+        for path, _source, _relative, _override in _walk_validation_closure(
+            (entry_root,),
+            snapshot.import_roots,
+            snapshot.common_root,
+            snapshot.sources,
+            entry_paths=(entry,),
+        )
+    }
+    return replace(
+        snapshot,
+        roots=(entry,),
+        dependencies=tuple(path for path in snapshot.dependencies if path in members - {entry}),
+        consumers={path: (entry,) for path in snapshot.consumers if path in members - {entry}},
+        source_roots=tuple(
+            root
+            for root in snapshot.source_roots
+            if any(path.is_relative_to(root) for path in members)
+        ),
+        contents=MappingProxyType(
+            {path: content for path, content in snapshot.contents.items() if path in members}
+        ),
+        layouts=MappingProxyType(
+            {path: layout for path, layout in snapshot.layouts.items() if path in members}
+        ),
+    )
 
 
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
