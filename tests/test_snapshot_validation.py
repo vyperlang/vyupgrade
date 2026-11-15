@@ -123,9 +123,13 @@ def test_independent_projects_with_same_named_files_compile_separately(tmp_path)
         root = tmp_path / name
         root.mkdir()
         (root / "pyproject.toml").write_text("[project]\nname = 'p'\nversion = '0.0.0'\n")
+        (root / "helper.vy").write_text(
+            f"#pragma version ^0.4.2\n@internal\n@pure\ndef g() -> uint256:\n    return {value}\n"
+        )
         path = root / "Main.vy"
         path.write_text(
-            f"#pragma version 0.4.2\n@external\n@pure\ndef f() -> uint256:\n    return {value}\n"
+            "#pragma version 0.4.2\nimport helper\n"
+            "@external\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
         )
         paths.append(path)
     config = Config(paths=tuple(paths), target_version="0.4.3")

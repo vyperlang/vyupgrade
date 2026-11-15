@@ -275,7 +275,7 @@ def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Con
     if config.source_snapshot is None:
         yield path, config
         return
-    snapshot = _entry_closure(config.source_snapshot, path.resolve())
+    snapshot = _entry_closure(config.source_snapshot, path.resolve(), config.compiler_search_paths)
     with target_overlay(snapshot.sources, config.target_version, config.compiler_search_paths,
                         snapshot=snapshot, include_dependencies=True) as overlay:
         assert overlay is not None
@@ -284,20 +284,24 @@ def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Con
         )
 
 
-def _entry_closure(snapshot: ImportClosure, entry: Path) -> ImportClosure:
+def _entry_closure(
+    snapshot: ImportClosure, entry: Path, search_paths: tuple[Path, ...]
+) -> ImportClosure:
     """Narrow a batch snapshot to ``entry`` and the members it imports, transitively.
 
     Independent projects in one batch may hold files with the same
-    project-relative path, which would collide in a shared overlay.
+    project-relative path, which would collide in a shared overlay. Imports
+    resolve against ``entry``'s own root and the configured search paths only,
+    never another project's root.
     """
-    # Walk from the root the batch walk placed ``entry`` under, so imports resolve
-    # exactly as they did there; a dependency may live outside every source root.
+    # The root the batch walk placed ``entry`` under; a dependency may live
+    # outside every source root.
     entry_root = entry.parents[len(snapshot.layouts[entry].parts) - 1]
     members = {
         path
         for path, _source, _relative, _override in _walk_validation_closure(
             (entry_root,),
-            snapshot.import_roots,
+            (entry_root, *(search_path.resolve() for search_path in search_paths)),
             snapshot.common_root,
             snapshot.sources,
             entry_paths=(entry,),
