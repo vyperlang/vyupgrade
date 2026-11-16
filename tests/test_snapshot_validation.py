@@ -154,6 +154,42 @@ def test_source_compile_follows_relative_import_without_space(tmp_path):
     assert main([str(entry), str(library), "--check", "--target-version", "0.4.3"]) == 0
 
 
+@pytest.mark.parametrize(
+    "import_line",
+    ["from . import(helper)", "from . import (\n    helper,\n)", "from . import \\\n    helper"],
+)
+def test_source_compile_follows_continued_from_import(tmp_path, import_line):
+    helper = tmp_path / "helper.vy"
+    helper.write_text("#pragma version 0.4.3\n@internal\n@pure\ndef f() -> uint256:\n    return 1\n")
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        f"#pragma version 0.4.3\n{import_line}\n"
+        "@external\n@pure\ndef g() -> uint256:\n    return helper.f()\n"
+    )
+    assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
+
+
+def test_search_path_dependency_does_not_resolve_against_the_entry_root(tmp_path):
+    entry_dir, search_dir = tmp_path / "a", tmp_path / "b"
+    entry_dir.mkdir()
+    search_dir.mkdir()
+    for directory, value in ((entry_dir, 1), (search_dir, 2)):
+        (directory / "helper.vy").write_text(
+            f"#pragma version 0.4.3\n@internal\n@pure\ndef g() -> uint256:\n    return {value}\n"
+        )
+    (search_dir / "lib.vy").write_text(
+        "#pragma version 0.4.3\nimport helper\n"
+        "@internal\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
+    )
+    entry = entry_dir / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nimport lib\n"
+        "@external\n@pure\ndef h() -> uint256:\n    return lib.f()\n"
+    )
+    args = [str(entry), "--check", "--target-version", "0.4.3", "--compiler-search-paths", str(search_dir)]
+    assert main(args) == 0
+
+
 def test_nested_project_interface_resolves_imports_from_its_own_root(tmp_path):
     nested = tmp_path / "nested"
     (nested / "interfaces").mkdir(parents=True)

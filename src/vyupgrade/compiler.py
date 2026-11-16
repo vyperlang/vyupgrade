@@ -291,8 +291,8 @@ def _entry_closure(
 
     Independent projects in one batch may hold files with the same
     project-relative path, which would collide in a shared overlay. Each file
-    resolves imports against ``entry``'s root, the configured search paths and
-    the project roots that contain it, never a disjoint project's root.
+    resolves imports against the configured search paths and the roots that
+    contain it, never a disjoint project's root.
     """
     # The root the batch walk placed ``entry`` under; a dependency may live
     # outside every source root.
@@ -301,11 +301,11 @@ def _entry_closure(
         path
         for path, _source, _relative, _override in _walk_validation_closure(
             (entry_root,),
-            (entry_root, *(search_path.resolve() for search_path in search_paths)),
+            tuple(search_path.resolve() for search_path in search_paths),
             snapshot.common_root,
             snapshot.sources,
             entry_paths=(entry,),
-            project_roots=snapshot.source_roots,
+            project_roots=tuple(dict.fromkeys((entry_root, *snapshot.source_roots))),
         )
     }
     return replace(
@@ -914,8 +914,7 @@ def _validation_import_sources(
         char if is_code or char in "\r\n" else " "
         for char, is_code in zip(source, mask, strict=True)
     )
-    for line in code_source.splitlines():
-        stripped = line.split("#", 1)[0].strip()
+    for stripped in _joined_code_lines(code_source):
         if not stripped:
             continue
         import_match = re.match(
@@ -935,8 +934,9 @@ def _validation_import_sources(
             )
             continue
         from_match = re.match(
-            # ``.`` is its own token, so ``from.lib import x`` needs no space.
-            r"from(?:\s+|(?=\.))([.A-Za-z_][.A-Za-z0-9_]*)\s+import\s+(.+)$",
+            # ``.`` and ``(`` are tokens of their own, so ``from.lib import x``,
+            # ``from .import x`` and ``from . import(x)`` need no space.
+            r"from(?:\s+|(?=\.))([.A-Za-z_][.A-Za-z0-9_]*)(?:\s+|(?<=\.))import\b\s*(.+)$",
             stripped,
         )
         if from_match:
@@ -952,6 +952,20 @@ def _validation_import_sources(
                 )
             )
     return tuple(dict.fromkeys(imports))
+
+
+def _joined_code_lines(code_source: str) -> Iterator[str]:
+    """Yield stripped code lines, joining backslash and parenthesized continuations."""
+    pending = ""
+    for line in code_source.splitlines():
+        pending = f"{pending} {line.split('#', 1)[0].strip()}"
+        if pending.endswith("\\"):
+            pending = pending[:-1]
+        elif pending.count("(") <= pending.count(")"):
+            yield pending.strip()
+            pending = ""
+    if pending.strip():
+        yield pending.strip()
 
 
 def _imported_module_names(imports: str) -> Iterator[str]:
