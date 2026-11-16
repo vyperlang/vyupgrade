@@ -287,17 +287,17 @@ def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Con
 def _entry_closure(
     snapshot: ImportClosure, entry: Path, search_paths: tuple[Path, ...]
 ) -> ImportClosure:
-    """Narrow a batch snapshot to ``entry`` and the members it imports, transitively.
+    """Narrow a batch snapshot to ``entry``'s project and the members it imports, transitively.
 
     Independent projects in one batch may hold files with the same
-    project-relative path, which would collide in a shared overlay. Each file
-    resolves imports against the configured search paths and the roots that
-    contain it, never a disjoint project's root.
+    project-relative path, which would collide in a shared overlay. Every
+    batch root placed under ``entry``'s root is kept, so an import of one that the
+    text scanner misses still resolves; otherwise each file resolves imports
+    against the configured search paths and the roots that contain it, never a
+    disjoint project's root.
     """
-    # The root the batch walk placed ``entry`` under; a dependency may live
-    # outside every source root.
-    entry_root = entry.parents[len(snapshot.layouts[entry].parts) - 1]
-    members = {
+    entry_root = _layout_root(snapshot, entry)
+    members = {path for path in snapshot.roots if _layout_root(snapshot, path) == entry_root} | {
         path
         for path, _source, _relative, _override in _walk_validation_closure(
             (entry_root,),
@@ -325,6 +325,11 @@ def _entry_closure(
             {path: layout for path, layout in snapshot.layouts.items() if path in members}
         ),
     )
+
+
+def _layout_root(snapshot: ImportClosure, path: Path) -> Path:
+    """The root the batch walk placed ``path`` under; a dependency may live outside every source root."""
+    return path.parents[len(snapshot.layouts[path].parts) - 1]
 
 
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:

@@ -173,6 +173,18 @@ def test_source_compile_follows_continued_from_import(tmp_path, import_line):
     assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
 
 
+def test_source_compile_stages_its_project_when_the_import_scanner_misses(tmp_path):
+    # Vyper NFKC-normalizes identifiers: fullwidth `\uff48elper` imports `helper.vy`.
+    helper = tmp_path / "helper.vy"
+    helper.write_text("#pragma version 0.4.3\n@internal\n@pure\ndef f() -> uint256:\n    return 1\n")
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nimport \uff48elper as h\n"
+        "@external\n@pure\ndef g() -> uint256:\n    return h.f()\n"
+    )
+    assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
+
+
 def test_search_path_dependency_does_not_resolve_against_the_entry_root(tmp_path):
     entry_dir, search_dir = tmp_path / "a", tmp_path / "b"
     entry_dir.mkdir()
