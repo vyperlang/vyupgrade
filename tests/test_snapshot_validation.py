@@ -216,6 +216,24 @@ def test_search_path_dependency_does_not_resolve_against_the_entry_root(tmp_path
     assert main(args) == 0
 
 
+def test_source_compile_falls_back_to_a_sibling_project_root(tmp_path):
+    # ``helper`` isn't in ``app``, so it resolves through the other input's root.
+    app, lib = tmp_path / "app", tmp_path / "libs" / "mylib"
+    for directory in (app, lib):
+        directory.mkdir(parents=True)
+        (directory / "pyproject.toml").write_text(
+            f"[project]\nname = '{directory.name}'\nversion = '0.0.0'\n"
+        )
+    helper = lib / "helper.vy"
+    helper.write_text("#pragma version 0.4.3\n@internal\n@pure\ndef g() -> uint256:\n    return 1\n")
+    entry = app / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nimport helper\n"
+        "@external\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
+    )
+    assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
+
+
 def test_nested_project_interface_resolves_imports_from_its_own_root(tmp_path):
     nested = tmp_path / "nested"
     (nested / "interfaces").mkdir(parents=True)

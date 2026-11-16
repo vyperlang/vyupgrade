@@ -791,12 +791,16 @@ def _walk_validation_closure(
     """Walk the import closure of ``overrides``.
 
     Each file resolves imports against ``import_roots`` plus those of
-    ``project_roots`` that contain it. With ``captured_only``, imports resolve
-    only to ``overrides``, never to the live filesystem.
+    ``project_roots`` that contain it; an import none of those resolve falls
+    back to the other ``project_roots``. With ``captured_only``, imports
+    resolve only to ``overrides``, never to the live filesystem.
     """
 
     def file_import_roots(path: Path) -> tuple[Path, ...]:
         return (*import_roots, *(root for root in project_roots if _is_relative_to(path, root)))
+
+    def fallback_import_roots(path: Path) -> tuple[Path, ...]:
+        return tuple(root for root in project_roots if not _is_relative_to(path, root))
 
     override_paths = set(overrides)
     source_cache = dict(overrides)
@@ -878,6 +882,7 @@ def _walk_validation_closure(
             file_import_roots(current),
             current_relative,
             captured=override_paths if captured_only else None,
+            fallback_roots=fallback_import_roots(current),
         ):
             if imported.path in processed:
                 existing_relative = layouts[imported.path]
@@ -918,7 +923,20 @@ def _validation_import_sources(
     import_roots: tuple[Path, ...],
     relative_path: Path | None = None,
     captured: Collection[Path] | None = None,
+    fallback_roots: tuple[Path, ...] = (),
 ) -> tuple[_ResolvedValidationImport, ...]:
+    """Resolve each import against ``import_roots``, else against ``fallback_roots``."""
+
+    def resolve(module: str, names: tuple[str, ...]) -> tuple[_ResolvedValidationImport, ...]:
+        resolved = _resolve_validation_import(
+            path, source_root, module, names, import_roots, relative_path, captured
+        )
+        if not resolved and fallback_roots:
+            resolved = _resolve_validation_import(
+                path, source_root, module, names, fallback_roots, relative_path, captured
+            )
+        return resolved
+
     imports: list[_ResolvedValidationImport] = []
     mask = code_mask(source)
     code_source = "".join(
@@ -933,17 +951,7 @@ def _validation_import_sources(
             stripped,
         )
         if import_match:
-            imports.extend(
-                _resolve_validation_import(
-                    path,
-                    source_root,
-                    re.sub(r"\s+", "", import_match.group(1)),
-                    (),
-                    import_roots,
-                    relative_path,
-                    captured,
-                )
-            )
+            imports.extend(resolve(re.sub(r"\s+", "", import_match.group(1)), ()))
             continue
         from_match = re.match(
             # ``.`` and ``(`` are tokens of their own: ``from.lib import x``,
@@ -953,18 +961,11 @@ def _validation_import_sources(
             stripped,
         )
         if from_match:
-            names = tuple(_imported_module_names(from_match.group(2)))
-            imports.extend(
-                _resolve_validation_import(
-                    path,
-                    source_root,
-                    re.sub(r"\s+", "", from_match.group(1)),
-                    names,
-                    import_roots,
-                    relative_path,
-                    captured,
-                )
-            )
+            module = re.sub(r"\s+", "", from_match.group(1))
+            # Each name falls back on its own: ``from x import a, b`` may find
+            # ``a`` in the file's roots and ``b`` only in another project.
+            for name in tuple(_imported_module_names(from_match.group(2))) or (None,):
+                imports.extend(resolve(module, () if name is None else (name,)))
     return tuple(dict.fromkeys(imports))
 
 
