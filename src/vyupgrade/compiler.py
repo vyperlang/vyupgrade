@@ -290,9 +290,9 @@ def _entry_closure(
     """Narrow a batch snapshot to ``entry`` and the members it imports, transitively.
 
     Independent projects in one batch may hold files with the same
-    project-relative path, which would collide in a shared overlay. Imports
-    resolve against ``entry``'s own root and the configured search paths only,
-    never another project's root.
+    project-relative path, which would collide in a shared overlay. Each file
+    resolves imports against ``entry``'s root, the configured search paths and
+    the project roots that contain it, never a disjoint project's root.
     """
     # The root the batch walk placed ``entry`` under; a dependency may live
     # outside every source root.
@@ -305,6 +305,7 @@ def _entry_closure(
             snapshot.common_root,
             snapshot.sources,
             entry_paths=(entry,),
+            project_roots=snapshot.source_roots,
         )
     }
     return replace(
@@ -777,7 +778,17 @@ def _walk_validation_closure(
     overrides: Mapping[Path, str],
     *,
     entry_paths: Iterable[Path] | None = None,
+    project_roots: tuple[Path, ...] = (),
 ) -> Iterator[tuple[Path, str, Path, bool]]:
+    """Walk the import closure of ``overrides``.
+
+    Each file resolves imports against ``import_roots`` plus those of
+    ``project_roots`` that contain it.
+    """
+
+    def file_import_roots(path: Path) -> tuple[Path, ...]:
+        return (*import_roots, *(root for root in project_roots if _is_relative_to(path, root)))
+
     override_paths = set(overrides)
     source_cache = dict(overrides)
     if entry_paths is None:
@@ -792,7 +803,7 @@ def _walk_validation_closure(
                         path,
                         import_source,
                         source_root,
-                        import_roots,
+                        file_import_roots(path),
                         relative_path,
                     )
                     if imported.path in override_paths
@@ -855,7 +866,7 @@ def _walk_validation_closure(
             current,
             import_source,
             current_root,
-            import_roots,
+            file_import_roots(current),
             current_relative,
         ):
             if imported.path in processed:
@@ -924,7 +935,8 @@ def _validation_import_sources(
             )
             continue
         from_match = re.match(
-            r"from\s+([.A-Za-z_][.A-Za-z0-9_]*)\s+import\s+(.+)$",
+            # ``.`` is its own token, so ``from.lib import x`` needs no space.
+            r"from(?:\s+|(?=\.))([.A-Za-z_][.A-Za-z0-9_]*)\s+import\s+(.+)$",
             stripped,
         )
         if from_match:

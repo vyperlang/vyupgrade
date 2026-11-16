@@ -137,3 +137,39 @@ def test_independent_projects_with_same_named_files_compile_separately(tmp_path)
     batch = engine.prepare_migrations(requests, config)
     assert [f.source_compile.status for f in batch.files] == ["passed", "passed"]
     assert engine.validate_migrations(batch, config).status == "passed"
+
+
+def test_source_compile_follows_relative_import_without_space(tmp_path):
+    # ``from.lib`` is legal: ``.`` is its own token.
+    (tmp_path / "lib").mkdir()
+    library = tmp_path / "lib" / "Main.vy"
+    library.write_text(
+        "#pragma version 0.4.3\n@internal\n@pure\ndef f(x: uint256) -> uint256:\n    return x\n"
+    )
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nfrom.lib import Main as m\n"
+        "@external\n@pure\ndef g(x: uint256) -> uint256:\n    return m.f(x)\n"
+    )
+    assert main([str(entry), str(library), "--check", "--target-version", "0.4.3"]) == 0
+
+
+def test_nested_project_interface_resolves_imports_from_its_own_root(tmp_path):
+    nested = tmp_path / "nested"
+    (nested / "interfaces").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'outer'\nversion = '0.0.0'\n")
+    (nested / "pyproject.toml").write_text("[project]\nname = 'nested'\nversion = '0.0.0'\n")
+    helper = nested / "interfaces" / "IHelper.vyi"
+    helper.write_text(
+        "#pragma version 0.4.3\nfrom interfaces import IThing\n"
+        "@external\n@view\ndef thing() -> IThing:\n    ...\n"
+    )
+    thing = nested / "interfaces" / "IThing.vyi"
+    thing.write_text("#pragma version 0.4.3\n@external\n@view\ndef value() -> uint256:\n    ...\n")
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nfrom nested.interfaces import IHelper\n"
+        "@external\ndef register(helper: IHelper):\n    pass\n"
+    )
+    paths = (entry, helper, thing)
+    assert main([*map(str, paths), "--check", "--target-version", "0.4.3"]) == 0
