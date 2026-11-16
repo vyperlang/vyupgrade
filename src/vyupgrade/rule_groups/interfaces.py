@@ -282,7 +282,8 @@ def _interface_view_mutability(
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     view_names = _view_implementation_names(source)
-    if not view_names:
+    implemented = implemented_interface_names(source)
+    if not view_names or not implemented:
         return source, [], []
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -293,6 +294,8 @@ def _interface_view_mutability(
     )
     for match in pattern.finditer(source):
         if match.group(2) not in view_names or not span_is_code(mask, match.start(), match.end()):
+            continue
+        if _enclosing_interface(source, match.start()) not in implemented:
             continue
         edits.append(TextEdit(match.start(3), match.end(3), "view"))
         fixes.append(
@@ -305,6 +308,15 @@ def _interface_view_mutability(
             )
         )
     return apply_edits(source, edits), fixes, []
+
+
+def _enclosing_interface(source: str, offset: int) -> str | None:
+    for line in reversed(source[:offset].splitlines()):
+        if not line.strip() or line.lstrip().startswith("#") or line[0] in " \t":
+            continue
+        match = re.match(r"interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*(?:#.*)?$", line)
+        return match.group(1) if match else None
+    return None
 
 
 def _side_effecting_view_interface_calls(

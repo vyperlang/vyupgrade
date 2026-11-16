@@ -256,8 +256,8 @@ modern Python interpreter.
   in string literals with ASCII placeholders so migrated source remains
   compiler-accepted.
 - Local interface mutability is checked more strictly: `VY014` changes
-  `nonpayable` interface entries to `view` when the implementation is a view
-  function or `public(...)` getter, and changes `@pure` implementations to
+  `nonpayable` entries of implemented interfaces to `view` when the
+  implementation is a view function or `public(...)` getter, and changes `@pure` implementations to
   `@view` when an implemented interface requires a view method.
 - Pure functions may no longer read immutable state: `VY015` changes `@pure`
   functions to `@view` when source facts show the function body references a

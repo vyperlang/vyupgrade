@@ -671,6 +671,28 @@ def above_floor() -> bool:
     assert any(fix.rule == "VY014" for fix in result.fixes)
 
 
+def test_local_interface_nonpayable_kept_when_not_implemented(config) -> None:
+    source = """# @version 0.3.10
+interface Remote:
+    def ping() -> uint256: nonpayable
+
+@external
+@view
+def ping() -> uint256:
+    return 1
+
+@external
+def call_remote(target: address) -> uint256:
+    return Remote(target).ping()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "def ping() -> uint256: nonpayable" in result.source
+    assert "extcall Remote(target).ping()" in result.source
+    assert not any(fix.rule == "VY014" for fix in result.fixes)
+
+
 def test_local_interface_nonpayable_matches_public_getter(config) -> None:
     source = """# @version 0.3.10
 interface RateProvider:

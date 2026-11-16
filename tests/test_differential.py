@@ -12,7 +12,9 @@ from vyupgrade.models import Config
 from vyupgrade.rules import apply_rules
 
 
-def _deploy(path: Path, source: str, version: str) -> tuple[EthereumTester, str, str]:
+def _deploy(
+    path: Path, source: str, version: str, vm: EthereumTester | None = None
+) -> tuple[EthereumTester, str, str]:
     path.write_text(source, encoding="utf-8")
     command, _ = compiler._prepare_command(None, version, None)
     result = compiler._run_compiler_process(
@@ -23,7 +25,7 @@ def _deploy(path: Path, source: str, version: str) -> tuple[EthereumTester, str,
         network_timeout=300,
     )
     assert result.returncode == 0, result.stderr
-    vm = EthereumTester()
+    vm = vm or EthereumTester()
     sender = vm.get_accounts()[0]
     transaction = vm.send_transaction({"from": sender, "gas": 3_000_000, "data": result.stdout.strip()})
     receipt = vm.get_transaction_receipt(transaction)
@@ -294,6 +296,38 @@ def _guard(n: uint256) -> bool:
     return raw_call(self, concat(method_id("f(uint256)"), empty(bytes32)), revert_on_failure=False)
 """)
     assert [_call(d, "f(uint256)", 1) for d in deployments] == [0] * 2
+
+
+def test_unimplemented_interface_keeps_state_changing_remote_call(tmp_path):
+    remote = """# @version 0.3.10
+counter: public(uint256)
+
+@external
+def ping() -> uint256:
+    self.counter += 1
+    return self.counter
+"""
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+interface Remote:
+    def ping() -> uint256: nonpayable
+
+@external
+@view
+def ping() -> uint256:
+    return 1
+
+@external
+def call_remote(target: address) -> uint256:
+    return Remote(target).ping()
+""")
+    for vm, sender, address in deployments:
+        target = _deploy(tmp_path / "remote.vy", remote, "0.3.10", vm)
+        tx = vm.send_transaction({
+            "from": sender, "to": address, "gas": 500_000,
+            "data": _calldata("call_remote(address)", (int(target[2], 16),)),
+        })
+        assert vm.get_transaction_receipt(tx)["status"] == 1
+        assert _call(target, "counter()") == 1
 
 
 def test_raw_call_preserves_literal_payload(tmp_path):
