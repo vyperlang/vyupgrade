@@ -654,13 +654,19 @@ def f(eta: uint256):
     assert "eta + _GRACE_PERIOD" in result.source
 
 
-@pytest.mark.parametrize("header", ["interface Bucket:", "interface Bucket :"])
-def test_local_interface_nonpayable_matches_view_function(config, header) -> None:
+@pytest.mark.parametrize(
+    ("header", "implements"),
+    [
+        ("interface Bucket:", "implements: Bucket"),
+        ("interface Bucket :", "implements : Bucket"),
+    ],
+)
+def test_local_interface_nonpayable_matches_view_function(config, header, implements) -> None:
     source = f"""# @version 0.3.10
 {header}
     def above_floor() -> bool: nonpayable
 
-implements: Bucket
+{implements}
 
 @external
 @view
