@@ -139,8 +139,12 @@ def test_independent_projects_with_same_named_files_compile_separately(tmp_path)
     assert engine.validate_migrations(batch, config).status == "passed"
 
 
-def test_source_compile_follows_relative_import_without_space(tmp_path):
-    # ``from.lib`` is legal: ``.`` is its own token.
+@pytest.mark.parametrize(
+    "import_line",
+    ["from.lib import Main as m", "from . lib import Main as m", "import lib . Main as m"],
+)
+def test_source_compile_follows_import_spelled_with_any_spacing(tmp_path, import_line):
+    # ``.`` is its own token, so spacing around it is free.
     (tmp_path / "lib").mkdir()
     library = tmp_path / "lib" / "Main.vy"
     library.write_text(
@@ -148,7 +152,7 @@ def test_source_compile_follows_relative_import_without_space(tmp_path):
     )
     entry = tmp_path / "Main.vy"
     entry.write_text(
-        "#pragma version 0.4.3\nfrom.lib import Main as m\n"
+        f"#pragma version 0.4.3\n{import_line}\n"
         "@external\n@pure\ndef g(x: uint256) -> uint256:\n    return m.f(x)\n"
     )
     assert main([str(entry), str(library), "--check", "--target-version", "0.4.3"]) == 0

@@ -918,7 +918,7 @@ def _validation_import_sources(
         if not stripped:
             continue
         import_match = re.match(
-            r"import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b",
+            r"import\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\b",
             stripped,
         )
         if import_match:
@@ -926,7 +926,7 @@ def _validation_import_sources(
                 _resolve_validation_import(
                     path,
                     source_root,
-                    import_match.group(1),
+                    re.sub(r"\s+", "", import_match.group(1)),
                     (),
                     import_roots,
                     relative_path,
@@ -934,9 +934,10 @@ def _validation_import_sources(
             )
             continue
         from_match = re.match(
-            # ``.`` and ``(`` are tokens of their own, so ``from.lib import x``,
-            # ``from .import x`` and ``from . import(x)`` need no space.
-            r"from(?:\s+|(?=\.))([.A-Za-z_][.A-Za-z0-9_]*)(?:\s+|(?<=\.))import\b\s*(.+)$",
+            # ``.`` and ``(`` are tokens of their own: ``from.lib import x``,
+            # ``from . lib import x``, ``from .import x`` and ``from . import(x)``
+            # are all legal.
+            r"from(?:\s+|(?=\.))([.A-Za-z_][.A-Za-z0-9_\s]*?)(?:\s+|(?<=\.))import\b\s*(.+)$",
             stripped,
         )
         if from_match:
@@ -945,7 +946,7 @@ def _validation_import_sources(
                 _resolve_validation_import(
                     path,
                     source_root,
-                    from_match.group(1),
+                    re.sub(r"\s+", "", from_match.group(1)),
                     names,
                     import_roots,
                     relative_path,
