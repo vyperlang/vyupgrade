@@ -293,8 +293,9 @@ def _entry_closure(
     project-relative path, which would collide in a shared overlay. Every batch
     root placed under ``entry``'s root is kept with its own imports, so an import
     of one that the text scanner misses still resolves. Each file resolves
-    imports against the configured search paths and the roots that contain it,
-    never a disjoint project's root.
+    imports against the configured search paths and the roots that contain it
+    first; only an import those miss falls back to the other projects' roots.
+    Imports resolve to captured members only.
     """
     entry_root = _layout_root(snapshot, entry)
     same_root = {path for path in snapshot.roots if _layout_root(snapshot, path) == entry_root}
