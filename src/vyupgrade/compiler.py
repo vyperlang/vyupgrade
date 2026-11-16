@@ -290,21 +290,22 @@ def _entry_closure(
     """Narrow a batch snapshot to ``entry``'s project and the members it imports, transitively.
 
     Independent projects in one batch may hold files with the same
-    project-relative path, which would collide in a shared overlay. Every
-    batch root placed under ``entry``'s root is kept, so an import of one that the
-    text scanner misses still resolves; otherwise each file resolves imports
-    against the configured search paths and the roots that contain it, never a
-    disjoint project's root.
+    project-relative path, which would collide in a shared overlay. Every batch
+    root placed under ``entry``'s root is kept with its own imports, so an import
+    of one that the text scanner misses still resolves. Each file resolves
+    imports against the configured search paths and the roots that contain it,
+    never a disjoint project's root.
     """
     entry_root = _layout_root(snapshot, entry)
-    members = {path for path in snapshot.roots if _layout_root(snapshot, path) == entry_root} | {
+    same_root = {path for path in snapshot.roots if _layout_root(snapshot, path) == entry_root}
+    members = {
         path
         for path, _source, _relative, _override in _walk_validation_closure(
             (entry_root,),
             tuple(search_path.resolve() for search_path in search_paths),
             snapshot.common_root,
             snapshot.sources,
-            entry_paths=(entry,),
+            entry_paths=same_root | {entry},
             project_roots=tuple(dict.fromkeys((entry_root, *snapshot.source_roots))),
         )
     }

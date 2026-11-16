@@ -175,8 +175,14 @@ def test_source_compile_follows_continued_from_import(tmp_path, import_line):
 
 def test_source_compile_stages_its_project_when_the_import_scanner_misses(tmp_path):
     # Vyper NFKC-normalizes identifiers: fullwidth `\uff48elper` imports `helper.vy`.
+    # ``lib.vy`` is not a batch input: only walking ``helper.vy`` finds it.
+    (tmp_path / "lib.vy").write_text(
+        "#pragma version 0.4.3\n@internal\n@pure\ndef one() -> uint256:\n    return 1\n"
+    )
     helper = tmp_path / "helper.vy"
-    helper.write_text("#pragma version 0.4.3\n@internal\n@pure\ndef f() -> uint256:\n    return 1\n")
+    helper.write_text(
+        "#pragma version 0.4.3\nimport lib\n@internal\n@pure\ndef f() -> uint256:\n    return lib.one()\n"
+    )
     entry = tmp_path / "Main.vy"
     entry.write_text(
         "#pragma version 0.4.3\nimport \uff48elper as h\n"
