@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 
 from ..models import Diagnostic, Fix
@@ -241,6 +242,9 @@ def _unwrap_legacy_builtin(source: str, call_name: str, rule: str) -> tuple[str,
         if args is None or len(args) != 1:
             continue
         replacement = args[0].strip()
+        if not _is_primary_expression(replacement):
+            # The call grouped its argument; keep that grouping inside larger expressions.
+            replacement = f"({replacement})"
         edits.append(TextEdit(match.start(), close + 1, replacement))
         fixes.append(
             Fix(
@@ -252,6 +256,14 @@ def _unwrap_legacy_builtin(source: str, call_name: str, rule: str) -> tuple[str,
             )
         )
     return apply_edits(source, edits), fixes
+
+
+def _is_primary_expression(expr: str) -> bool:
+    try:
+        node = ast.parse(expr, mode="eval").body
+    except SyntaxError:
+        return False
+    return isinstance(node, (ast.Name, ast.Attribute, ast.Call, ast.Subscript, ast.Constant))
 
 
 def _remove_call_keyword_arg(

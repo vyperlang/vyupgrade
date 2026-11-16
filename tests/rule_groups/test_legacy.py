@@ -515,8 +515,22 @@ def f(start: uint256) -> uint256:
 
     result = apply_rules(source, config(target_version="0.2.1"))
 
-    assert "return block.timestamp - start" in result.source
+    assert "return (block.timestamp - start)" in result.source
     assert "as_unitless_number" not in result.source
+
+
+def test_legacy_as_unitless_number_unwrap_keeps_grouping(config) -> None:
+    source = """# @version 0.2.1
+@external
+def f(x: uint256, y: uint256) -> uint256:
+    a: uint256 = as_unitless_number(x + y) * 2
+    return as_unitless_number(x) * 2
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert "a: uint256 = (x + y) * 2" in result.source
+    assert "return x * 2" in result.source
 
 
 def test_reserved_value_parameter_is_renamed_with_function_references(config) -> None:
