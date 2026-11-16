@@ -314,7 +314,7 @@ def _enclosing_interface(source: str, offset: int) -> str | None:
     for line in reversed(source[:offset].splitlines()):
         if not line.strip() or line.lstrip().startswith("#") or line[0] in " \t":
             continue
-        match = re.match(r"interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*(?:#.*)?$", line)
+        match = re.match(r"interface\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^)]*\))?\s*:\s*(?:#.*)?$", line)
         return match.group(1) if match else None
     return None
 
