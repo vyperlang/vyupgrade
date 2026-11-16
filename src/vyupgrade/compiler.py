@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
@@ -307,6 +307,7 @@ def _entry_closure(
             snapshot.sources,
             entry_paths=same_root | {entry},
             project_roots=tuple(dict.fromkeys((entry_root, *snapshot.source_roots))),
+            captured_only=True,
         )
     }
     return replace(
@@ -785,11 +786,13 @@ def _walk_validation_closure(
     *,
     entry_paths: Iterable[Path] | None = None,
     project_roots: tuple[Path, ...] = (),
+    captured_only: bool = False,
 ) -> Iterator[tuple[Path, str, Path, bool]]:
     """Walk the import closure of ``overrides``.
 
     Each file resolves imports against ``import_roots`` plus those of
-    ``project_roots`` that contain it.
+    ``project_roots`` that contain it. With ``captured_only``, imports resolve
+    only to ``overrides``, never to the live filesystem.
     """
 
     def file_import_roots(path: Path) -> tuple[Path, ...]:
@@ -874,6 +877,7 @@ def _walk_validation_closure(
             current_root,
             file_import_roots(current),
             current_relative,
+            captured=override_paths if captured_only else None,
         ):
             if imported.path in processed:
                 existing_relative = layouts[imported.path]
@@ -913,6 +917,7 @@ def _validation_import_sources(
     source_root: Path,
     import_roots: tuple[Path, ...],
     relative_path: Path | None = None,
+    captured: Collection[Path] | None = None,
 ) -> tuple[_ResolvedValidationImport, ...]:
     imports: list[_ResolvedValidationImport] = []
     mask = code_mask(source)
@@ -936,6 +941,7 @@ def _validation_import_sources(
                     (),
                     import_roots,
                     relative_path,
+                    captured,
                 )
             )
             continue
@@ -956,6 +962,7 @@ def _validation_import_sources(
                     names,
                     import_roots,
                     relative_path,
+                    captured,
                 )
             )
     return tuple(dict.fromkeys(imports))
@@ -992,7 +999,9 @@ def _resolve_validation_import(
     names: tuple[str, ...],
     import_roots: tuple[Path, ...],
     relative_path: Path | None,
+    captured: Collection[Path] | None = None,
 ) -> tuple[_ResolvedValidationImport, ...]:
+    """Resolve an import to existing files, or with ``captured``, to its members only."""
     bases, module_parts = _validation_import_bases(
         path, source_root, module, import_roots, relative_path
     )
@@ -1025,7 +1034,8 @@ def _resolve_validation_import(
                 continue
         except (OSError, ValueError):
             continue
-        if resolved_candidate.exists() and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
+        found = resolved_candidate.exists() if captured is None else resolved_candidate in captured
+        if found and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
             resolved.setdefault(resolved_candidate, (import_root, candidate_relative))
     return tuple(
         _ResolvedValidationImport(path, import_root, candidate_relative)

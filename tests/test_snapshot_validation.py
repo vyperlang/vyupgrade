@@ -85,12 +85,16 @@ def test_snapshot_bytes_are_read_once_and_reused_for_validation_and_export(tmp_p
     assert len(reads) == 1
 
 
-def test_source_compilation_uses_captured_bytes_even_after_live_changes(tmp_path):
+@pytest.mark.parametrize("deleted", [False, True])
+def test_source_compilation_uses_captured_bytes_even_after_live_changes(tmp_path, deleted):
     entry, helper = _project(tmp_path)
     source = entry.read_text()
     snapshot = compiler.resolve_import_closure({entry: source})
     entry.write_text("invalid source\n")
-    helper.write_text("invalid dependency\n")
+    if deleted:
+        helper.unlink()
+    else:
+        helper.write_text("invalid dependency\n")
     config = Config(paths=(entry,), target_version="0.4.2")
     batch = engine.prepare_migrations(
         [engine.bounded_migration_request(entry, source, config)], config, snapshot=snapshot
