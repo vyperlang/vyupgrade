@@ -11,8 +11,8 @@
   supplied; unresolved container types require the same waiver.
 - Compile each source and migration candidate against its own captured project
   and imports, preserving the meaning of same-named modules in independent
-  projects. Reject a shared closure export when those projects require conflicting
-  files at the same output path.
+  projects. Reject shared closure exports whose layout would change how an entry
+  compiles.
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.

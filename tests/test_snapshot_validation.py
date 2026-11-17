@@ -277,6 +277,40 @@ def test_conflicting_projects_cannot_export_one_flat_closure(tmp_path, capsys):
     assert {path: path.read_bytes() for path in entries} == original
 
 
+@pytest.mark.parametrize("shadow", [False, True], ids=["compatible", "shadowed"])
+def test_shared_closure_preserves_each_projects_compilation(tmp_path, capsys, shadow):
+    entries = []
+    for entry in _nested_projects(tmp_path):
+        name = entry.parents[1].name
+        renamed = entry.with_name(f"{name}.vy")
+        entry.rename(renamed)
+        entries.append(renamed)
+    second = entries[1]
+    second_helper = second.parents[1] / "helper.vy"
+    if shadow:
+        # After combining the projects, this helper sits next to both entry files.
+        second_helper.rename(second.parent / "helper.vy")
+    else:
+        second_helper.rename(second_helper.with_name("helper_b.vy"))
+        second.write_text(second.read_text().replace("helper", "helper_b"))
+    original = [entry.read_bytes() for entry in entries]
+    output = tmp_path / "export"
+    code = main([
+        *map(str, entries), "--include-dependencies", "--closure-output", str(output), "--write"
+    ])
+    if shadow:
+        assert code == 4
+        assert "bytecode differs from the isolated project compile" in capsys.readouterr().err
+        assert [entry.read_bytes() for entry in entries] == original
+        assert not output.exists()
+    else:
+        assert code == 0, capsys.readouterr().err
+        assert all(
+            (output / "contracts" / entry.name).read_bytes() == entry.read_bytes()
+            for entry in entries
+        )
+
+
 @pytest.mark.parametrize(
     "import_line",
     ["from.lib import Main as m", "from . lib import Main as m", "import lib . Main as m"],

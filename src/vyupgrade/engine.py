@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from .compiler import (
     CompileResult,
     ImportClosure,
     OverlayLayoutConflictError,
+    TargetOverlay,
     _entry_closure,
     resolve_import_closure,
     compare_validation_artifacts,
@@ -316,28 +318,29 @@ def validate_migrations(
     if batch.snapshot is not None:
         config = replace(config, compiler_search_paths=batch.snapshot.search_roots)
 
-    if config.include_dependencies and config.closure_output is not None and len(scopes) > 1:
-        # The exported directory combines the projects' import-root-relative paths.
-        # Check that it can represent all their files before allowing any writes.
-        try:
-            with target_overlay(
-                target_sources,
-                config.target_version,
-                config.compiler_search_paths,
-                include_dependencies=True,
-                snapshot=batch.snapshot,
-            ):
-                pass
-        except OverlayLayoutConflictError as exc:
-            raise OverlayLayoutConflictError(f"cannot export a shared closure: {exc}") from exc
-
     for migration in (*batch.files, *batch.generated):
         _reset_target_validation(migration.report, migration.validation_diagnostics)
         migration.target_compile = None
 
     has_dependencies = batch.snapshot is not None and bool(batch.snapshot.dependencies)
-    for files, generated, sources, snapshot in scopes:
-        _validate_target_scope(files, generated, sources, snapshot, config, has_dependencies)
+    with ExitStack() as overlays:
+        shared_overlay = None
+        if config.include_dependencies and len(scopes) > 1:
+            # Closure output uses one import-root-relative layout for all projects.
+            try:
+                shared_overlay = overlays.enter_context(target_overlay(
+                    target_sources,
+                    config.target_version,
+                    config.compiler_search_paths,
+                    include_dependencies=True,
+                    snapshot=batch.snapshot,
+                ))
+            except OverlayLayoutConflictError as exc:
+                raise OverlayLayoutConflictError(f"cannot export a shared closure: {exc}") from exc
+        for files, generated, sources, snapshot in scopes:
+            _validate_target_scope(
+                files, generated, sources, snapshot, config, has_dependencies, shared_overlay
+            )
     return decide_run_validation(batch.reports, config)
 
 
@@ -348,6 +351,7 @@ def _validate_target_scope(
     snapshot: ImportClosure | None,
     config: Config,
     has_dependencies: bool,
+    shared_overlay: TargetOverlay | None,
 ) -> None:
     declared_sources = {**(snapshot.sources if snapshot else {}), **sources}
     target_declared_spec = _declared_spec(
@@ -364,6 +368,16 @@ def _validate_target_scope(
         include_dependencies=config.include_dependencies,
         snapshot=snapshot,
     ) as overlay:
+        shared_view = None
+        if shared_overlay is not None:
+            assert overlay is not None
+            shared_view = replace(
+                shared_overlay,
+                search_paths=tuple(
+                    shared_overlay.root / path.relative_to(overlay.root)
+                    for path in overlay.search_paths
+                ),
+            )
         for migration in files:
             if migration.report.validation_mode == "consumer-roots":
                 continue
@@ -381,6 +395,10 @@ def _validate_target_scope(
                 config,
                 overlay,
             )
+            if shared_view is not None and migration.path.suffix == ".vy":
+                _check_shared_target(
+                    migration.path, sources[migration.path], config, target_compile, shared_view
+                )
             migration.target_compile = target_compile
             _record_target_compile(
                 migration.report,
@@ -430,6 +448,33 @@ def _validate_target_scope(
                 target_compile,
                 target_declared_spec,
             )
+
+
+def _check_shared_target(
+    path: Path,
+    source: str,
+    config: Config,
+    isolated: CompileResult,
+    shared_overlay: TargetOverlay,
+) -> None:
+    """Verify the same compilation in the actual flat tree being exported."""
+    if isolated.status not in {"passed", "degraded"}:
+        return
+    shared = compile_target_source(path, source, config, shared_overlay)
+    if shared.status != isolated.status:
+        raise OverlayLayoutConflictError(
+            f"cannot export a shared closure for {path}: {shared.stderr or shared.status}"
+        )
+    bytecode = (isolated.artifacts or {}).get("bytecode")
+    if not isinstance(bytecode, str) or bytecode != (shared.artifacts or {}).get("bytecode"):
+        raise OverlayLayoutConflictError(
+            f"cannot export a shared closure for {path}: bytecode differs from the isolated project compile"
+        )
+    compared = compare_validation_artifacts(isolated, shared)
+    if False in compared.equalities:
+        raise OverlayLayoutConflictError(
+            f"cannot export a shared closure for {path}: validation artifacts differ from the isolated project compile"
+        )
 
 
 def _compile_source(
