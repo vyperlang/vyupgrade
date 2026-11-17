@@ -424,6 +424,53 @@ def test_wildcard_ignores_an_unrelated_compile_with_an_uncaptured_import(
     assert _wildcards(batch) == ["Bytes[...]"], batch.reports
 
 
+def _without_declarations(node):
+    if isinstance(node, list):
+        return [_without_declarations(item) for item in node]
+    if isinstance(node, dict):
+        return {
+            key: {} if key == "type_decl_node" else _without_declarations(value)
+            for key, value in node.items()
+        }
+    return node
+
+
+UNRELATED_CALLER = """#pragma version 0.4.3
+interface Answer:
+    def answer() -> uint256: view
+
+@external
+@view
+def read(other: address) -> uint256:
+    return staticcall Answer(other).answer()
+"""
+
+
+@pytest.mark.parametrize(("stripped", "wildcards"), [("entry.vy", []), ("other.vy", ["Bytes[...]"])])
+def test_unresolved_call_blocks_only_its_own_compilation(
+    tmp_path: Path, monkeypatch, stripped: str, wildcards: list[str],
+) -> None:
+    compile_source_file = engine.compile_source_file
+
+    def compile_without_call_declarations(path, config, source_version):
+        result = compile_source_file(path, config, source_version)
+        if path.name != stripped:
+            return result
+        annotated = result.artifacts["annotated_ast"]
+        return replace(result, artifacts={
+            **result.artifacts,
+            "annotated_ast": {**annotated, "ast": _without_declarations(annotated["ast"])},
+        })
+
+    monkeypatch.setattr(engine, "compile_source_file", compile_without_call_declarations)
+    batch = _prepare_with_unrelated_root(tmp_path, UNRELATED_CALLER)
+    assert _wildcards(batch) == wildcards, batch.reports
+    if not wildcards:
+        diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
+        assert "the compiler declaration of a call in entry.vy on line" in diagnostic.message
+        assert diagnostic.message.endswith("is unresolved")
+
+
 def test_wildcard_keeps_bound_when_a_same_project_root_fails_to_compile(tmp_path: Path) -> None:
     # Without compiler evidence the failed root could import the interface in a
     # way the import scanner misses.

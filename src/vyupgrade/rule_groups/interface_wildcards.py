@@ -147,7 +147,7 @@ def _compiler_modules(
             return None
         if source_id in seen_paths:
             # The compiler lists a module once per import request that reached it.
-            if seen_paths[source_id] != resolved:
+            if not isinstance(resolved, str) or seen_paths[source_id] != resolved:
                 return None
             continue
         seen_paths[source_id] = resolved
