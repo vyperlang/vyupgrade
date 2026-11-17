@@ -485,7 +485,7 @@ def can_replace_json_report(path: Path) -> bool:
         return True
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except json.JSONDecodeError:
+    except (OSError, ValueError, RecursionError):
         return False
     producer = data.get("producer") if isinstance(data, dict) else None
     return isinstance(producer, dict) and producer.get("name") == "vyupgrade"

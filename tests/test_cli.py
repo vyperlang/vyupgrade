@@ -169,6 +169,22 @@ def test_report_json_refuses_imported_json_interface(
     assert code == 4
 
 
+def test_report_json_refuses_unreadable_file(tmp_path: Path, passing_compiler) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(LEGACY_CONTRACT, encoding="utf-8")
+    report = tmp_path / "report.json"
+    report.write_text("notes\n", encoding="utf-8")
+    report.chmod(0o200)
+
+    try:
+        code = main([str(contract), "--check", "--report-json", str(report)])
+    finally:
+        report.chmod(0o600)
+
+    assert report.read_text(encoding="utf-8") == "notes\n"
+    assert code == 4
+
+
 def test_report_json_replaces_earlier_report(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text(LEGACY_CONTRACT, encoding="utf-8")
