@@ -21,23 +21,28 @@ def line_number(source: str, offset: int) -> int:
     return source.count("\n", 0, offset) + 1
 
 
-def logical_statements(source: str) -> Iterator[tuple[tokenize.TokenInfo, tokenize.TokenInfo]]:
-    """Yield the first and last code token of each complete logical statement."""
-    first = last = None
+def logical_statement_tokens(source: str) -> Iterator[list[tokenize.TokenInfo]]:
+    """Yield the code tokens of each complete logical statement."""
+    statement = []
     try:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
             if token.type == tokenize.NEWLINE:
-                if first is not None and last is not None:
-                    yield first, last
-                first = last = None
+                if statement:
+                    yield statement
+                    statement = []
             elif token.type not in {
                 tokenize.NL, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER,
             }:
-                first = first or token
-                last = token
+                statement.append(token)
     except (IndentationError, tokenize.TokenError):
         # Rule-only callers may supply incomplete source.
         return
+
+
+def logical_statements(source: str) -> Iterator[tuple[tokenize.TokenInfo, tokenize.TokenInfo]]:
+    """Yield the first and last code token of each complete logical statement."""
+    for statement in logical_statement_tokens(source):
+        yield statement[0], statement[-1]
 
 
 def code_mask(source: str) -> list[bool]:

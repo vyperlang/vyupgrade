@@ -309,6 +309,32 @@ def __default__() -> uint256:
     assert [_call(d, "f()") for d in deployments] == [8] * 2
 
 
+def test_blueprint_factory_preserves_headerless_child_creation(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+#pragma evm-version shanghai
+@external
+def make(blueprint: address) -> address:
+    return create_from_blueprint(
+        blueprint  # This legacy blueprint uses code_offset zero.
+    )
+""")
+    # Deploy a blueprint whose runtime is itself initcode for a one-byte STOP contract.
+    # Its byte at offset 3 is an invalid opcode, so starting there reverts.
+    blueprint_initcode = "0x600d600c600039600d6000f3" + "6001600c60003960016000f300"
+    for vm, sender, factory in deployments:
+        deploy = vm.send_transaction({"from": sender, "gas": 300_000, "data": blueprint_initcode})
+        receipt = vm.get_transaction_receipt(deploy)
+        assert receipt["status"] == 1
+        blueprint = int(receipt["contract_address"], 16)
+        call = {
+            "from": sender, "to": factory, "gas": 300_000,
+            "data": _calldata("make(address)", (blueprint,)),
+        }
+        child = "0x" + vm.call(call)[-40:]
+        assert vm.get_transaction_receipt(vm.send_transaction(call))["status"] == 1
+        assert vm.get_code(child) == "0x00"
+
+
 def test_bitwise_operators_preserve_operand_grouping(tmp_path):
     deployments = _migration_pair(tmp_path, """# @version 0.3.10
 @external

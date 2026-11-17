@@ -217,6 +217,10 @@ diagnostic instead of being applied.
   abstract modules, unresolved imports and ambiguous imports with any stateful
   candidate retain their declarations. Use
   `--include-dependencies` to migrate redundant nested initializations too.
+- For upgrades crossing `0.4.0`, `VY080` preserves the legacy blueprint
+  offset, and `VY224` preserves non-ASCII return and revert bytes for
+  compiler-confirmed literal contexts. `VYD024` identifies other literals
+  that need review.
 - [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
   change mapped to a rule, diagnostic, explicit no-op, or validation-only
   behavior.

@@ -252,9 +252,11 @@ modern Python interpreter.
   Solidity-style colons from valid `@param name:` tags, and rewrites unknown
   `@fork` tags to `@custom:fork`. It also rewrites duplicate singleton fields
   such as `@notice` and `@author` to `@custom:<field>`.
-- String literal validation is stricter: `VY224` replaces non-ASCII characters
-  in string literals with ASCII placeholders so migrated source remains
-  compiler-accepted.
+- String literal validation is stricter. For source floors from `0.3.1`
+  crossing `0.4.0`, `VY224` uses a byte literal converted to a bounded
+  `String` when the source AST confirms a direct return, raise reason, or
+  assertion message and every decoded code point fits in one byte. `VYD024`
+  asks for review when the source evidence or expression context is insufficient.
 - Local interface mutability is checked more strictly: `VY014` changes
   `nonpayable` interface entries to `view` when the implementation is a view
   function or `public(...)` getter, and changes `@pure` implementations to
@@ -332,7 +334,8 @@ modern Python interpreter.
 ### v0.3.5
 
 - `create_from_blueprint` accepts arbitrary data: no-op for source migration;
-  `VY080` handles the later `0.4.0` default `code_offset` behavior change.
+  `VY080` supplies the legacy `code_offset=0` across `0.4.0` unless the
+  builtin call explicitly supplies that keyword.
 - `empty()` accepted in constants/default arguments: no-op. This only accepts a
   form previously rejected.
 

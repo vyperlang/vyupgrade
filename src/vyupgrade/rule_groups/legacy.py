@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import ast
 import re
+import tokenize
+from collections.abc import Iterator
 
 from ..analysis import SourceFacts
+from ..ast_facts import iter_nodes, node_span, root_ast
 from ..models import Diagnostic, Fix
 from .legacy_call_helpers import iter_calls, replace_identifier_call
 from ..rule_helpers import (
@@ -29,6 +33,7 @@ from ..source import (
     code_identifiers,
     find_matching,
     line_number,
+    logical_statement_tokens,
     split_top_level_args,
     span_is_code,
 )
@@ -171,62 +176,77 @@ def _legacy_type_units(rule_context: RuleContext) -> tuple[str, list[Fix], list[
     return apply_edits(source, edits), fixes, []
 
 
+def _runtime_string_literals(rule_context: RuleContext) -> dict[tuple[int, int], str]:
+    # Starting with 0.3.1, revert reasons are string expressions too. These
+    # compilers emit one byte per code point for a runtime Str expression.
+    source_ast = rule_context.config.source_ast
+    floor = rule_context.migration.source_floor
+    if source_ast is None or floor is None or floor < VyperVersion("0.3.1"):
+        return {}
+
+    try:
+        root = root_ast(source_ast)
+    except TypeError:
+        return {}
+    fields = {"Return": "value", "Raise": "exc", "Assert": "msg"}
+    values = {}
+    for node in iter_nodes(root):
+        field = fields.get(node.get("ast_type"))
+        literal = node.get(field) if field else None
+        if not isinstance(literal, dict) or literal.get("ast_type") != "Str":
+            continue
+        span = node_span(literal)
+        value = literal.get("value")
+        if span is not None and isinstance(value, str):
+            values[span.start, span.end] = value
+    return values
+
+
+def _expression_strings(source: str) -> Iterator[tokenize.TokenInfo]:
+    for statement in logical_statement_tokens(source):
+        # Standalone string expressions are docstrings, which may also be
+        # parenthesized or composed of adjacent literal tokens.
+        if all(token.type == tokenize.STRING or token.string in {"(", ")"} for token in statement):
+            continue
+        yield from (token for token in statement if token.type == tokenize.STRING)
+
+
 def _ascii_string_literals(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
+    if source.isascii() and "\\" not in source:
+        return source, [], []
+
+    runtime_values = _runtime_string_literals(rule_context)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    index = 0
-    while index < len(source):
-        char = source[index]
-        if char == "#":
-            newline = source.find("\n", index)
-            index = len(source) if newline == -1 else newline + 1
+    diagnostics: list[Diagnostic] = []
+    for token in _expression_strings(source):
+        if token.string.isascii() and "\\" not in token.string:
             continue
-        if char not in {"'", '"'}:
-            index += 1
+        try:
+            value = ast.literal_eval(token.string)
+        except (ValueError, SyntaxError):
             continue
-        if index > 0 and source[index - 1] in {"b", "B"}:
-            index += 1
+        if not isinstance(value, str) or value.isascii():
             continue
-        quote = char
-        if source.startswith(quote * 3, index):
-            close = source.find(quote * 3, index + 3)
-            index = len(source) if close == -1 else close + 3
+        line, column = token.start
+        start = rule_context.line_offsets[line - 1] + column
+        end = start + len(token.string)
+        if runtime_values.get((start, end)) != value or any(ord(c) > 255 for c in value):
+            if rule_context.is_enabled("VYD024"):
+                diagnostics.append(Diagnostic(
+                    "VYD024", line,
+                    "review non-ASCII string literal: could not verify its runtime bytes and context",
+                ))
             continue
-        close = _string_literal_end(source, index)
-        if close is None:
-            break
-        content = source[index + 1 : close]
-        if any(ord(item) > 127 for item in content):
-            replacement = "".join(item if ord(item) <= 127 else "?" for item in content)
-            edits.append(TextEdit(index + 1, close, replacement))
-            fixes.append(
-                Fix(
-                    "VY224",
-                    line_number(source, index),
-                    "replaced non-ASCII string literal characters",
-                    source[index : close + 1],
-                    f"{quote}{replacement}{quote}",
-                )
-            )
-        index = close + 1
-    return apply_edits(source, edits), fixes, []
-
-
-def _string_literal_end(source: str, start: int) -> int | None:
-    quote = source[start]
-    index = start + 1
-    while index < len(source):
-        char = source[index]
-        if char == "\\":
-            index += 2
-            continue
-        if char == quote:
-            return index
-        if char == "\n":
-            return None
-        index += 1
-    return None
+        if rule_context.is_enabled("VY224"):
+            payload = value.encode("latin-1")
+            replacement = f"convert({payload!r}, String[{len(payload)}])"
+            edits.append(TextEdit(start, end, replacement))
+            fixes.append(Fix(
+                "VY224", line, "preserved legacy string literal bytes", token.string, replacement,
+            ))
+    return apply_edits(source, edits), fixes, diagnostics
 
 
 def _legacy_timestamp_type_edits(source: str, mask: list[bool]) -> list[TextEdit]:
@@ -1113,10 +1133,15 @@ def _collect_event_fields(source: str) -> dict[str, list[str]]:
 
 
 EARLY_RULES = (
+    # Match compiler AST spans against the original source before any edits.
+    Rule(
+        "ascii_string_literals",
+        runner=_ascii_string_literals,
+        changes=(crossing("VY224", (0, 4, 0)), crossing("VYD024", (0, 4, 0))),
+    ),
     Rule("pragma", runner=_pragma, changes=(target_update("VY001", (0, 3, 10)),)),
     Rule("legacy_decorators", runner=_legacy_decorators, changes=(target_floor("VY201", (0, 2, 1)),)),
     Rule("legacy_type_units", runner=_legacy_type_units, changes=(target_floor("VY202", (0, 2, 1)),)),
-    Rule("ascii_string_literals", runner=_ascii_string_literals, changes=(crossing("VY224", (0, 4, 0)),)),
     Rule(
         "legacy_events",
         runner=_legacy_events,

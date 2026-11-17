@@ -393,20 +393,73 @@ def _g():
     }
 
 
-def test_non_ascii_string_literals_are_sanitized_for_modern_target(config) -> None:
+def test_non_ascii_string_literal_preserves_legacy_bytes(config) -> None:
     source = '''# @version 0.3.7
-minter: address
+@external
+def f():
+    """Docstring with 'é'."""
+    assert False, "indépendantes"  # "déjà"
+'''
+    text = '"indépendantes"'
+    literal = {
+        "ast_type": "Str",
+        "value": "indépendantes",
+        "src": f"{source.index(text)}:{len(text)}:0",
+    }
+    source_ast = {"ast_type": "Assert", "msg": literal}
+    settings = config(source_ast=source_ast)
+    result = apply_rules(source, settings)
+    expected = r"assert False, convert(b'ind\xe9pendantes', String[13])"
+    assert expected + '  # "déjà"' in result.source
+    assert '"""Docstring with \'é\'."""' in result.source
+    assert [fix.before for fix in result.fixes if fix.rule == "VY224"] == [text]
+    assert apply_rules(result.source, settings).source == result.source
+    diagnostic_only = config(source_ast=source_ast, select=frozenset({"VYD024"}))
+    assert apply_rules(source, diagnostic_only).source == source
+
+
+def test_non_ascii_string_diagnostic_needs_a_verified_runtime_literal(config) -> None:
+    source = r'''# @version 0.3.7
+("Une préface")
+@external
+def f() -> String[3]:
+    """Un résumé: 'é'."""
+    data: Bytes[1] = b"\xe9"
+    name: String[1] = "é"     # no supported context
+    return "\xe9"             # no source AST for this return
+'''
+    rules = frozenset({"VY224", "VYD024"})
+    result = apply_rules(source, config(select=rules))
+    assert result.source == source
+    assert [(d.rule, d.line) for d in result.diagnostics] == [("VYD024", 7), ("VYD024", 8)]
+    older_target = apply_rules(source, config(target_version="0.3.10", select=rules))
+    assert older_target.source == source and not older_target.diagnostics
+
+
+def test_non_ascii_string_does_not_guess_unsupported_context_or_encoding(config) -> None:
+    source = '''# @version 0.3.7
+@external
+def f() -> (String[2], String[2]):
+    return "é", "x"
 
 @external
-def set_uri(_uri: String[100]) -> bool:
-    assert msg.sender == self.minter, "Les charrettes sont libres et indépendantes !"
-    return True
+def g() -> String[2]:
+    return "😀"
 '''
-
-    result = apply_rules(source, config())
-
-    assert '"Les charrettes sont libres et ind?pendantes !"' in result.source
-    assert any(fix.rule == "VY224" for fix in result.fixes)
+    values = [
+        {"ast_type": "Str", "value": c, "src": f"{source.index(c) - 1}:3:0"}
+        for c in ("é", "😀")
+    ]
+    # The first literal is nested in a tuple and the second cannot represent
+    # a legacy byte even if the supplied AST identifies it as a direct return.
+    source_ast = {"body": [
+        {"ast_type": "Return", "value": {"ast_type": "Tuple", "elements": [values[0]]}},
+        {"ast_type": "Return", "value": values[1]},
+    ]}
+    settings = config(source_ast=source_ast, select=frozenset({"VY224", "VYD024"}))
+    result = apply_rules(source, settings)
+    assert result.source == source
+    assert [d.rule for d in result.diagnostics] == ["VYD024", "VYD024"]
 
 
 def test_legacy_public_fixed_array_getter_preserves_int128_selector(config) -> None:
