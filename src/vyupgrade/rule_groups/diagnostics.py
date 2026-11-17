@@ -4,14 +4,18 @@ import re
 
 from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
-from ..source import line_number
+from ..source import line_number, span_is_code
 
 
 def decimal_diagnostic(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    if re.search(r"\bdecimal\b", source) and not rule_context.config.enable_decimals:
+    mask = rule_context.code_mask
+    if not rule_context.config.enable_decimals and any(
+        span_is_code(mask, match.start(), match.end())
+        for match in re.finditer(r"\bdecimal\b", source)
+    ):
         return (
             source,
             [],
@@ -30,6 +34,7 @@ def prevrandao_diagnostic(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
+    mask = rule_context.code_mask
     diagnostics = [
         Diagnostic(
             "VYD010",
@@ -37,6 +42,7 @@ def prevrandao_diagnostic(
             "block.prevrandao signature changed in 0.4.0; review manually",
         )
         for match in re.finditer(r"\bblock\.prevrandao\b", source)
+        if span_is_code(mask, match.start(), match.end())
     ]
     return source, [], diagnostics
 
