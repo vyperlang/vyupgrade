@@ -1135,6 +1135,16 @@ def test_compile_source_file_does_not_retry_or_transform_final_newline(
     assert contract.read_text(encoding="utf-8") == source
 
 
+def test_compile_target_source_requires_entry_in_given_overlay(tmp_path) -> None:
+    contract = tmp_path / "missing.vy"
+    overlay = TargetOverlay(tmp_path, {}, (), ())
+    result = compile_target_source(
+        contract, "#pragma version 0.4.3\n", Config(paths=(contract,)), overlay
+    )
+    assert result.status == "failed"
+    assert result.stderr == f"target entry was not staged in its project overlay: {contract}"
+
+
 def test_compile_target_source_enables_decimals_for_decimal_code(monkeypatch, tmp_path) -> None:
     contract = tmp_path / "contract.vy"
     contract.write_text("# @version 0.3.10\n", encoding="utf-8")

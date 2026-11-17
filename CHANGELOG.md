@@ -9,9 +9,10 @@
 - Compare struct member definitions inside storage mappings and arrays. Changed
   members or bounds now block writes unless `--allow-storage-layout-change` is
   supplied; unresolved container types require the same waiver.
-- Compile each source against only its own import closure, so a batch of
-  independent projects that each hold a same-named file (such as `a/Main.vy`
-  and `b/Main.vy`) no longer aborts with an overlay layout conflict.
+- Compile each source and migration candidate against its own captured project
+  and imports, preserving the meaning of same-named modules in independent
+  projects. Reject a shared closure export when those projects require conflicting
+  files at the same output path.
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.

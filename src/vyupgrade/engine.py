@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .compiler import (
     CompileResult,
     ImportClosure,
+    OverlayLayoutConflictError,
+    _entry_closure,
     resolve_import_closure,
     compare_validation_artifacts,
     compile_source_ast,
@@ -96,6 +98,7 @@ class MigrationFile:
 class GeneratedMigration:
     file: GeneratedFile
     report: FileReport
+    origin: Path
     target_compile: CompileResult | None = None
     validation_diagnostics: list[Diagnostic] = field(default_factory=list)
 
@@ -258,6 +261,7 @@ def prepare_migrations(
                 changed=True,
                 fixes=[generated_file.fix],
             ),
+            origin=migration.path,
         )
         for migration in files
         for generated_file in getattr(migration.rewrite, "generated_files", ())
@@ -265,15 +269,87 @@ def prepare_migrations(
     return MigrationBatch(files, generated, snapshot)
 
 
+def _target_scopes(
+    batch: MigrationBatch,
+    target_sources: dict[Path, str],
+) -> Iterator[
+    tuple[list[MigrationFile], list[GeneratedMigration], dict[Path, str], ImportClosure | None]
+]:
+    """Group direct validation and generated files by captured project scope."""
+    snapshot = batch.snapshot
+    if snapshot is None:
+        yield batch.files, batch.generated, target_sources, None
+        return
+
+    projects: dict[Path, list[MigrationFile]] = {}
+    for migration in batch.files:
+        if migration.report.validation_mode != "consumer-roots":
+            root = snapshot.layout_root(migration.path)
+            projects.setdefault(root, []).append(migration)
+
+    for files in projects.values():
+        entry = snapshot.captured_path(files[0].path)
+        assert entry is not None
+        scope = _entry_closure(snapshot, entry)
+        entries = {migration.path for migration in files}
+        generated = [migration for migration in batch.generated if migration.origin in entries]
+        generated_paths = {
+            migration.file.path for migration in batch.generated
+            if scope.captured_path(migration.origin) is not None
+        }
+        sources = {
+            path: source for path, source in target_sources.items()
+            if path in generated_paths or scope.captured_path(path) is not None
+        }
+        yield files, generated, sources, scope
+
+
 def validate_migrations(
     batch: MigrationBatch,
     config: Config,
     candidate_source: CandidateSource | None = None,
 ) -> ValidationDecision:
-    """Validate one coherent candidate overlay and return its typed decision."""
+    """Validate each project's coherent candidate overlay and return its typed decision."""
     resolve_candidate = candidate_source or _unchanged_candidate
     target_sources = candidate_sources(batch, resolve_candidate)
-    declared_sources = {**(batch.snapshot.sources if batch.snapshot else {}), **target_sources}
+    scopes = tuple(_target_scopes(batch, target_sources))
+    if batch.snapshot is not None:
+        config = replace(config, compiler_search_paths=batch.snapshot.search_roots)
+
+    if config.include_dependencies and config.closure_output is not None and len(scopes) > 1:
+        # The exported directory combines the projects' import-root-relative paths.
+        # Check that it can represent all their files before allowing any writes.
+        try:
+            with target_overlay(
+                target_sources,
+                config.target_version,
+                config.compiler_search_paths,
+                include_dependencies=True,
+                snapshot=batch.snapshot,
+            ):
+                pass
+        except OverlayLayoutConflictError as exc:
+            raise OverlayLayoutConflictError(f"cannot export a shared closure: {exc}") from exc
+
+    for migration in (*batch.files, *batch.generated):
+        _reset_target_validation(migration.report, migration.validation_diagnostics)
+        migration.target_compile = None
+
+    has_dependencies = batch.snapshot is not None and bool(batch.snapshot.dependencies)
+    for files, generated, sources, snapshot in scopes:
+        _validate_target_scope(files, generated, sources, snapshot, config, has_dependencies)
+    return decide_run_validation(batch.reports, config)
+
+
+def _validate_target_scope(
+    files: list[MigrationFile],
+    generated: list[GeneratedMigration],
+    sources: dict[Path, str],
+    snapshot: ImportClosure | None,
+    config: Config,
+    has_dependencies: bool,
+) -> None:
+    declared_sources = {**(snapshot.sources if snapshot else {}), **sources}
     target_declared_spec = _declared_spec(
         tuple(
             ContentIdentity(str(path.resolve()), hashlib.sha256(source.encode()).hexdigest())
@@ -281,17 +357,14 @@ def validate_migrations(
         ),
         (CompilerDeclaration("target-version", config.target_version),),
     )
-
     with target_overlay(
-        target_sources,
+        sources,
         config.target_version,
         config.compiler_search_paths,
         include_dependencies=config.include_dependencies,
-        snapshot=batch.snapshot,
+        snapshot=snapshot,
     ) as overlay:
-        for migration in batch.files:
-            _reset_target_validation(migration.report, migration.validation_diagnostics)
-            migration.target_compile = None
+        for migration in files:
             if migration.report.validation_mode == "consumer-roots":
                 continue
             source_context = MigrationContext.from_specs(
@@ -304,7 +377,7 @@ def validate_migrations(
                 continue
             target_compile = compile_target_source(
                 migration.path,
-                target_sources[migration.path],
+                sources[migration.path],
                 config,
                 overlay,
             )
@@ -317,7 +390,7 @@ def validate_migrations(
             if (
                 target_compile.status == "failed"
                 and target_compile.failure_origin == "compiler"
-                and batch.snapshot is not None and batch.snapshot.dependencies
+                and has_dependencies
                 and not config.include_dependencies
             ):
                 migration.report.target_error = (migration.report.target_error or "") + (
@@ -344,12 +417,10 @@ def validate_migrations(
                 )
             )
 
-        for migration in batch.generated:
-            _reset_target_validation(migration.report, migration.validation_diagnostics)
-            migration.target_compile = None
+        for migration in generated:
             target_compile = compile_target_source(
                 migration.file.path,
-                target_sources[migration.file.path],
+                sources[migration.file.path],
                 config,
                 overlay,
             )
@@ -359,8 +430,6 @@ def validate_migrations(
                 target_compile,
                 target_declared_spec,
             )
-
-    return decide_run_validation(batch.reports, config)
 
 
 def _compile_source(

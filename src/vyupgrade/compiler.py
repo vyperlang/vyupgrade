@@ -221,6 +221,12 @@ class ImportClosure:
                     return member
         return None
 
+    def layout_root(self, path: Path) -> Path:
+        member = self.captured_path(path)
+        if member is None:
+            raise ValueError(f"source is outside the captured import closure: {path}")
+        return self._layout_roots[member]
+
     def captured_path(self, path: Path) -> Path | None:
         if path in self.contents:
             return path
@@ -385,7 +391,7 @@ def _entry_closure(snapshot: ImportClosure, entry: Path) -> ImportClosure:
     Separate projects can use the same overlay-relative paths. Keep the entry's
     project inputs together so their imports still work if the scanner misses an edge.
     """
-    entry_root = snapshot._layout_roots[entry]
+    entry_root = snapshot.layout_root(entry)
     same_root = {path for path in snapshot.roots if snapshot._layout_roots[path] == entry_root}
     members = _reachable_imports(same_root | {entry}, snapshot._imports)
     dependencies = tuple(sorted(members - {entry}))
@@ -432,38 +438,41 @@ def compile_target_source(
     if path.suffix not in {".vy", ".vyi"}:
         return CompileResult("skipped")
     if overlay is not None:
-        tmp_path = overlay.paths.get(path.resolve())
-        if tmp_path is not None:
-            command, suppress_warnings = _prepare_command(
-                config.target_vyper, config.target_version, config.target_python
+        tmp_path = overlay.paths.get(path) or overlay.paths.get(path.resolve())
+        if tmp_path is None:
+            return CompileResult(
+                "failed", stderr=f"target entry was not staged in its project overlay: {path}"
             )
-            compile_config = _target_compile_config(source, config)
-            compile_config = replace(
+        command, suppress_warnings = _prepare_command(
+            config.target_vyper, config.target_version, config.target_python
+        )
+        compile_config = _target_compile_config(source, config)
+        compile_config = replace(
+            compile_config,
+            compiler_search_paths=_overlay_search_paths(
+                overlay, compile_config.compiler_search_paths
+            ),
+        )
+        if path.suffix == ".vyi":
+            result = _compile_target_interface(
+                command,
+                tmp_path,
+                source,
                 compile_config,
-                compiler_search_paths=_overlay_search_paths(
-                    overlay, compile_config.compiler_search_paths
-                ),
+                (),
+                suppress_warnings,
+                environment_path=path,
             )
-            if path.suffix == ".vyi":
-                result = _compile_target_interface(
-                    command,
-                    tmp_path,
-                    source,
-                    compile_config,
-                    (),
-                    suppress_warnings,
-                    environment_path=path,
-                )
-            else:
-                result = _run_compile(
-                    command,
-                    tmp_path,
-                    compile_config,
-                    extra_paths=(),
-                    suppress_warnings=suppress_warnings,
-                    environment_path=path,
-                )
-            return _restore_compile_error_paths(result, overlay.paths, path)
+        else:
+            result = _run_compile(
+                command,
+                tmp_path,
+                compile_config,
+                extra_paths=(),
+                suppress_warnings=suppress_warnings,
+                environment_path=path,
+            )
+        return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
     )
@@ -790,7 +799,9 @@ def materialize_target_overlay(
     if not include_dependencies:
         for search_path in snapshot.import_roots:
             if search_path.is_relative_to(common):
-                staged_search_paths.add(root / search_path.relative_to(common))
+                staged_root = root / search_path.relative_to(common)
+                if staged_root.is_dir():
+                    staged_search_paths.add(staged_root)
     configured = tuple(path.resolve() for path in search_paths)
     for source_root in snapshot.source_roots:
         if include_dependencies and source_root in configured:

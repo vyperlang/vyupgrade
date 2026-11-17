@@ -1,6 +1,9 @@
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from eth_tester import EthereumTester
+from eth_utils import keccak
 
 from vyupgrade import compiler, engine
 from vyupgrade.cli import main
@@ -179,6 +182,99 @@ def test_independent_projects_with_same_named_files_compile_separately(tmp_path)
     batch = engine.prepare_migrations(requests, config)
     assert [f.source_compile.status for f in batch.files] == ["passed", "passed"]
     assert engine.validate_migrations(batch, config).status == "passed"
+
+
+def _nested_projects(tmp_path, additional_source=""):
+    entries = {}
+    for name, value in (("a", 1), ("b", 2)):
+        project = tmp_path / name
+        entry = project / "contracts" / "Main.vy"
+        entry.parent.mkdir(parents=True)
+        (project / "pyproject.toml").write_text(f"[project]\nname = '{name}'\nversion = '0.0.0'\n")
+        (project / "helper.vy").write_text(
+            f"#pragma version ^0.4.2\n@internal\n@pure\ndef g() -> uint256:\n    return {value}\n"
+        )
+        entry.write_text(
+            "#pragma version 0.4.2\nimport helper\n"
+            "@external\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
+            + additional_source
+        )
+        entries[entry] = value
+    return entries
+
+
+def _compiled_return_value(result, signature):
+    assert result.status == "passed", result.stderr
+    vm = EthereumTester()
+    sender = vm.get_accounts()[0]
+    transaction = vm.send_transaction({
+        "from": sender,
+        "gas": 1_000_000,
+        "data": result.artifacts["bytecode"],
+    })
+    receipt = vm.get_transaction_receipt(transaction)
+    assert receipt["status"] == 1
+    return int(vm.call({
+        "from": sender,
+        "to": receipt["contract_address"],
+        "data": "0x" + keccak(text=signature)[:4].hex(),
+    }), 16)
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+def test_target_validation_keeps_the_entry_projects_imports(tmp_path, reverse):
+    interface = "\ninterface Reader:\n    def g() -> uint256: view\n"
+    shared_import = "\nimport shared\n"
+    shared_function = "\n@external\n@pure\ndef shared_value() -> uint256:\n    return shared.n()\n"
+    entries = _nested_projects(tmp_path, interface + shared_import + shared_function)
+    search_path = tmp_path / "vendor"
+    search_path.mkdir()
+    shared = search_path / "shared.vy"
+    shared.write_text("#pragma version ^0.4.2\n@internal\n@pure\ndef n() -> uint256:\n    return 9\n")
+    paths = tuple(sorted(entries, reverse=reverse))
+    config = Config(
+        paths=(*paths, shared),
+        target_version="0.4.3",
+        split_interfaces=True,
+        compiler_search_paths=(search_path,),
+    )
+    requests = [engine.bounded_migration_request(path, path.read_text(), config) for path in config.paths]
+    batch = engine.prepare_migrations(requests, config)
+    formatted = "# formatted shared candidate\n"
+    decision = engine.validate_migrations(
+        batch, config, lambda path, source: source + formatted if path == shared else source
+    )
+    assert decision.status == "passed", batch.reports
+
+    shared_candidate = batch.files[-1].rewrite.source + formatted
+    for migration in batch.files[:len(entries)]:
+        assert _compiled_return_value(migration.source_compile, "f()") == entries[migration.path]
+        assert _compiled_return_value(migration.target_compile, "f()") == entries[migration.path]
+        assert _compiled_return_value(migration.target_compile, "shared_value()") == 9
+        expected = {
+            str(migration.path),
+            str(migration.path.parents[1] / "helper.vy"),
+            str(migration.path.with_name("Reader.vyi")),
+            str(shared),
+        }
+        attestation = migration.report.target_attestation
+        staged = {identity.path: identity.sha256 for identity in attestation.declared_spec.sources}
+        assert set(staged) == expected
+        assert staged[str(shared)] == sha256(shared_candidate.encode()).hexdigest()
+    assert len(batch.generated) == 2
+    assert all(generated.target_compile.status == "passed" for generated in batch.generated)
+
+
+def test_conflicting_projects_cannot_export_one_flat_closure(tmp_path, capsys):
+    entries = _nested_projects(tmp_path)
+    original = {path: path.read_bytes() for path in entries}
+    output = tmp_path / "export"
+    assert main([
+        *map(str, entries), "--include-dependencies", "--closure-output", str(output), "--write"
+    ]) == 4
+    assert "cannot export a shared closure" in capsys.readouterr().err
+    assert not output.exists()
+    assert {path: path.read_bytes() for path in entries} == original
 
 
 @pytest.mark.parametrize(
