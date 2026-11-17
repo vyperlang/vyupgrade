@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from vyupgrade.rules import apply_rules
 
 
@@ -475,7 +477,7 @@ def supportsInterface(interface_id: bytes4) -> bool:
     assert any(fix.rule == "VY014" for fix in result.fixes)
 
 
-def test_no_return_view_interface_call_statement_becomes_nonpayable(config) -> None:
+def test_no_return_view_interface_needs_opt_in_to_allow_writes(config) -> None:
     source = """# @version 0.3.10
 interface Blast:
     def configureClaimableGas(): view
@@ -489,6 +491,12 @@ def __init__():
 
     result = apply_rules(source, config())
 
+    assert "def configureClaimableGas(): view" in result.source
+    assert "staticcall Blast(0x4300000000000000000000000000000000000002).configureClaimableGas()" in result.source
+    assert [d.rule for d in result.diagnostics].count("VYD025") == 1
+    assert not any(fix.rule == "VY014" for fix in result.fixes)
+
+    result = apply_rules(source, config(aggressive=True))
     assert "def configureClaimableGas(): nonpayable" in result.source
     assert "extcall Blast(0x4300000000000000000000000000000000000002).configureClaimableGas()" in result.source
     assert "def claimMaxGas() -> uint256: view" in result.source
@@ -652,12 +660,13 @@ def f(eta: uint256):
     assert "eta + _GRACE_PERIOD" in result.source
 
 
-def test_local_interface_nonpayable_matches_view_function(config) -> None:
-    source = """# @version 0.3.10
-interface Bucket:
+@pytest.mark.parametrize("colon", [":", " :"])
+def test_local_interface_nonpayable_matches_view_function(config, colon) -> None:
+    source = f"""# @version 0.3.10
+interface Bucket{colon}
     def above_floor() -> bool: nonpayable
 
-implements: Bucket
+implements{colon} Bucket
 
 @external
 @view
@@ -687,7 +696,7 @@ rate: public(HashMap[address, uint256])
     assert any(fix.rule == "VY014" for fix in result.fixes)
 
 
-def test_payable_implemented_interface_adds_payable_decorator(config) -> None:
+def test_payable_conformance_only_declaration_preserves_nonpayable_implementation(config) -> None:
     source = """# @version 0.3.10
 interface Receiver:
     def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]): payable
@@ -701,8 +710,55 @@ def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]):
 
     result = apply_rules(source, config())
 
-    assert "@external\n@payable\ndef receiveFlashLoan" in result.source
+    assert "def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]): nonpayable" in result.source
+    assert "@external\ndef receiveFlashLoan" in result.source
     assert any(fix.rule == "VY014" for fix in result.fixes)
+    review = apply_rules(source, config(select=frozenset({"VYD025"})))
+    assert review.source == source and not review.diagnostics
+
+
+def test_shared_payable_interface_requires_opt_in_to_accept_eth(config) -> None:
+    source = """# @version 0.3.10
+interface Receiver:
+    def receiveFunds(): payable
+
+implements: Receiver
+
+@external
+def receiveFunds():
+    pass
+
+@external
+@payable
+def relay(target: address):
+    Receiver(target).receiveFunds(value=msg.value)
+"""
+    result = apply_rules(source, config(select=frozenset({"VY014", "VYD025"})))
+    assert result.source == source
+    assert [d.rule for d in result.diagnostics] == ["VYD025"]
+    aggressive = apply_rules(source, config(aggressive=True, select=frozenset({"VY014", "VYD025"})))
+    assert "def receiveFunds(): payable" in aggressive.source
+    assert "@external\n@payable\ndef receiveFunds" in aggressive.source
+
+
+def test_call_safety_diagnostic_and_fix_are_independently_selectable(config) -> None:
+    source = """# @version 0.3.10
+interface Target:
+    def check(): view
+
+@external
+def run(dest: address):
+    Target(dest).check()
+"""
+    program = apply_rules(source, config(aggressive=True, select=frozenset({"VYD025"})))
+    assert program.source == source
+    assert [d.rule for d in program.diagnostics] == ["VYD025"]
+    program = apply_rules(source, config(select=frozenset({"VY014"})))
+    assert program.source == source
+    assert not program.diagnostics
+    program = apply_rules(source, config(aggressive=True, select=frozenset({"VY014"})))
+    assert "def check(): nonpayable" in program.source
+    assert not program.diagnostics
 
 
 def test_pure_function_reading_immutable_becomes_view(config) -> None:
@@ -946,3 +1002,30 @@ import sibling
     )
 
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD015"]
+
+
+def test_any_receiver_access_with_normalized_spelling_prevents_mode_change(config):
+    source = """# @version 0.3.10
+interface Bucket:
+    def above_floor() -> bool: nonpayable
+    def convert(a: address): nonpayable
+
+implements: Bucket
+
+@external
+@view
+def above_floor() -> bool:
+    return False
+
+@external
+def convert(a: address):
+    Bucket(a).convert(a)
+
+@external
+def probe(other: Bucket) -> bool:
+    return (other.  # continued receiver
+            \N{FULLWIDTH LATIN SMALL LETTER A}bove_floor())
+"""
+    result = apply_rules(source, config(select=frozenset({"VY014", "VYD025"})))
+    assert result.source == source
+    assert [d.rule for d in result.diagnostics] == ["VYD025"]

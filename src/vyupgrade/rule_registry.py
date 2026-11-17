@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
 from .analysis import SourceFacts, parse_source_facts
-from .models import Config, Diagnostic, Fix
-from .source import code_mask
+from .models import CompilerFacts, Config, Diagnostic, Fix
+from .source import code_mask, line_offsets
 from .versions import MigrationContext, VyperVersion
 
 
@@ -50,6 +50,9 @@ class RuleContext:
     migration: MigrationContext
     path: Path | None
     rule_changes: Mapping[str, RuleChange]
+    original_source: str | None = None
+    compiler_facts: CompilerFacts = field(default_factory=CompilerFacts)
+    prior_fixes: tuple[Fix, ...] = ()
 
     @cached_property
     def code_mask(self) -> list[bool]:
@@ -61,18 +64,12 @@ class RuleContext:
 
     @cached_property
     def line_offsets(self) -> list[int]:
-        offsets = [0]
-        for index, char in enumerate(self.source):
-            if char == "\n":
-                offsets.append(index + 1)
-        return offsets
+        return line_offsets(self.source)
 
-    def with_source(self, source: str) -> RuleContext:
-        if source == self.source:
+    def with_source(self, source: str, fixes: tuple[Fix, ...] = ()) -> RuleContext:
+        if source == self.source and not fixes:
             return self
-        return RuleContext(
-            source, self.config, self.migration, self.path, self.rule_changes
-        )
+        return replace(self, source=source, prior_fixes=self.prior_fixes + fixes)
 
     def is_enabled(self, rule: str) -> bool:
         return is_enabled(rule, self.config, self.migration, self.rule_changes)

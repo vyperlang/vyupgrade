@@ -7,8 +7,8 @@ from ..analysis import (
     infer_expr_type,
     is_integer_type,
     normalize_type,
-    parse_source_facts,
 )
+from ..constant_evaluation import integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     find_matching_open as _find_matching_open,
@@ -28,8 +28,6 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from .numeric_constant_helpers import integer_constant_values
-from .numeric_scope import shift_call_bindings, vars_for_argument as _vars_for_argument
 from .numeric_shift import constant_shift_replacement, runtime_shift_replacement
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
@@ -449,10 +447,10 @@ def _replace_shift_builtin(
         return current, [], []
     all_fixes: list[Fix] = []
     while True:
-        mask = code_mask(current)
-        constant_values = integer_constant_values(current, rule_context.config.source_ast)
-        facts = parse_source_facts(current)
-        call_bindings = shift_call_bindings(current, facts)
+        current_context = rule_context.with_source(current)
+        mask = current_context.code_mask
+        constant_values = integer_constant_values(current, rule_context.compiler_facts.ast)
+        facts = current_context.facts
         fixes: list[Fix] = []
         diagnostics: list[Diagnostic] = []
         edits: list[TextEdit] = []
@@ -483,7 +481,7 @@ def _replace_shift_builtin(
             replacement = (
                 constant_shift_replacement(value, amount)
                 if amount is not None else runtime_shift_replacement(
-                    value, shift_by, call_bindings.get(line_number(current, match.start()), {}), facts,
+                    value, shift_by, facts.vars_at_line(line_number(current, match.start())), facts,
                     constant_values,
                 )
             )
@@ -570,12 +568,7 @@ def _redundant_integer_convert(
         if args is None or len(args) != 2:
             continue
         expr, target = args[0].strip(), args[1].strip()
-        vars_for_line = _vars_for_argument(
-            source,
-            open_index + 1 + source[open_index + 1 : close].find(args[0]),
-            expr,
-            facts.vars_at_line(line_number(source, match.start())),
-        )
+        vars_for_line = facts.vars_at_line(line_number(source, match.start()))
         if (
             is_integer_type(target)
             and _inside_constant_declaration_line(source, match.start())

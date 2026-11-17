@@ -6,7 +6,7 @@ import tokenize
 from collections.abc import Iterator
 
 from ..analysis import SourceFacts
-from ..ast_facts import iter_nodes, node_span, root_ast
+from ..ast_facts import CompilerSource, iter_nodes, node_span, root_ast
 from ..models import Diagnostic, Fix
 from .legacy_call_helpers import iter_calls, replace_identifier_call
 from ..rule_helpers import (
@@ -37,75 +37,36 @@ from ..source import (
     split_top_level_args,
     span_is_code,
 )
-from ..versions import VyperVersion
+from ..versions import VyperVersion, version_pragmas
 
 
 def _pragma(rule_context: RuleContext) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
     config = rule_context.config
-    if config.strip_pragma:
-        return _strip_version_pragmas(rule_context)
-
-    fixes: list[Fix] = []
-    mask = rule_context.code_mask
-    pattern = re.compile(
-        r"^([ \t]*)#[ \t]*(?:@version|pragma[ \t]+version)[ \t]+(.+?)[ \t]*$", re.MULTILINE
-    )
-    matched = False
-
-    def repl(match: re.Match[str]) -> str:
-        nonlocal matched
-        if not _line_match_starts_outside_string(source, mask, match.start()):
-            return match.group(0)
-        matched = True
-        before = match.group(0)
-        after = f"{match.group(1)}#pragma version {config.target_version}"
-        if before != after:
-            fixes.append(
-                Fix(
-                    "VY001",
-                    line_number(source, match.start()),
-                    "modernized version pragma",
-                    before,
-                    after,
-                )
-            )
-        return after
-
-    rewritten = pattern.sub(repl, source)
-    if matched:
-        return rewritten, fixes, []
-    pragma = f"#pragma version {config.target_version}\n"
-    fixes.append(Fix("VY001", 1, "added version pragma", "", pragma.rstrip()))
-    return pragma + rewritten, fixes, []
-
-
-def _strip_version_pragmas(
-    rule_context: RuleContext,
-) -> tuple[str, list[Fix], list[Diagnostic]]:
-    source = rule_context.source
-    mask = rule_context.code_mask
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
-    pattern = re.compile(
-        r"^[ \t]*#[ \t]*(?:@version|pragma[ \t]+version)[ \t]+[^\r\n]*"
-        r"(?:\r\n|\n|\r|$)",
-        re.MULTILINE,
-    )
-    for match in pattern.finditer(source):
-        if not _line_match_starts_outside_string(source, mask, match.start()):
-            continue
-        before = match.group(0).rstrip("\r\n")
-        edits.append(TextEdit(match.start(), match.end(), ""))
-        fixes.append(
-            Fix(
-                "VY001",
-                line_number(source, match.start()),
-                "removed version pragma",
-                before,
-                "",
-            )
-        )
+    matched = False
+    for match in version_pragmas(source):
+        matched = True
+        before = source[match.start() : match.start("eol")]
+        if config.strip_pragma:
+            after = ""
+            end = match.end()
+            message = "removed version pragma"
+        else:
+            after = f"{match['indent']}#pragma version {config.target_version}"
+            end = match.start("eol")
+            message = "modernized version pragma"
+        if before != after:
+            edits.append(TextEdit(match.start(), end, after))
+            fixes.append(Fix("VY001", line_number(match.string, match.start()), message, before, after))
+
+    if not matched and not config.strip_pragma:
+        first_newline = re.search(r"\r\n|[\r\n]", source)
+        newline = first_newline[0] if first_newline else "\n"
+        pragma = f"#pragma version {config.target_version}"
+        edits.append(TextEdit(0, 0, pragma + newline))
+        fixes.append(Fix("VY001", 1, "added version pragma", "", pragma))
     return apply_edits(source, edits), fixes, []
 
 
@@ -179,15 +140,23 @@ def _legacy_type_units(rule_context: RuleContext) -> tuple[str, list[Fix], list[
 def _runtime_string_literals(rule_context: RuleContext) -> dict[tuple[int, int], str]:
     # Starting with 0.3.1, revert reasons are string expressions too. These
     # compilers emit one byte per code point for a runtime Str expression.
-    source_ast = rule_context.config.source_ast
+    source_ast = rule_context.compiler_facts.ast
     floor = rule_context.migration.source_floor
-    if source_ast is None or floor is None or floor < VyperVersion("0.3.1"):
+    if (
+        source_ast is None
+        or rule_context.source != rule_context.original_source
+        or floor is None
+        or floor < VyperVersion("0.3.1")
+    ):
         return {}
 
     try:
         root = root_ast(source_ast)
     except TypeError:
         return {}
+    coordinates = CompilerSource(rule_context.source)
+    root_span = node_span(root)
+    source_id = root_span.source_id if root_span is not None else 0
     fields = {"Return": "value", "Raise": "exc", "Assert": "msg"}
     values = {}
     for node in iter_nodes(root):
@@ -195,7 +164,7 @@ def _runtime_string_literals(rule_context: RuleContext) -> dict[tuple[int, int],
         literal = node.get(field) if field else None
         if not isinstance(literal, dict) or literal.get("ast_type") != "Str":
             continue
-        span = node_span(literal)
+        span = coordinates.span(literal, source_id=source_id)
         value = literal.get("value")
         if span is not None and isinstance(value, str):
             values[span.start, span.end] = value
@@ -244,7 +213,7 @@ def _ascii_string_literals(rule_context: RuleContext) -> tuple[str, list[Fix], l
             replacement = f"convert({payload!r}, String[{len(payload)}])"
             edits.append(TextEdit(start, end, replacement))
             fixes.append(Fix(
-                "VY224", line, "preserved legacy string literal bytes", token.string, replacement,
+                "VY224", line, "preserved legacy string literal bytes", source[start:end], replacement,
             ))
     return apply_edits(source, edits), fixes, diagnostics
 

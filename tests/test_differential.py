@@ -113,6 +113,37 @@ def _outcome(deployment, signature: str, *args: int) -> int | str:
         return "revert"
 
 
+def test_named_tuple_index_preserves_checked_unsigned_conversion(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+SIGNED_MEMBER: constant(uint256) = 1
+
+@external
+@pure
+def is_zero(pair: (uint256, int256)) -> bool:
+    return convert(pair[SIGNED_MEMBER], uint256) == 0
+""")
+    for member, expected in ((-1, "revert"), (0, 1), (1, 0)):
+        for deployment in deployments:
+            assert _outcome(deployment, "is_zero((uint256,int256))", 4, member) == expected
+
+
+@pytest.mark.parametrize("index", ["1", "BOOL_MEMBER"])
+def test_tuple_assignment_preserves_signed_membership(tmp_path, index):
+    deployments = _migration_pair(tmp_path, f"""# @version 0.3.10
+BOOL_MEMBER: constant(uint256) = 1
+
+@external
+@pure
+def selected(first: uint256) -> bool:
+    pair: (uint256, bool) = (first, False)
+    for k in range(-2, 2):
+        pair[{index}] = k in [0, 1, 2]
+    return pair[{index}]
+""")
+    for deployment in deployments:
+        assert _outcome(deployment, "selected(uint256)", 4) == 1
+
+
 def test_runtime_shift_amounts_preserve_executed_results(tmp_path):
     deployments = _migration_pair(tmp_path, """# @version 0.3.10
 @external
@@ -425,6 +456,51 @@ def write(i: uint256, x: uint256):
     assert report.abi_equal and report.method_ids_equal
     assert report.storage_layout_equal is False
     assert [blocker.code for blocker in decision.blockers] == ["storage_layout_changed"]
+
+
+def test_positional_imported_custom_error_preserves_revert_payload(tmp_path):
+    (tmp_path / "errors.vy").write_text(
+        "#pragma version >=0.5.0b1\nerror InsufficientBalance:\n"
+        "    available: uint256\n    required: uint256\n"
+    )
+    source = """#pragma version 0.5.0b1
+import errors
+
+@external
+def withdraw(amount: uint256):
+    # The fullwidth "a" binds to the same name and occupies three UTF-8 bytes.
+    assert \uff41mount == 0, errors.InsufficientBalance(
+        (self.balance),  # observed balance
+        amount,
+    )
+
+@external
+def observe(amount: uint256) -> Bytes[68]:
+    ok: bool = False
+    data: Bytes[68] = b""
+    ok, data = raw_call(
+        self, concat(method_id("withdraw(uint256)"), convert(amount, bytes32)),
+        max_outsize=68, revert_on_failure=False,
+    )
+    assert not ok
+    return data
+"""
+    path = tmp_path / "entry.vy"
+    path.write_text(source)
+    config = Config(paths=(path,), target_version="0.5.0b2")
+    batch = engine.prepare_migrations([engine.bounded_migration_request(path, source, config)], config)
+    assert engine.validate_migrations(batch, config).status == "passed", batch.reports
+    migration = batch.files[0]
+    assert "available=(self.balance),  # observed balance" in migration.rewrite.source
+    assert "required=amount," in migration.rewrite.source
+
+    selector = keccak(text="InsufficientBalance(uint256,uint256)")[:4]
+    for code, version in ((source, "0.5.0b1"), (migration.rewrite.source, "0.5.0b2")):
+        vm, sender, address = _deploy(path, code, version)
+        result = vm.call({"from": sender, "to": address, "data": _calldata("observe(uint256)", (37,))})
+        expected = selector + bytes(32) + (37).to_bytes(32, "big")
+        header = (32).to_bytes(32, "big") + len(expected).to_bytes(32, "big")
+        assert bytes.fromhex(result[2:]) == header + expected.ljust(96, b"\0")
 
 
 def test_beta_factory_deploys_forwarder_after_explicit_opt_in(tmp_path):

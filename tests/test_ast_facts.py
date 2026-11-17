@@ -1,8 +1,86 @@
 from __future__ import annotations
 
-from vyupgrade.ast_facts import calls, integer_constants, node_span, root_ast, source_segment
+import hashlib
+
+import pytest
+
+from vyupgrade.ast_facts import (
+    CompilerSource,
+    SourceSpan,
+    calls,
+    compiler_source_sha256,
+    integer_constants,
+    node_span,
+    root_ast,
+    source_segment,
+)
 from vyupgrade.analysis import infer_expr_type, parse_source_facts
 from vyupgrade.vyper_builtins import BUILTIN_INTERFACES
+
+
+def test_compiler_source_translates_mixed_newlines_without_changing_captured_text():
+    original = "é\r\nB\rC\nD"
+    compiler = CompilerSource(original)
+    normalized = "é\nB\nC\nD"
+    assert compiler.normalized == normalized
+    assert compiler_source_sha256(original) == hashlib.sha256(normalized.encode()).hexdigest()
+    assert compiler.matches_digest(compiler_source_sha256(original))
+    assert not compiler.matches_digest(hashlib.sha256(original.encode()).hexdigest())
+    assert not compiler.matches_digest(None)
+    assert [compiler.original_offset(i) for i in range(len(normalized) + 1)] == [
+        0,
+        1,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+    ]
+    assert compiler.original_offset(-1) is None
+    assert compiler.original_offset(len(normalized) + 1) is None
+    span = compiler.span({"src": "2:3:4"}, source_id=4)
+    assert span == SourceSpan(original.index("B"), 3, 4)
+    assert source_segment(original, span) == "B\rC"
+
+
+def test_compiler_source_resolves_byte_columns_on_each_endpoint():
+    source = "é\r\n  ï + (û\r     + ô)\n"
+    compiler = CompilerSource(source)
+    # b1 adds byte columns to line starts measured in normalized characters.
+    line_two, line_three = 2, 11
+    first_column = len("  ï + ".encode())
+    last_column = len("     + ô)".encode())
+    raw_start, raw_end = line_two + first_column, line_three + last_column
+    node = {
+        "src": f"{raw_start}:{raw_end - raw_start}:2",
+        "lineno": 2,
+        "col_offset": first_column,
+        "end_lineno": 3,
+        "end_col_offset": last_column,
+    }
+    span = compiler.span(node, source_id=2, byte_columns=True)
+    assert source_segment(source, span) == "(û\r     + ô)"
+    assert compiler.span(node, source_id=1, byte_columns=True) is None
+    assert (
+        compiler.span(dict(node, col_offset=first_column + 1), source_id=2, byte_columns=True)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "positions",
+    [
+        {"src": "0:2:0", "lineno": 1, "col_offset": 1, "end_lineno": 1, "end_col_offset": 2},
+        {"src": "1:1:0", "lineno": 1, "col_offset": 1, "end_lineno": 1, "end_col_offset": 2},
+        {"src": "0:8:0", "lineno": 1, "col_offset": 0, "end_lineno": 1, "end_col_offset": 8},
+        {"src": "0:2:0", "lineno": True, "col_offset": 0, "end_lineno": 1, "end_col_offset": 2},
+        {"src": "0:1:0"},
+        {"src": "not a span"},
+    ],
+)
+def test_compiler_source_rejects_inconsistent_or_non_utf8_boundary_evidence(positions):
+    assert CompilerSource("é").span(positions, source_id=0, byte_columns=True) is None
 
 
 def test_ast_facts_extract_integer_constants() -> None:
@@ -209,3 +287,10 @@ agg: Aggregator
     facts = parse_source_facts(source)
 
     assert infer_expr_type("(agg.latestRoundData())[1]", facts.vars_at_line(4), facts) == "int256"
+
+
+def test_compiler_source_checks_ordinary_ast_character_columns_if_present():
+    compiler = CompilerSource("é\r\nüτ()")
+    node = {"src": "3:3:0", "lineno": 2, "col_offset": 1, "end_lineno": 2, "end_col_offset": 4}
+    assert source_segment(compiler.original, compiler.span(node, source_id=0)) == "τ()"
+    assert compiler.span(dict(node, end_col_offset=5), source_id=0) is None

@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from .models import Config, Diagnostic, Fix, RewriteResult
+from .models import CompilerFacts, Config, Diagnostic, Fix, RewriteResult
 from .rule_groups.comparisons import RULES as COMPARISON_RULES
+from .rule_groups.custom_errors import RULES as CUSTOM_ERROR_RULES
 from .rule_groups.data_lifecycle import (
     CONSTRUCTOR_RULES as DATA_CONSTRUCTOR_RULES,
     ENUM_RULES as DATA_ENUM_RULES,
@@ -50,13 +51,21 @@ from .rule_registry import (
 from .versions import MigrationContext, infer_pragma
 
 
-def apply_rules(source: str, config: Config, path: Path | None = None) -> RewriteResult:
+def apply_rules(
+    source: str, config: Config, path: Path | None = None, *,
+    compiler_facts: CompilerFacts | None = None,
+) -> RewriteResult:
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     context = MigrationContext.from_specs(
         config.source_version or infer_pragma(source), config.target_version
     )
-    rule_context = RuleContext(source, config, context, path, RULE_CHANGES)
+    if compiler_facts is None:
+        compiler_facts = CompilerFacts(ast=config.source_ast)
+    rule_context = RuleContext(
+        source, config, context, path, RULE_CHANGES, original_source=source,
+        compiler_facts=compiler_facts,
+    )
     if context.source_spec_unsupported():
         return _blocked_source_version_result(
             source,
@@ -73,7 +82,7 @@ def apply_rules(source: str, config: Config, path: Path | None = None) -> Rewrit
     current = source
     for rule in _runnable_rules():
         current, rule_fixes, rule_diagnostics = rule(rule_context)
-        rule_context = rule_context.with_source(current)
+        rule_context = rule_context.with_source(current, tuple(rule_fixes))
         fixes.extend(rule_fixes)
         diagnostics.extend(rule_diagnostics)
 
@@ -105,6 +114,7 @@ METADATA_RULES = (
 )
 
 RULES = (
+    *CUSTOM_ERROR_RULES,
     *LEGACY_EARLY_RULES,
     *LEGACY_INTERFACE_RULES,
     *LEGACY_POST_INTERFACE_RULES,

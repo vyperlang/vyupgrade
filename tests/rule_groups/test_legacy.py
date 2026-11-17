@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from vyupgrade.rules import apply_rules
+from vyupgrade.versions import infer_pragma
 
 
 def test_docstring_only_function_body_gets_pass_for_0_4_target(config) -> None:
@@ -259,6 +262,21 @@ def f():
     assert "#pragma version 0.3.10" in after.source
 
 
+@pytest.mark.parametrize("newline", ["\r", "\r\n", "\n"])
+def test_version_directive_edits_preserve_physical_source_lines(config, newline):
+    header = '"""\n# @version 0.2.8\n"""\n# documentation\n'.replace("\n", newline)
+    directive = "# @version 0.3.10" + newline
+    body = "@external" + newline + "def run(): pass" + newline
+    source = header + directive + body
+    assert infer_pragma(source) == "0.3.10"
+    only_pragma = {"select": frozenset({"VY001"})}
+    assert apply_rules(source, config(**only_pragma)).source == (
+        header + "#pragma version 0.4.3" + newline + body
+    )
+    assert apply_rules(source, config(strip_pragma=True, **only_pragma)).source == header + body
+    assert apply_rules(body, config(**only_pragma)).source == "#pragma version 0.4.3" + newline + body
+
+
 def test_pragma_updates_existing_pragma_version(config) -> None:
     source = """# pragma version 0.3.10
 @external
@@ -416,6 +434,21 @@ def f():
     assert apply_rules(result.source, settings).source == result.source
     diagnostic_only = config(source_ast=source_ast, select=frozenset({"VYD024"}))
     assert apply_rules(source, diagnostic_only).source == source
+
+
+def test_non_ascii_string_literals_in_cr_only_source(config) -> None:
+    # A comment must end at the CR instead of hiding the rest of the file.
+    source = '# @version 0.3.7\r# note\r@external\rdef f() -> String[2]:\r    return "é"\r'
+    text = '"é"'
+    literal = {"ast_type": "Str", "value": "é", "src": f"{source.index(text)}:{len(text)}:0"}
+    rules = frozenset({"VY224", "VYD024"})
+
+    result = apply_rules(source, config(source_ast={"ast_type": "Return", "value": literal}, select=rules))
+    unverified = apply_rules(source, config(select=rules))
+
+    assert "    return convert(b'\\xe9', String[1])\r" in result.source
+    assert [(fix.rule, fix.line) for fix in result.fixes] == [("VY224", 5)]
+    assert [(d.rule, d.line) for d in unverified.diagnostics] == [("VYD024", 5)]
 
 
 def test_non_ascii_string_diagnostic_needs_a_verified_runtime_literal(config) -> None:

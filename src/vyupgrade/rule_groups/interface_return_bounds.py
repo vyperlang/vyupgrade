@@ -32,6 +32,7 @@ from ..source import (
     find_matching,
     line_number,
     line_starts_in_code,
+    lone_cr_as_lf,
     span_is_code,
 )
 
@@ -74,6 +75,8 @@ def _widen_interface_return_bounds(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
+    # Lexical offsets stay valid in the original text, including at lone CRs.
+    rule_context = rule_context.with_source(lone_cr_as_lf(source))
     declarations = _return_declarations(rule_context)
     if not declarations:
         return source, [], []
@@ -179,7 +182,7 @@ def _module_implementation_returns(rule_context: RuleContext) -> Iterator[dict[s
     for member, content in snapshot.contents.items():
         if member.suffix != ".vy" or b"implements" not in content:
             continue
-        source = content.decode("utf-8")
+        source = lone_cr_as_lf(content.decode("utf-8"))
         if interface in _implemented_modules(snapshot, member, source):
             yield _implementation_returns(parse_source_facts(source))
 

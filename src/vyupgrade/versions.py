@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from .source import code_mask, line_starts_in_code
+from .source import code_mask, line_starts_in_code, lone_cr_as_lf
 
 
-PRAGMA_RE = re.compile(r"^\s*#\s*(?:@version|pragma\s+version)\s+(.+?)\s*$", re.MULTILINE)
+PRAGMA_RE = re.compile(
+    r"^(?P<indent>[ \t]*)#[ \t]*(?:@version|pragma[ \t]+version)[ \t]+"
+    r"(?P<spec>[^\r\n]*?)[ \t]*(?P<eol>\r?\n|$)",
+    re.MULTILINE,
+)
 VERSION_RE = re.compile(r"0\.(?:1|2|3|4|5)\.\d+(?:(?:a|b|rc)\d+)?")
 # PyPI has no final 0.1.0 release; these are the installable Vyper releases before 0.2.1.
 LEGACY_PRERELEASE_VERSIONS = tuple(f"0.1.0b{number}" for number in range(1, 18))
@@ -83,12 +88,17 @@ class MigrationContext:
         return not self.source_spec_unsupported() and not self.source_newer_than_target()
 
 
+def version_pragmas(source: str) -> Iterator[re.Match[str]]:
+    """Find directive lines. Match offsets also address the captured source."""
+    lexical = lone_cr_as_lf(source)
+    mask = code_mask(lexical)
+    for match in PRAGMA_RE.finditer(lexical):
+        if line_starts_in_code(lexical, mask, match.start()):
+            yield match
+
+
 def infer_pragma(source: str) -> str | None:
-    mask = code_mask(source)
-    for match in PRAGMA_RE.finditer(source):
-        if line_starts_in_code(source, mask, match.start()):
-            return match.group(1).strip()
-    return None
+    return next((match["spec"] for match in version_pragmas(source) if match["spec"]), None)
 
 
 def parse_version(raw: str | None) -> VyperVersion | None:

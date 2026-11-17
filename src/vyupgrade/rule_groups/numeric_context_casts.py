@@ -11,6 +11,7 @@ from ..analysis import (
     iterable_element_type,
     normalize_type,
 )
+from ..constant_evaluation import integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, RuleContext, crossing
@@ -30,8 +31,7 @@ from .numeric_casts import (
     cast_integer_arg_to_expected,
     inside_convert_call,
 )
-from .numeric_constant_helpers import constant_range_iteration_bound, integer_constant_values
-from .numeric_scope import vars_for_argument as _vars_for_argument
+from .numeric_constant_helpers import constant_range_iteration_bound
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -160,12 +160,11 @@ def _unsigned_range_bound_signed_constants(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    config = rule_context.config
     facts = rule_context.facts
     mask = rule_context.code_mask
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    constant_values = integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, rule_context.compiler_facts.ast)
     for match in re.finditer(
         r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?P<loop_type>uint(?:\d+)?)\s+in\s+range\s*\(",
         source,
@@ -287,7 +286,6 @@ def _typed_external_call_arguments(
             if arg_start == -1:
                 cursor += len(arg) + 1
                 continue
-            vars_for_arg = _vars_for_argument(source, arg_start, arg, vars_for_line)
             bytes_replacement = (
                 _dynamic_bytes_hex_arg_replacement(arg, expected)
                 if rule_context.is_enabled("VY053")
@@ -309,7 +307,7 @@ def _typed_external_call_arguments(
             if not rule_context.is_enabled("VY052"):
                 cursor = arg_start + len(arg) + 1
                 continue
-            replacement = cast_integer_arg_to_expected(arg, expected, vars_for_arg, facts)
+            replacement = cast_integer_arg_to_expected(arg, expected, vars_for_line, facts)
             if replacement == arg:
                 cursor = arg_start + len(arg) + 1
                 continue

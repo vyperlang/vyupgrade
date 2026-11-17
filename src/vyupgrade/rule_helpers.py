@@ -13,6 +13,7 @@ from .source import (
     find_matching,
     find_matching_open as find_matching_open,
     line_number,
+    line_offsets as line_offsets,
     line_starts_in_code,
     span_is_code,
 )
@@ -53,13 +54,6 @@ def innermost_non_overlapping(
         selected.append((edit, fix))
     selected.sort(key=lambda item: item[0].start)
     return [edit for edit, _fix in selected], [fix for _edit, fix in selected]
-
-
-def line_offsets(source: str) -> list[int]:
-    offsets = [0]
-    for match in re.finditer("\n", source):
-        offsets.append(match.end())
-    return offsets
 
 
 def strip_arg_comments(raw_args: str) -> str:
@@ -131,7 +125,7 @@ def is_keyword_argument_name(source: str, start: int, end: int) -> bool:
 def implemented_interface_names(source: str) -> set[str]:
     mask = code_mask(source)
     names: set[str] = set()
-    for match in re.finditer(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
+    for match in re.finditer(r"^[ \t]*implements[ \t]*:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
         if not span_is_code(mask, match.start(1), match.end(1)):
             continue
         names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group(1)))

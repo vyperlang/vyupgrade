@@ -20,6 +20,7 @@ from .interfaces import split_interfaces_to_vyi
 from .models import (
     CompileAttempt,
     CompilerDeclaration,
+    CompilerFacts,
     ContentIdentity,
     DeclaredSpec,
     DependencyContext,
@@ -175,15 +176,11 @@ def prepare_migrations(
         source_compiler = source_compile.resolved_compiler or (
             attempt.compiler_label if attempt is not None else None
         )
-        source_ast = source_compile.artifacts.get("ast") if source_compile.artifacts else None
-        # Config.source_ast remains the compatibility bridge for rules, but this
-        # derived config belongs to this file and is never reused by another file.
-        file_config = replace(
-            config,
-            source_version=source_version,
-            source_ast=source_ast if isinstance(source_ast, dict) else None,
+        file_config = replace(config, source_version=source_version, source_ast=None)
+        facts = CompilerFacts.from_artifacts(
+            source_compile.artifacts if source_compile.status in {"passed", "degraded"} else None
         )
-        rewrite = apply_rules(request.original, file_config, request.path)
+        rewrite = apply_rules(request.original, file_config, request.path, compiler_facts=facts)
         if (
             config.split_interfaces
             and request.path.suffix == ".vy"

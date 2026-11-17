@@ -35,9 +35,9 @@ modern Python interpreter.
   compiler-bundled `math` module, which Vyper resolves before any search path,
   is stateless. Unresolved modules and unsupported declarations remain
   unchanged and are checked by target validation.
-- Positional custom error arguments rejected: validation-only. No rewrite yet
-  converts positional arguments to keyword arguments, so target validation
-  rejects them.
+- Positional custom error arguments rejected. `VY127` inserts field names
+  from a compiler-resolved custom error declaration when the annotated source
+  matches the captured input. Target validation handles calls without this evidence.
 - Zero-length `DynArray`s added: no-op. This is newly accepted source.
 - Ternary expressions in constant initializers added: no-op. This is newly
   accepted source.
@@ -208,7 +208,10 @@ modern Python interpreter.
   `staticcall`. `VY042` parenthesizes keyworded calls before subscripting.
   `VY057` assigns ignored `staticcall` results to a generated local variable
   when the interface return type is known. `VYD003` flags calls whose mutability
-  cannot be inferred.
+  cannot be inferred. Managed `0.3.10` supplies resolved call modes and return
+  types. The rule matches call spans to the candidate after earlier edits,
+  including known interface renames, and checks the target declaration.
+  Other cases use block-scoped source facts.
 - Integer division uses `//`: `VY050` rewrites proven integer division.
   `VYD004` flags ambiguous `/` expressions.
 - Redundant integer `convert(...)` calls rejected by modern Vyper: `VY051`
@@ -257,10 +260,12 @@ modern Python interpreter.
   `String` when the source AST confirms a direct return, raise reason, or
   assertion message and every decoded code point fits in one byte. `VYD024`
   asks for review when the source evidence or expression context is insufficient.
-- Local interface mutability is checked more strictly: `VY014` changes
-  `nonpayable` interface entries to `view` when the implementation is a view
-  function or `public(...)` getter, and changes `@pure` implementations to
-  `@view` when an implemented interface requires a view method.
+- Local interface mutability is checked more strictly. `VY014` can update
+  the declaration for conformance when the affected method has no outgoing
+  uses, or change a pure implementation to match a view declaration. `VYD025`
+  flags changes that could switch an outgoing call between `CALL` and
+  `STATICCALL` or allow an entry point to accept ETH. Those changes require
+  `--aggressive`; artifact differences still require their own waivers.
 - Pure functions may no longer read immutable state: `VY015` changes `@pure`
   functions to `@view` when source facts show the function body references a
   top-level `immutable(...)` binding.

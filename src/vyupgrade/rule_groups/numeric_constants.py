@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterator
 
 from ..analysis import SourceFacts, infer_expr_type, normalize_type
+from ..constant_evaluation import eval_integer_constant_expr, integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_registry import Rule, RuleContext, crossing
 from ..rule_helpers import (
@@ -22,7 +23,6 @@ from ..source import (
     split_top_level_arg_spans,
     span_is_code,
 )
-from .numeric_constant_helpers import eval_integer_constant_expr, integer_constant_values
 
 _INTEGER_BITS = "|".join(str(bits) for bits in range(8, 257, 8))
 _SIGNED_INTEGER_TYPE = rf"int(?:{_INTEGER_BITS})"
@@ -32,7 +32,6 @@ def _constant_integer_decl_casts(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    config = rule_context.config
     facts = rule_context.facts
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -55,7 +54,7 @@ def _constant_integer_decl_casts(
         actual_type = infer_expr_type(value, vars_for_line, facts)
         if actual_type is not None and normalize_type(actual_type) == expected_type:
             continue
-        folded = eval_integer_constant_expr(value, integer_constant_values(source, config.source_ast))
+        folded = eval_integer_constant_expr(value, integer_constant_values(source, rule_context.compiler_facts.ast))
         if folded is None or not _integer_value_fits_type(folded, expected_type):
             continue
         before = match.group(0)
@@ -87,7 +86,6 @@ def _constant_exponent_literals_context(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    config = rule_context.config
     facts = rule_context.facts
     mask = rule_context.code_mask
     edits: list[TextEdit] = []
@@ -144,7 +142,7 @@ def _constant_exponent_literals_context(
                 replacement,
             )
         )
-    constant_values = integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, rule_context.compiler_facts.ast)
     for name, value in constant_values.items():
         if value < 0:
             continue

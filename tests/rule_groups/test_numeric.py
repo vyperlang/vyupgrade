@@ -1293,3 +1293,24 @@ def unpack(packed: uint256, epoch: uint256) -> uint256:
     assert "return (previous << 120) | (epoch << 240)" in result.source
     assert "if epoch < (packed >> 240):" in result.source
     assert "return (packed >> 120)" in result.source
+
+
+def test_range_type_inference_does_not_leak_iterator_into_sibling_suite(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def check(items: uint256[2][2], accounts: address[2], first: bool):
+    if first:
+        for batch in items:
+            for item in batch:
+                assert item > 0
+    else:
+        batch: address[2] = accounts
+        for item in batch:
+            assert item != empty(address)
+"""
+    settings = config(select=frozenset({"VY070"}))
+    result = apply_rules(source, settings)
+    assert "for item: uint256 in batch:" in result.source
+    assert "for item: address in batch:" in result.source
+    assert apply_rules(result.source, settings).source == result.source

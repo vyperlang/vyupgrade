@@ -19,13 +19,22 @@ from pathlib import Path
 
 _VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*)?\b")
 _MANAGED_WORKER_ARGUMENT = "--managed-compiler-worker"
+SOURCE_EVIDENCE_FORMATS = {
+    "0.3.10": "external_calls_v1",
+    "0.5.0a3": "annotated_ast",
+    "0.5.0b1": "annotated_ast",
+}
 
 
 def main() -> None:
     if sys.argv[1:2] == [_MANAGED_WORKER_ARGUMENT]:
-        _managed_compiler_worker(sys.argv[2:])
+        _managed_compiler_worker(sys.argv[3:], sys.argv[2] or None)
         return
     result_path, timeout, managed_value, coherence, *command = sys.argv[1:]
+    requested = ()
+    if managed_value == "managed" and command[:1] == ["--source-evidence"]:
+        requested = command[1].split(",")
+        command = command[2:]
     destination = Path(result_path)
     managed = managed_value == "managed"
     _write_result(destination, {"state": "started"})
@@ -71,9 +80,12 @@ def main() -> None:
         )
         return
 
+    capability = SOURCE_EVIDENCE_FORMATS.get(resolved_compiler)
     try:
         process = (
-            _run_managed_compiler(command, float(timeout))
+            _run_managed_compiler(
+                command, float(timeout), capability if capability in requested else None
+            )
             if managed and command and command[0] == "vyper"
             else _run_explicit_compiler(command, float(timeout))
         )
@@ -114,24 +126,41 @@ def main() -> None:
             "returncode": process["returncode"],
             "stdout": process["stdout"],
             "stderr": process["stderr"],
+            "rewrite_evidence": process.get("rewrite_evidence"),
             **evidence,
         },
     )
 
 
-def _run_managed_compiler(command: list[str], timeout: float) -> dict[str, object]:
-    process = subprocess.run(
-        [
-            sys.executable,
-            *(("-S",) if sys.flags.no_site else ()),
-            str(Path(__file__).resolve()),
-            _MANAGED_WORKER_ARGUMENT,
-            *command,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+def _run_managed_compiler(
+    command: list[str], timeout: float, evidence_format: str | None = None
+) -> dict[str, object]:
+    # The worker flushes the completed CLI result before querying optional
+    # metadata. A timeout or crash after that boundary cannot erase validation.
+    try:
+        process = subprocess.run(
+            [
+                sys.executable,
+                *(("-S",) if sys.flags.no_site else ()),
+                str(Path(__file__).resolve()),
+                _MANAGED_WORKER_ARGUMENT,
+                evidence_format or "",
+                *command,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if evidence_format:
+            checkpoint = _completed_worker_result(_timeout_text(exc.stdout), evidence_format)
+            if checkpoint is not None:
+                return checkpoint
+        raise
+    if evidence_format:
+        checkpoint = _completed_worker_result(process.stdout, evidence_format)
+        if checkpoint is not None:
+            return checkpoint
     if process.returncode != 0:
         signaled = process.returncode < 0
         return {
@@ -162,11 +191,76 @@ def _run_managed_compiler(command: list[str], timeout: float) -> dict[str, objec
     return result
 
 
-def _managed_compiler_worker(command: list[str]) -> None:
-    sys.stdout.write(json.dumps(_managed_compiler_result(command)))
+def _completed_worker_result(output: str, evidence_format: str) -> dict | None:
+    required_line, newline, optional_line = output.partition("\n")
+    if not newline:
+        return None
+    try:
+        result = json.loads(required_line)
+    except ValueError:
+        return None
+    if (
+        not isinstance(result, dict)
+        or result.get("completion_status") != "completed"
+        or type(result.get("returncode")) is not int
+        or not isinstance(result.get("stdout"), str)
+        or not isinstance(result.get("stderr"), str)
+        or "failure_origin" not in result
+    ):
+        return None
+    if result.get("returncode") == 0 and optional_line.endswith("\n"):
+        try:
+            evidence = json.loads(optional_line)
+        except ValueError:
+            return result
+        if isinstance(evidence, dict):
+            result["rewrite_evidence"] = {evidence_format: evidence}
+    return result
 
 
-def _managed_compiler_result(command: list[str]) -> dict[str, object]:
+def _managed_compiler_worker(command: list[str], evidence_format: str | None) -> None:
+    captured = [] if evidence_format else None
+    required = _managed_compiler_result(command, captured)
+    print(json.dumps(required), flush=True)
+    if not captured or len(captured) != 1 or required["returncode"] != 0:
+        return
+    try:
+        # Optional printers must never leak diagnostics into the required CLI
+        # output or the worker's two JSON records.
+        with contextlib.redirect_stdout(sys.stderr):
+            evidence = _collect_source_evidence(captured[0], evidence_format)
+        if evidence is not None:
+            print(json.dumps(evidence), flush=True)
+    except Exception:
+        # Compiler internals vary. The first record is already complete.
+        pass
+
+
+@contextlib.contextmanager
+def _capture_compiler_data(captured):
+    if captured is None:
+        yield
+        return
+    try:
+        formats = importlib.import_module("vyper.compiler").OUTPUT_FORMATS
+        original = formats["ast_dict"]
+    except (ImportError, AttributeError, KeyError):
+        yield
+        return
+
+    def remember(data):
+        raw_ast = original(data)
+        captured.append(data)
+        return raw_ast
+
+    formats["ast_dict"] = remember
+    try:
+        yield
+    finally:
+        formats["ast_dict"] = original
+
+
+def _managed_compiler_result(command: list[str], captured=None) -> dict[str, object]:
     with tempfile.TemporaryFile("w+", encoding="utf-8") as stdout, tempfile.TemporaryFile(
         "w+", encoding="utf-8"
     ) as stderr:
@@ -175,7 +269,8 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
             try:
                 vyper_compile = importlib.import_module("vyper.cli.vyper_compile")
                 vyper_exception_type = importlib.import_module("vyper.exceptions").VyperException
-                vyper_compile._parse_args(command[1:])
+                with _capture_compiler_data(captured):
+                    vyper_compile._parse_args(command[1:])
                 returncode = 0
                 origin = None
             except SystemExit as exc:
@@ -199,6 +294,99 @@ def _managed_compiler_result(command: list[str]) -> dict[str, object]:
             "stdout": stdout.read(),
             "stderr": stderr.read(),
         }
+
+
+def _collect_source_evidence(data, evidence_format):
+    if evidence_format == "external_calls_v1":
+        from vyper.evm.opcodes import anchor_evm_version
+
+        with anchor_evm_version(data.settings.evm_version):
+            return _external_calls_0310(data)
+    if evidence_format == "annotated_ast":
+        from vyper import ast as vy_ast
+        from vyper.compiler.output import build_annotated_ast_dict
+        from vyper.compiler.settings import anchor_settings
+
+        for node in data.vyper_module.get_descendants((vy_ast.Raise, vy_ast.Assert)):
+            reason = node.exc if isinstance(node, vy_ast.Raise) else node.msg
+            if isinstance(reason, vy_ast.Call) and reason.args:
+                with anchor_settings(data.settings):
+                    return build_annotated_ast_dict(data)
+    return None
+
+
+def _external_calls_0310(compiler_data):
+    from vyper import ast as vy_ast
+    from vyper.semantics.analysis.base import FunctionVisibility
+    from vyper.semantics.types.function import ContractFunctionT, MemberFunctionT
+    from vyper.semantics.types.subscriptable import DArrayT
+    from vyper.semantics.types.user import InterfaceT
+
+    # Vyper 0.3.10's compile_files reads with universal newlines and appends
+    # exactly one newline. The caller verifies the resulting hash against the
+    # normalized compiler view while retaining a separate raw-file identity.
+    source = compiler_data.source_code
+    if not source.endswith("\n"):
+        return {}
+    source_sha256sum = hashlib.sha256(source[:-1].encode("utf-8")).hexdigest()
+    # The regular semantic phase folds constants, including array bounds.
+    # Only export calls whose ID, full span and method survive that transformation.
+    original = {
+        (node.node_id, node.src, node.func.attr)
+        for node in compiler_data.vyper_module.get_descendants(vy_ast.Call)
+        if isinstance(node.func, vy_ast.Attribute)
+        and not (isinstance(node.func.value, vy_ast.Name) and node.func.value.id == "self")
+    }
+    if not original:
+        return None
+    calls = []
+    member_calls = []
+    for node in compiler_data.vyper_module_folded.get_descendants(vy_ast.Call):
+        callee = node.func
+        if (
+            not isinstance(callee, vy_ast.Attribute)
+            or (node.node_id, node.src, callee.attr) not in original
+        ):
+            continue
+        function = callee._metadata.get("type")
+        receiver = callee.value._metadata.get("type")
+        if receiver is None and isinstance(callee.value, vy_ast.Subscript):
+            # 0.3.10 can clear a subscript's final type after caching its
+            # analysis. Bind a sole receiver only if it owns this exact function.
+            candidates = callee.value._metadata.get("possible_types_from_node_True")
+            if isinstance(candidates, list) and len(candidates) == 1:
+                candidate = candidates[0]
+                if (
+                    isinstance(candidate, (InterfaceT, DArrayT))
+                    and candidate.members.get(callee.attr) is function
+                ):
+                    receiver = candidate
+        if (
+            isinstance(receiver, DArrayT)
+            and isinstance(function, MemberFunctionT)
+            and function.name == callee.attr
+            and callee.attr in {"append", "pop"}
+        ):
+            member_calls.append({"node_id": node.node_id, "src": node.src, "method": callee.attr})
+        elif (
+            isinstance(function, ContractFunctionT)
+            and function.visibility is FunctionVisibility.EXTERNAL
+            and isinstance(receiver, InterfaceT)
+            and function.name == callee.attr
+        ):
+            calls.append(
+                {
+                    "node_id": node.node_id,
+                    "src": node.src,
+                    "method": callee.attr,
+                    "interface": str(receiver),
+                    "mutability": function.mutability.value,
+                    "return_type": str(function.return_type)
+                    if function.return_type is not None
+                    else None,
+                }
+            )
+    return {"source_sha256sum": source_sha256sum, "calls": calls, "member_calls": member_calls}
 
 
 def _run_explicit_compiler(command: list[str], timeout: float) -> dict[str, object]:

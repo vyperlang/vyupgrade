@@ -323,6 +323,30 @@ def version() -> String[5]:
     assert _widenings(result) == []
 
 
+@pytest.mark.parametrize("endings", [("\r",), ("\r\n", "\r", "\n")])
+def test_return_bound_checks_preserve_line_endings(config, endings) -> None:
+    lines = [
+        "#pragma version 0.4.3",
+        "interface Reader:",
+        "    def data() -> Bytes[1]: view",
+        "implements: Reader",
+        "@external",
+        "@view",
+        "def data() -> Bytes[5]:",
+        '    return b"abcde"',
+    ]
+    source = "".join(line + endings[i % len(endings)] for i, line in enumerate(lines))
+    expected = source.replace("0.4.3", "0.5.0b2")
+
+    default = apply_rules(source, config(target_version="0.5.0b2"))
+    assert default.source == expected
+    assert [(d.rule, d.line) for d in default.diagnostics] == [("VYD019", 3)]
+
+    aggressive = apply_rules(source, config(target_version="0.5.0b2", aggressive=True))
+    assert aggressive.source == expected.replace("Bytes[1]", "Bytes[5]")
+    assert _widenings(aggressive) == [("Bytes[1]", "Bytes[5]")]
+
+
 @pytest.mark.parametrize(
     "options",
     [{}, {"aggressive": True, "select": ("VYD019",)},

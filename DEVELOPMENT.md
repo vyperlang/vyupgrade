@@ -53,8 +53,9 @@ The CLI flow is:
 2. `project.discover_files()` finds `.vy` and `.vyi` inputs.
 3. Resolve and capture an immutable import closure, preserving exact source bytes.
    `engine.prepare_migrations()` compiles each source snapshot under the inferred or
-   provided source compiler, gives each file its own source AST-backed config,
-   and calls `rules.apply_rules()`.
+   provided source compiler and passes that file's `CompilerFacts` to
+   `rules.apply_rules()`. The public rule-only entry point also accepts its
+   historical `Config.source_ast` argument.
 4. `rules.apply_rules()` constructs a `MigrationContext`, then runs the ordered
    rule pipeline from `RULES`.
 5. Optional interface splitting generates sibling `.vyi` files when
@@ -199,8 +200,11 @@ Use existing helpers:
 - `context.facts` for interfaces, structs, global variables, storage variables,
   function decorators, function return types, loop variables, and imported
   built-in interface facts.
-- `config.source_ast` and `ast_facts.py` when a rule needs compiler AST spans or
-  parsed constants.
+- `context.compiler_facts.ast` for the source compiler's original AST,
+  `annotated_ast` for resolved declarations, and `external_calls` for
+  verified per-call metadata. Use `CompilerSource` to translate spans from
+  the compiler's coordinate system. Match the original evidence to the
+  current revision before editing it. See [compiler-backed rewrites](docs/compiler-facts.md).
 
 Use diagnostics instead of rewrites when the safe target spelling depends on
 runtime behavior, external project context, user intent, or a semantic choice.

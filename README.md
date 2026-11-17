@@ -127,8 +127,9 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--check` — exit non-zero if any file would change; write nothing.
 - `--aggressive` — enable rewrites that change behavior or are not provably safe
   (e.g. `enum` → `flag`, widening interface return bounds for Vyper 0.5,
-  switching legacy forwarders, merging distinct named reentrancy locks into
-  the global lock, or converting a max-length array to a mapping).
+  changing external call mutability or ETH acceptance, switching legacy
+  forwarders, merging distinct named reentrancy locks into the global lock,
+  or converting a max-length array to a mapping).
   The array conversion also requires a storage-layout waiver before writing.
 - `--include-dependencies` (alias `--upgrade-closure`) — also upgrade and cross-validate the resolved import closure, including dependencies found via `--compiler-search-paths`; dependency modules are analyzed with compiler ASTs but validated through their consumer roots, and dependency sources are never rewritten in place, so `--write` additionally requires a closure destination.
 - `--closure-output DIR` — write the validated upgraded closure (project + dependencies, laid out import-root-relative so `vyper -p DIR` resolves every import) into DIR; requires `--include-dependencies`; overwrites files inside DIR, never deletes extras, never modifies dependency sources in place.
@@ -221,6 +222,13 @@ diagnostic instead of being applied.
   offset, and `VY224` preserves non-ASCII return and revert bytes for
   compiler-confirmed literal contexts. `VYD024` identifies other literals
   that need review.
+- For `0.5.0a3` and `0.5.0b1` sources migrating to `0.5.0b2`, `VY127` uses the source
+  compiler's annotated declaration to name positional custom error arguments,
+  including errors defined in imported Vyper modules.
+- Managed Vyper `0.3.10` supplies external call modes and return types during
+  source compilation. Other compilers can use block-scoped analysis to resolve
+  local receivers. `VYD025` flags an interface change that could affect outgoing
+  calls or make an entry point accept ETH. [Compiler-backed rewrites](docs/compiler-facts.md)
 - [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
   change mapped to a rule, diagnostic, explicit no-op, or validation-only
   behavior.

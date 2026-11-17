@@ -10,6 +10,7 @@ from ..analysis import (
     normalize_type,
     parse_source_facts,
 )
+from ..constant_evaluation import integer_constant_values
 from ..models import Diagnostic, Fix
 from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
@@ -29,10 +30,6 @@ from ..source import (
     span_is_code,
 )
 from .numeric_casts import inside_convert_call
-from .numeric_constant_helpers import integer_constant_values
-from .numeric_scope import (
-    nearest_loop_var_type as _nearest_loop_var_type,
-)
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -43,9 +40,8 @@ def _mixed_signed_unsigned_arithmetic(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
     source = rule_context.source
-    config = rule_context.config
     facts = rule_context.facts
-    constant_values = integer_constant_values(source, config.source_ast)
+    constant_values = integer_constant_values(source, rule_context.compiler_facts.ast)
     mask = rule_context.code_mask
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
@@ -54,8 +50,12 @@ def _mixed_signed_unsigned_arithmetic(
         if not line_starts_in_code(source, mask, offset):
             offset += len(raw_line)
             continue
-        line = raw_line.rstrip("\n")
-        code_line = line.split("#", 1)[0]
+        code_line = raw_line.rstrip("\r\n")
+        if any(char in code_line for char in "'\"#"):
+            # Keep source columns while excluding strings and comments from type evidence.
+            code_line = "".join(
+                char if mask[offset + i] else " " for i, char in enumerate(code_line)
+            ).rstrip()
         if not code_line.startswith((" ", "\t")) or not (
             re.search(r"[-+*/%<>]=?|==|!=", code_line)
             or re.search(r":\s*[^=]+=", code_line)
@@ -67,12 +67,14 @@ def _mixed_signed_unsigned_arithmetic(
             continue
         line_no = line_number(source, offset)
         vars_for_line = facts.vars_at_line(line_no)
-        lhs_type = (
-            _lhs_declared_type(code_line)
-            or _lhs_assigned_type(code_line, vars_for_line)
-            or _lhs_assigned_expr_type(code_line, vars_for_line, facts)
-        )
-        rhs_offset = _expression_start_offset(code_line)
+        rhs_offset = facts.assignment_rhs_columns.get(line_no, 0)
+        lhs_type = None
+        if rhs_offset:
+            lhs_type = (
+                _lhs_declared_type(code_line)
+                or _lhs_assigned_type(code_line, vars_for_line)
+                or _lhs_assigned_expr_type(code_line, vars_for_line, facts)
+            )
         rhs_start = offset + rhs_offset
         rhs = code_line[rhs_offset:]
         signed_max_assignment = re.fullmatch(
@@ -121,11 +123,7 @@ def _mixed_signed_unsigned_arithmetic(
             (
                 name
                 for name, type_name in vars_for_line.items()
-                if _is_signed_integer_type(
-                    _nearest_loop_var_type(source, rhs_start, name)
-                    if name in loop_vars
-                    else type_name
-                )
+                if _is_signed_integer_type(type_name)
                 and (name in facts.global_vars or name in loop_vars)
             ),
             key=len,
@@ -167,7 +165,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or (
                         comparison_target is None
                         and not _signed_name_has_unsigned_context(
-                            source, start, name, lhs_type, vars_for_line, facts
+                            rhs, match.start(), name, lhs_type, vars_for_line, facts
                         )
                     )
                 ):
@@ -187,9 +185,7 @@ def _mixed_signed_unsigned_arithmetic(
             (
                 name
                 for name in loop_vars
-                if _is_unsigned_integer_type(
-                    _nearest_loop_var_type(source, rhs_start, name) or vars_for_line.get(name)
-                )
+                if _is_unsigned_integer_type(vars_for_line.get(name))
             ),
             key=len,
             reverse=True,
@@ -211,9 +207,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or _unsigned_external_call_arg_context(source, start, name, facts, vars_for_line)
                 ):
                     continue
-                loop_type = normalize_type(
-                    _nearest_loop_var_type(source, start, name) or vars_for_line.get(name) or ""
-                )
+                loop_type = normalize_type(vars_for_line.get(name) or "")
                 local_expr = _local_expression(source, start)
                 comparison_expr = _comparison_expression_at(source, start)
                 comparison_peer = _comparison_peer(comparison_expr, name)
@@ -439,16 +433,10 @@ def _mixed_signed_unsigned_arithmetic(
         )
         if not (_has_unsigned_context(expr, vars_for_line) or index_expects_unsigned):
             continue
-        loop_vars = facts.loop_vars_at_line(line_no)
         for name, type_name in sorted(
             vars_for_line.items(), key=lambda item: len(item[0]), reverse=True
         ):
-            name_type = (
-                _nearest_loop_var_type(source, bracket.start(), name)
-                if name in loop_vars
-                else type_name
-            )
-            if not _is_signed_integer_type(name_type):
+            if not _is_signed_integer_type(type_name):
                 continue
             for name_match in re.finditer(rf"\b{re.escape(name)}\b", expr):
                 start = bracket.end() + name_match.start()
@@ -596,7 +584,7 @@ def _signed_loop_comparison_convert_cleanup(
         if name not in facts.loop_vars_at_line(line_no):
             continue
         vars_for_line = facts.vars_at_line(line_no)
-        loop_type = _nearest_loop_var_type(source, match.start(), name) or vars_for_line.get(name)
+        loop_type = vars_for_line.get(name)
         if not _is_signed_integer_type(loop_type):
             continue
         converted = source[match.start() : close + 1]
@@ -1181,12 +1169,7 @@ def _signed_comparison_target_type_at(
     other = _comparison_peer(_comparison_expression_at(source, index), name)
     if other is None:
         return None
-    loop_type = (
-        _nearest_loop_var_type(source, index, other)
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", other)
-        else None
-    )
-    other_type = loop_type or infer_expr_type(other, vars_for_line)
+    other_type = infer_expr_type(other, vars_for_line)
     return normalize_type(other_type) if _is_signed_integer_type(other_type) else None
 
 
@@ -1196,18 +1179,13 @@ def _unsigned_comparison_target_type_at(
     other = _comparison_peer(_comparison_expression_at(source, index), name)
     if other is None:
         return None
-    loop_type = (
-        _nearest_loop_var_type(source, index, other)
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", other)
-        else None
-    )
     if (
-        loop_type is None
-        and other in facts.global_vars
+        other in facts.global_vars
+        and other not in facts.loop_vars_at_line(line_number(source, index))
         and _is_unsigned_integer_type(vars_for_line.get(other))
     ):
         return None
-    other_type = loop_type or infer_expr_type(other, vars_for_line, facts)
+    other_type = infer_expr_type(other, vars_for_line, facts)
     return normalize_type(other_type) if _is_unsigned_integer_type(other_type) else None
 
 
@@ -1396,14 +1374,6 @@ def _top_level_arg_index(raw_args: str, offset: int) -> int | None:
         if start <= offset <= end:
             return arg_index
     return None
-
-
-def _expression_start_offset(line: str) -> int:
-    for pattern in [r"\b(?:if|elif|assert|return)\s+", r"=\s*"]:
-        match = re.search(pattern, line)
-        if match:
-            return match.end()
-    return 0
 
 
 def _local_expression(source: str, index: int) -> str:

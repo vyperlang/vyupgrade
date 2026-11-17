@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import re
+import tokenize
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import cached_property
 
-from .source import code_mask, find_matching, span_is_code
-from .source import split_top_level_args
+from .constant_evaluation import integer_constant_values
+from .source import (
+    code_mask,
+    find_matching,
+    logical_statement_tokens,
+    lone_cr_as_lf,
+    span_is_code,
+    split_top_level_args,
+)
 from .vyper_builtins import (
     BUILTIN_INTERFACE_PARAMS,
     BUILTIN_INTERFACE_RETURNS,
@@ -18,11 +28,20 @@ INT_TYPE_RE = re.compile(
 DEF_RE = re.compile(
     r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)(?:\s*->\s*([^:]+?))?\s*:\s*(\w+)?\s*$"
 )
-INTERFACE_RE = re.compile(r"^interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?:\s*$")
+INTERFACE_RE = re.compile(r"^interface\s+([A-Za-z_][A-Za-z0-9_]*)(?:\([^)]*\))?[ \t]*:\s*$")
 STRUCT_RE = re.compile(r"^struct\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
 FLAG_RE = re.compile(r"^(?:enum|flag)\s+([A-Za-z_][A-Za-z0-9_]*):\s*$")
-EVENT_RE = re.compile(r"^event\s+[A-Za-z_][A-Za-z0-9_]*:\s*$")
 TYPE_WRAPPER_RE = re.compile(r"(?:public|constant|immutable)\((.+)\)$")
+
+
+@dataclass(frozen=True, slots=True)
+class _Binding:
+    """A persistent chain lets whole blocks and continuation lines share their locals."""
+
+    name: str
+    type_name: str | None
+    outer: _Binding | None
+    loop_line: int | None = None
 
 
 @dataclass
@@ -49,8 +68,9 @@ class SourceFacts:
     storage_vars: dict[str, str] = field(default_factory=dict)
     global_vars: dict[str, str] = field(default_factory=dict)
     local_declarations: dict[int, tuple[str, str]] = field(default_factory=dict)
+    assignment_rhs_columns: dict[int, int] = field(default_factory=dict)
     function_vars: dict[int, dict[str, str]] = field(default_factory=dict)
-    function_loop_vars: dict[int, set[str]] = field(default_factory=dict)
+    _bindings_by_line: dict[int, _Binding] = field(default_factory=dict, repr=False)
     function_ends: dict[int, int] = field(default_factory=dict)
     function_names: dict[int, str] = field(default_factory=dict)
     function_decorators: dict[int, tuple[str, ...]] = field(default_factory=dict)
@@ -60,14 +80,48 @@ class SourceFacts:
     function_params: dict[str, dict[str, str]] = field(default_factory=dict)
     imported_interfaces: dict[str, str] = field(default_factory=dict)
 
-    def vars_at_line(self, line_number: int) -> dict[str, str]:
-        merged = dict(self.global_vars)
-        merged.update(self.storage_vars)
-        for start, vars_for_func in sorted(self.function_vars.items()):
-            end = self.function_ends.get(start, 10**9)
-            if start <= line_number <= end:
-                merged.update(vars_for_func)
-        return merged
+    _source: str = field(default="", repr=False, compare=False)
+
+    @cached_property
+    def tuple_index_constants(self) -> dict[str, int]:
+        # In valid source, locals cannot shadow a module constant. Rule-only
+        # clients can supply invalid source, so reject any ambiguous binding.
+        values = {
+            name: value for name, value in integer_constant_values(self._source).items()
+            if is_integer_type(self.storage_vars.get(name))
+        }
+        seen = set()
+        for head in self._bindings_by_line.values():
+            binding = head
+            while binding is not None and id(binding) not in seen:
+                seen.add(id(binding))
+                values.pop(binding.name, None)
+                binding = binding.outer
+        return values
+
+    def _visible_bindings(self, line_number: int) -> Iterator[_Binding]:
+        head = self._bindings_by_line.get(line_number)
+        seen = set()
+        while head is not None:
+            if head.name not in seen:
+                seen.add(head.name)
+                yield head
+            head = head.outer
+
+    def vars_at_line(
+        self, line_number: int, inferred_loop_types: dict[int, str] | None = None
+    ) -> dict[str, str]:
+        variables = {**self.global_vars, **self.storage_vars}
+        for binding in self._visible_bindings(line_number):
+            typ = binding.type_name
+            if typ is None and binding.loop_line is not None and inferred_loop_types:
+                typ = inferred_loop_types.get(binding.loop_line)
+            if typ is None:
+                # An unannotated legacy loop binds its name even before VY070 infers its type.
+                variables.pop(binding.name, None)
+            else:
+                variables[binding.name] = typ
+        return variables
 
     def return_type_at_line(self, line_number: int) -> str | None:
         for start, return_type in sorted(self.function_returns.items()):
@@ -77,203 +131,157 @@ class SourceFacts:
         return None
 
     def loop_vars_at_line(self, line_number: int) -> set[str]:
-        for start, names in sorted(self.function_loop_vars.items()):
-            end = self.function_ends.get(start, 10**9)
-            if start <= line_number <= end:
-                return names
-        return set()
+        return {
+            binding.name
+            for binding in self._visible_bindings(line_number)
+            if binding.loop_line is not None
+        }
+
+
+def _statement_text(tokens: list[tokenize.TokenInfo]) -> str:
+    """Join logical lines without comments or continuations, preserving same-line spelling."""
+    first, last = tokens[0], tokens[-1]
+    if first.start[0] == last.end[0]:
+        return first.line[first.start[1] : last.end[1]]
+    pieces = [first.string]
+    previous = first
+    for token in tokens[1:]:
+        if previous.end[0] == token.start[0]:
+            pieces.append(token.line[previous.end[1] : token.start[1]])
+        else:
+            pieces.append(" ")
+        pieces.append(token.string)
+        previous = token
+    return "".join(pieces)
 
 
 def parse_source_facts(source: str) -> SourceFacts:
-    facts = SourceFacts()
-    lines = source.splitlines(keepends=True)
-    line_offsets: list[int] = []
-    cursor = 0
-    for raw_line in lines:
-        line_offsets.append(cursor)
-        cursor += len(raw_line)
-    mask = code_mask(source)
-    current_interface: str | None = None
-    pending_interface_method: str | None = None
-    pending_interface_header: list[str] = []
-    current_event_indent: int | None = None
-    current_struct: str | None = None
-    current_struct_indent = 0
-    pending_function_line: int | None = None
-    pending_function_indent = 0
-    pending_function_header: list[str] = []
-    pending_decorators: list[tuple[str, int]] = []
-    current_function_line: int | None = None
-    current_function_indent = 0
+    source = lone_cr_as_lf(source)
+    facts = SourceFacts(_source=source)
+    decorators: list[tuple[str, int]] = []
+    function: int | None = None
+    interface: str | None = None
+    struct: str | None = None
+    pending_method: str | None = None
+    # The current stack head is the scope at this indentation. A block header
+    # supplies pending bindings to its suite; dedenting restores its parent.
+    scopes: list[tuple[int, _Binding | None]] = [(0, None)]
+    pending: _Binding | None = None
+    for tokens in logical_statement_tokens(source):
+        first, last = tokens[0], tokens[-1]
+        row, column = first.start
+        indent = len(first.line[:column].expandtabs())
+        while scopes[-1][0] > indent:
+            scopes.pop()
+        if indent > scopes[-1][0]:
+            scopes.append((indent, pending))
+        visible = scopes[-1][1]
+        pending = visible
 
-    for line_no, raw_line in enumerate(lines, start=1):
-        offset = line_offsets[line_no - 1]
-        line = raw_line.rstrip("\n")
-        if _line_starts_inside_string(source, mask, offset):
-            continue
-        stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" \t"))
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        if current_event_indent is not None:
-            if indent > current_event_indent:
+        if indent == 0:
+            interface = struct = pending_method = None
+            if first.string == "@":
+                if len(tokens) > 1 and tokens[1].type == tokenize.NAME:
+                    decorators.append((tokens[1].string, row))
                 continue
-            current_event_indent = None
-
-        header = _strip_inline_comment(stripped).strip()
-
-        event_match = EVENT_RE.match(header)
-        if event_match:
-            current_event_indent = indent
-            continue
-
-        if current_struct and indent <= current_struct_indent:
-            current_struct = None
-
-        if pending_function_line is not None:
-            header_line = _header_fragment(_strip_inline_comment(stripped).strip())
-            if header_line:
-                pending_function_header.append(header_line)
-            if _balanced_parens(" ".join(pending_function_header)):
-                def_match = DEF_RE.match(" ".join(pending_function_header))
-                if def_match:
-                    if current_function_line is not None:
-                        facts.function_ends[current_function_line] = pending_function_line - 1
-                    current_function_line = pending_function_line
-                    current_function_indent = pending_function_indent
-                    _record_function(facts, current_function_line, def_match, pending_decorators)
-                    pending_decorators = []
-                pending_function_line = None
-                pending_function_header = []
-            continue
-
-        import_match = re.match(r"from\s+(?:vyper\.interfaces|ethereum\.ercs)\s+import\s+(.+)$", stripped)
-        if import_match:
-            for name, alias in _parse_imported_names(import_match.group(1)):
-                if name in {"ERC20", "ERC20Detailed"}:
-                    facts.imported_interfaces[alias] = "I" + name
-                _record_builtin_interface_import(facts, name, alias)
-            continue
-
-        interface_match = INTERFACE_RE.match(header)
-        if interface_match:
-            current_interface = interface_match.group(1)
-            facts.interfaces.setdefault(current_interface, {})
-            facts.interface_returns.setdefault(current_interface, {})
-            facts.interface_params.setdefault(current_interface, {})
-            continue
-        if current_interface and indent == 0:
-            current_interface = None
-            pending_interface_method = None
-            pending_interface_header = []
-
-        struct_match = STRUCT_RE.match(header)
-        if struct_match:
-            current_struct = struct_match.group(1)
-            current_struct_indent = indent
-            facts.structs.add(current_struct)
-            facts.struct_fields.setdefault(current_struct, {})
-            continue
-
-        if current_struct:
-            decl = _parse_var_decl(stripped, _known_type_names(facts))
-            if decl is not None:
-                name, type_name = decl
-                facts.struct_fields[current_struct][name] = type_name
-            continue
-
-        flag_match = FLAG_RE.match(header)
-        if flag_match:
-            facts.flags_or_enums.add(flag_match.group(1))
-
-        if current_interface:
-            if pending_interface_method is not None and stripped in {
-                "view",
-                "pure",
-                "nonpayable",
-                "payable",
-            }:
-                facts.interfaces[current_interface][pending_interface_method] = stripped
-                pending_interface_method = None
-                continue
-            if pending_interface_header:
-                header_line = _header_fragment(_strip_inline_comment(stripped).strip())
-                if header_line:
-                    pending_interface_header.append(header_line)
-                if _balanced_parens(" ".join(pending_interface_header)):
-                    def_match = DEF_RE.match(" ".join(pending_interface_header))
-                    if def_match:
-                        method_name = _record_interface_method(facts, current_interface, def_match)
-                        pending_interface_method = (
-                            method_name if def_match.group(4) is None else None
-                        )
-                    pending_interface_header = []
-                continue
-            header_line = _strip_inline_comment(stripped).strip()
-            def_match = DEF_RE.match(header_line)
-            if def_match:
-                method_name = _record_interface_method(facts, current_interface, def_match)
-                pending_interface_method = method_name if def_match.group(4) is None else None
-                continue
-            multiline_def = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", header_line)
-            if multiline_def:
-                pending_interface_header = [_header_fragment(header_line)]
-            continue
-
-        decorator_match = re.match(r"@([A-Za-z_][A-Za-z0-9_]*)\b", stripped)
-        if decorator_match:
-            pending_decorators.append((decorator_match.group(1), line_no))
-            continue
-
-        function_header = _function_signature_header(_strip_inline_comment(stripped).strip())
-        def_match = DEF_RE.match(function_header)
-        if def_match:
-            if current_function_line is not None:
-                facts.function_ends[current_function_line] = line_no - 1
-            current_function_line = line_no
-            current_function_indent = indent
-            _record_function(facts, current_function_line, def_match, pending_decorators)
-            pending_decorators = []
-            continue
-        if re.match(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", function_header):
-            pending_function_line = line_no
-            pending_function_indent = indent
-            pending_function_header = [_header_fragment(function_header)]
-            continue
-
-        if current_function_line is not None and indent <= current_function_indent and stripped:
-            facts.function_ends[current_function_line] = line_no - 1
-            current_function_line = None
-
-        if current_function_line is None and stripped:
-            pending_decorators = []
-
-        if current_function_line is not None:
-            loop_var = re.match(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^:]+?)\s+in\b", stripped)
-            if loop_var:
-                name, typ = loop_var.group(1), loop_var.group(2).strip()
-                facts.local_declarations[line_no] = (name, typ)
-                facts.function_vars[current_function_line][name] = typ
-                facts.function_loop_vars[current_function_line].add(name)
-                continue
-
-        decl = _parse_var_decl(stripped, _known_type_names(facts))
-        if decl is None:
-            continue
-        name, type_name = decl
-        if current_function_line is None:
-            facts.global_vars[name] = type_name
-            storage_type = _unwrap_public_or_constant(type_name, _known_type_names(facts))
-            if storage_type:
-                facts.storage_vars[name] = storage_type
-        else:
-            facts.local_declarations[line_no] = (name, type_name)
-            facts.function_vars[current_function_line][name] = type_name
-
-    if current_function_line is not None:
-        facts.function_ends[current_function_line] = len(lines)
+            if function is not None:
+                facts.function_ends[function] = row - 1
+                function = None
+            header = _statement_text(tokens)
+            if first.string == "def" and (
+                match := DEF_RE.match(_function_signature_header(header))
+            ):
+                function = row
+                _record_function(facts, row, match, decorators)
+                for name, typ in facts.function_params[match[1]].items():
+                    visible = _Binding(name, typ, visible)
+                pending = visible
+            elif match := INTERFACE_RE.match(header):
+                interface = match[1]
+                facts.interfaces.setdefault(interface, {})
+                facts.interface_returns.setdefault(interface, {})
+                facts.interface_params.setdefault(interface, {})
+            elif match := STRUCT_RE.match(header):
+                struct = match[1]
+                facts.structs.add(struct)
+                facts.struct_fields.setdefault(struct, {})
+            elif match := FLAG_RE.match(header):
+                facts.flags_or_enums.add(match[1])
+            elif match := re.match(
+                r"from\s+(?:vyper\.interfaces|ethereum\.ercs)\s+import\s+(.+)$", header
+            ):
+                for name, alias in _parse_imported_names(match[1]):
+                    if name in {"ERC20", "ERC20Detailed"}:
+                        facts.imported_interfaces[alias] = "I" + name
+                    _record_builtin_interface_import(facts, name, alias)
+            elif decl := _parse_var_decl(header, _known_type_names(facts)):
+                name, typ = decl
+                facts.global_vars[name] = typ
+                storage_type = _unwrap_public_or_constant(typ, _known_type_names(facts))
+                if storage_type:
+                    facts.storage_vars[name] = storage_type
+            decorators.clear()
+        elif interface is not None:
+            if first.string == "def" and (match := DEF_RE.match(_statement_text(tokens))):
+                method = _record_interface_method(facts, interface, match)
+                pending_method = method if match[4] is None else None
+            elif pending_method and first.string in {"view", "pure", "nonpayable", "payable"}:
+                facts.interfaces[interface][pending_method] = first.string
+                pending_method = None
+        elif struct is not None:
+            if decl := _parse_var_decl(_statement_text(tokens), _known_type_names(facts)):
+                name, typ = decl
+                facts.struct_fields[struct][name] = typ
+        elif function is not None:
+            _record_assignment_rhs(tokens, facts)
+            if first.string == "for" and len(tokens) >= 4 and tokens[1].type == tokenize.NAME:
+                name = tokens[1].string
+                in_index = next((i for i, token in enumerate(tokens) if token.string == "in"), None)
+                if in_index is not None:
+                    typ = (
+                        _statement_text(tokens[3:in_index])
+                        if tokens[2].string == ":" and in_index > 3
+                        else None
+                    )
+                    if typ is not None:
+                        facts.local_declarations[row] = name, typ
+                        facts.function_vars[function][name] = typ
+                    pending = _Binding(name, typ, visible, loop_line=row)
+                    if last.string != ":":
+                        # A single-line suite shares its row with the header.
+                        visible = pending
+            elif len(tokens) > 1 and tokens[1].string == ":":
+                if decl := _parse_var_decl(_statement_text(tokens), _known_type_names(facts)):
+                    name, typ = decl
+                    facts.local_declarations[row] = decl
+                    facts.function_vars[function][name] = typ
+                    visible = _Binding(name, typ, visible)
+                    scopes[-1] = (indent, visible)
+                    pending = visible
+        if visible is not None:
+            for line in range(row, last.end[0] + 1):
+                facts._bindings_by_line[line] = visible
+    if function is not None:
+        facts.function_ends[function] = source.count("\n") + int(not source.endswith("\n"))
     return facts
+
+
+def _record_assignment_rhs(tokens: list[tokenize.TokenInfo], facts: SourceFacts) -> None:
+    """Record the real assignment operator, excluding comparisons and call keywords."""
+    depth = 0
+    for token in tokens:
+        if token.type != tokenize.OP:
+            continue
+        if token.string in {"(", "[", "{"}:
+            depth += 1
+        elif token.string in {")", "]", "}"}:
+            depth -= 1
+        elif depth == 0 and token.string in {
+            "=", "+=", "-=", "*=", "/=", "//=", "%=", "**=", "&=", "|=", "^=", ">>=", "<<=",
+        }:
+            row, column = token.end
+            facts.assignment_rhs_columns[row] = column
+            return
 
 
 def _record_function(
@@ -291,7 +299,6 @@ def _record_function(
     params = _parse_params(def_match.group(2))
     facts.function_vars[line_no] = params.copy()
     facts.function_params[name] = params
-    facts.function_loop_vars[line_no] = set()
     if def_match.group(3):
         return_type = def_match.group(3).strip()
         facts.function_returns[line_no] = return_type
@@ -339,15 +346,6 @@ def _known_type_names(facts: SourceFacts) -> set[str]:
     return facts.interfaces.keys() | facts.structs | facts.flags_or_enums
 
 
-def _line_starts_inside_string(source: str, mask: list[bool], line_start: int) -> bool:
-    if line_start > 0 and not mask[line_start - 1]:
-        return True
-    first = line_start
-    while first < len(source) and source[first] in " \t":
-        first += 1
-    return not span_is_code(mask, line_start, first)
-
-
 def is_integer_type(type_name: str | None) -> bool:
     if type_name is None:
         return False
@@ -366,17 +364,26 @@ def unwrap_type(type_name: str) -> str:
     return wrapper.group(1).strip() if wrapper else type_name
 
 
+def dynamic_array_element_type(type_name: str | None) -> str | None:
+    if type_name is None:
+        return None
+    type_name = type_name.strip()
+    match = re.match(r"DynArray[ \t]*\[", type_name)
+    if match is None:
+        return None
+    open_index = match.end() - 1
+    if find_matching(type_name, open_index, "[", "]") != len(type_name) - 1:
+        return None
+    parts = split_top_level_args(type_name[open_index + 1 : -1])
+    return parts[0].strip() if parts is not None and len(parts) == 2 else None
+
+
 def iterable_element_type(type_name: str | None) -> str | None:
     if type_name is None:
         return None
     type_name = type_name.strip()
-    if type_name.startswith("DynArray["):
-        open_index = type_name.find("[")
-        close_index = find_matching(type_name, open_index, "[", "]")
-        if close_index == len(type_name) - 1:
-            parts = split_top_level_args(type_name[open_index + 1 : close_index])
-            if parts is not None and len(parts) == 2:
-                return parts[0].strip()
+    if (element_type := dynamic_array_element_type(type_name)) is not None:
+        return element_type
     if type_name.endswith("]"):
         depth = 0
         for index in range(len(type_name) - 1, -1, -1):
@@ -406,10 +413,12 @@ def indexed_value_type(type_name: str | None) -> str | None:
         parts = split_top_level_args(type_name[1:-1])
         if not parts:
             return None
-        if len(parts) == 1:
-            type_name = parts[0].strip()
-        else:
-            return parts[0].strip()
+        if len(parts) == 1 and not type_name[1:-1].rstrip().endswith(","):
+            # Parentheses around a type leave its indexing behavior unchanged.
+            return indexed_value_type(parts[0].strip())
+        # Without a position a heterogeneous tuple has no single element type.
+        element = parts[0].strip()
+        return element if all(part.strip() == element for part in parts) else None
     if type_name.startswith("HashMap[") and type_name.endswith("]"):
         parts = split_top_level_args(type_name.removeprefix("HashMap[").removesuffix("]"))
         if parts and len(parts) == 2:
@@ -428,8 +437,10 @@ def indexed_key_type(type_name: str | None) -> str | None:
 
 
 def infer_expr_type(
-    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None
+    expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None = None,
+    *, preserve_shape: bool = False,
 ) -> str | None:
+    """Infer an expression's type, optionally retaining container bounds and subscripts."""
     expr = expr.strip()
     expr = _strip_outer_parens(expr)
     if re.fullmatch(r"\d(?:_?\d)*", expr):
@@ -470,7 +481,7 @@ def infer_expr_type(
     if facts is not None:
         storage_type = _infer_self_storage_type(expr, facts)
         if storage_type is not None:
-            return storage_type
+            return unwrap_type(storage_type) if preserve_shape else normalize_type(storage_type)
         internal_call_type = _infer_internal_call_type(expr, facts)
         if internal_call_type is not None:
             return internal_call_type
@@ -481,10 +492,11 @@ def infer_expr_type(
         if attr_type is not None:
             return attr_type
     if expr in vars_for_line:
-        return normalize_type(vars_for_line[expr])
+        typ = vars_for_line[expr]
+        return unwrap_type(typ) if preserve_shape else normalize_type(typ)
     indexed_type = _infer_indexed_type(expr, vars_for_line, facts)
     if indexed_type is not None:
-        return indexed_type
+        return unwrap_type(indexed_type) if preserve_shape else normalize_type(indexed_type)
     return None
 
 
@@ -512,16 +524,6 @@ def _infer_minmax_type(
         return next(iter(concrete_types))
     all_types = {type_name for _arg, type_name in arg_types}
     return next(iter(all_types)) if len(all_types) == 1 else None
-
-
-def _balanced_parens(value: str) -> bool:
-    depth = 0
-    for char in value:
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-    return depth == 0 and re.search(r":\s*(?:\w+\s*)?$", value.rstrip()) is not None
 
 
 def _strip_outer_parens(expr: str) -> str:
@@ -573,8 +575,7 @@ def _infer_self_storage_type(expr: str, facts: SourceFacts) -> str | None:
     match = re.fullmatch(r"self\.([A-Za-z_][A-Za-z0-9_]*)", expr)
     if match is None:
         return None
-    storage_type = facts.storage_vars.get(match.group(1))
-    return normalize_type(storage_type) if storage_type is not None else None
+    return facts.storage_vars.get(match.group(1))
 
 
 def _infer_attribute_type(
@@ -607,12 +608,15 @@ def _infer_indexed_type(
             close = _matching_local_bracket(rest, 0)
             if close is None:
                 return None
-            base_type = _indexed_value_type_at(base_type, rest[1:close].strip())
+            base_type = _indexed_value_type_at(base_type, rest[1:close].strip(), facts)
             if base_type is None:
                 return None
             rest = rest[close + 1 :]
-        return normalize_type(base_type) if rest == "" else None
+        return base_type if rest == "" else None
 
+    if expr.startswith("self.") and facts is not None:
+        # A local of the same name supplies no evidence about contract storage.
+        return facts.storage_vars.get(expr[5:])
     expr = expr.removeprefix("self.")
     root_match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", expr)
     if root_match is None:
@@ -625,14 +629,16 @@ def _infer_indexed_type(
         close = rest.find("]")
         if close == -1:
             return None
-        type_name = _indexed_value_type_at(type_name, rest[1:close].strip())
+        type_name = _indexed_value_type_at(type_name, rest[1:close].strip(), facts)
         if type_name is None:
             return None
         rest = rest[close + 1 :]
-    return normalize_type(type_name) if rest == "" else None
+    return type_name if rest == "" else None
 
 
-def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None:
+def _indexed_value_type_at(
+    type_name: str | None, index_expr: str, facts: SourceFacts | None
+) -> str | None:
     if type_name is None:
         return None
     unwrapped = unwrap_type(type_name)
@@ -640,13 +646,15 @@ def _indexed_value_type_at(type_name: str | None, index_expr: str) -> str | None
         parts = split_top_level_args(unwrapped[1:-1])
         if not parts:
             return None
-        if len(parts) == 1:
-            return indexed_value_type(parts[0].strip())
+        if len(parts) == 1 and not unwrapped[1:-1].rstrip().endswith(","):
+            return _indexed_value_type_at(parts[0].strip(), index_expr, facts)
         if re.fullmatch(r"\d(?:_?\d)*", index_expr):
             index = int(index_expr.replace("_", ""))
-            if 0 <= index < len(parts):
-                return parts[index].strip()
-        return parts[0].strip()
+        elif facts is not None and index_expr.isidentifier():
+            index = facts.tuple_index_constants.get(index_expr)
+        else:
+            index = None
+        return parts[index].strip() if index is not None and 0 <= index < len(parts) else None
     return indexed_value_type(type_name)
 
 
@@ -654,7 +662,7 @@ def _raw_index_base_type(
     expr: str, vars_for_line: dict[str, str], facts: SourceFacts | None
 ) -> str | None:
     if expr.startswith("self.") and facts is not None:
-        return facts.storage_vars.get(expr[5:]) or vars_for_line.get(expr[5:])
+        return facts.storage_vars.get(expr[5:])
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", expr):
         return vars_for_line.get(expr)
     return None
@@ -719,14 +727,6 @@ def _strip_default(type_part: str) -> str:
     return type_part.split("=", 1)[0].strip()
 
 
-def _strip_inline_comment(line: str) -> str:
-    return line.split("#", 1)[0].rstrip()
-
-
-def _header_fragment(line: str) -> str:
-    return line.rstrip("\\").strip()
-
-
 def _function_signature_header(line: str) -> str:
     if not line.startswith("def "):
         return line
@@ -772,10 +772,10 @@ def _unwrap_public_or_constant(type_name: str, known_types: set[str] | None = No
 def _looks_like_type(type_name: str, known_types: set[str]) -> bool:
     if type_name.startswith("(") and type_name.endswith(")"):
         parts = split_top_level_args(type_name[1:-1])
-        return len(parts or []) == 1 and _looks_like_type(parts[0].strip(), known_types)
+        return bool(parts) and all(_looks_like_type(part.strip(), known_types) for part in parts)
     if TYPE_WRAPPER_RE.fullmatch(type_name):
         return True
-    if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):
+    if re.match(r"(?:Bytes|String|DynArray|HashMap)[ \t]*\[", type_name):
         return True
     if type_name in known_types:
         return True
