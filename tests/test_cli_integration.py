@@ -804,6 +804,7 @@ def version() -> String[{len(version)}]:
     originals = {path: path.read_bytes() for path in tmp_path.iterdir()}
     code = main(
         [str(tmp_path), "--write", "--target-version", "0.5.0a3", "--report-json", str(report),
+         "--ignore", "VY125",
          *(["--aggressive"] if aggressive else [])]
     )
 
@@ -822,6 +823,69 @@ def version() -> String[{len(version)}]:
         for fix in files["IVersioned.vyi"]["fixes"]
         if fix["rule"] == "VY124"
     ] == [("String[1]", "String[10]")]
+
+
+@pytest.mark.parametrize("read_bound", [32, 34])
+def test_widen_named_bound_in_dependency_closure(tmp_path: Path, capsys, read_bound: int) -> None:
+    interface = tmp_path / "interfaces" / "IERC20.vyi"
+    interface.parent.mkdir()
+    interface.write_text(
+        """#pragma version 0.4.3
+SYMBOL_MAX_LEN: constant(uint256) = 32
+
+@view
+def symbol() -> String[SYMBOL_MAX_LEN]:
+    ...
+""",
+        encoding="utf-8",
+    )
+    consumer = tmp_path / "Consumer.vy"
+    consumer.write_text(
+        f"""#pragma version 0.4.3
+from interfaces import IERC20
+
+implements: IERC20
+symbol: public(String[34])
+token: IERC20
+
+@external
+@view
+def read_symbol() -> String[{read_bound}]:
+    return staticcall self.token.symbol()
+""",
+        encoding="utf-8",
+    )
+    destination = tmp_path / "upgraded"
+    report = tmp_path / "report.json"
+
+    code = main([
+        str(consumer), "--write", "--target-version", "0.5.0a3", "--aggressive",
+        "--include-dependencies", "--closure-output", str(destination), "--report-json", str(report),
+        "--ignore", "VY125",
+    ])
+
+    reports = {Path(file["path"]).name: file for file in json.loads(report.read_text())["files"]}
+    assert [
+        (fix["before"], fix["after"]) for fix in reports["IERC20.vyi"]["fixes"]
+        if fix["rule"] == "VY124"
+    ] == [("String[SYMBOL_MAX_LEN]", "String[34]")]
+    validation = reports["Consumer.vy"]["validation"]
+    assert validation["source_compile"] == "passed"
+    if read_bound == 32:
+        assert code != 0
+        assert validation["decision"]["status"] == "blocked"
+        assert "Given reference has type String[34], expected String[32]" in capsys.readouterr().out
+        assert not destination.exists()
+        return
+
+    assert code == 0
+    assert validation["decision"]["status"] == "passed"
+    assert validation["abi_equal"]
+    assert validation["method_ids_equal"]
+    assert validation["storage_layout_equal"]
+    assert "def symbol() -> String[34]:" in (
+        destination / "interfaces" / "IERC20.vyi"
+    ).read_text(encoding="utf-8")
 
 
 def test_standalone_interface_receives_target_validation(tmp_path: Path) -> None:

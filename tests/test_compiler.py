@@ -25,6 +25,7 @@ from vyupgrade.compiler import (
     _run_compiler_process,
     _supports_warning_policy,
     _uv_bin,
+    _with_interface_ast_paths,
     compare_artifact_details,
     compare_artifacts,
     compile_source_ast,
@@ -1060,6 +1061,27 @@ def test_compile_source_ast_falls_back_to_raw_ast(monkeypatch, tmp_path) -> None
     assert result.status == "passed"
     assert result.artifacts == {"ast": {"ast_type": "Module"}}
     assert calls == [("annotated_ast",), ("ast",)]
+
+
+def test_interface_ast_paths_omit_ambiguous_overlay_destinations(tmp_path) -> None:
+    entry = tmp_path / "Caller.vy"
+    first = tmp_path / "first" / "Token.vyi"
+    second = tmp_path / "second" / "Token.vyi"
+    staged_entry = tmp_path / "overlay" / "Caller.vy"
+    staged_import = tmp_path / "overlay" / "Token.vyi"
+    evidence = {
+        "ast": {"resolved_path": str(staged_entry.resolve())},
+        "imports": [{"resolved_path": str(staged_import.resolve())}],
+    }
+
+    result = _with_interface_ast_paths(
+        CompileResult("passed"), evidence, {entry: staged_entry, first: staged_import, second: staged_import}
+    )
+
+    assert result.artifacts == {
+        "annotated_ast": evidence,
+        "annotated_ast_source_paths": {str(staged_entry.resolve()): str(entry)},
+    }
 
 
 def test_compile_source_file_requests_ast_with_validation_outputs(monkeypatch, tmp_path) -> None:

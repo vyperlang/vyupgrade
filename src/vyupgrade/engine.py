@@ -38,6 +38,7 @@ from .models import (
     TargetFailureOrigin,
     ValidationAttestation,
 )
+from .rule_groups.interface_wildcards import plan_interface_wildcards
 from .rule_registry import is_enabled
 from .rules import RULE_CHANGES, apply_rules
 from .validation import decide_run_validation
@@ -175,11 +176,26 @@ def prepare_migrations(
             ContentIdentity(str(path), hashlib.sha256(content).hexdigest())
             for path, content in snapshot.contents.items()
         )
-    files: list[MigrationFile] = []
+    compilations = []
     for request in request_list:
         attempt, source_compile = _compile_source(request, config)
-        contextual_validation = request.role == "dependency"
         source_version = attempt.rule_version if attempt is not None else request.source_version
+        compilations.append((request, attempt, source_version, source_compile))
+    wildcard_plans = {}
+    if snapshot is not None and any(
+        _rule_enabled(code, None, config) for code in ("VY125", "VYD022", "VYD023")
+    ):
+        wildcard_plans = plan_interface_wildcards(
+            snapshot,
+            [
+                (request.path, request.original, source_version, source_compile)
+                for request, _, source_version, source_compile in compilations
+            ],
+            config,
+        )
+    files: list[MigrationFile] = []
+    for request, attempt, source_version, source_compile in compilations:
+        contextual_validation = request.role == "dependency"
         source_compiler = source_compile.resolved_compiler or (
             attempt.compiler_label if attempt is not None else None
         )
@@ -187,7 +203,14 @@ def prepare_migrations(
         facts = CompilerFacts.from_artifacts(
             source_compile.artifacts if source_compile.status in {"passed", "degraded"} else None
         )
-        rewrite = apply_rules(request.original, file_config, request.path, compiler_facts=facts)
+        interface_wildcards = wildcard_plans.get(request.path.resolve())
+        if interface_wildcards is None:
+            rewrite = apply_rules(request.original, file_config, request.path, compiler_facts=facts)
+        else:
+            rewrite = apply_rules(
+                request.original, file_config, request.path, compiler_facts=facts,
+                interface_wildcards=interface_wildcards,
+            )
         if (
             config.split_interfaces
             and request.path.suffix == ".vy"

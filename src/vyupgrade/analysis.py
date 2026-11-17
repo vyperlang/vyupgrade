@@ -83,7 +83,7 @@ class SourceFacts:
     _source: str = field(default="", repr=False, compare=False)
 
     @cached_property
-    def tuple_index_constants(self) -> dict[str, int]:
+    def module_integer_constants(self) -> dict[str, int]:
         # In valid source, locals cannot shadow a module constant. Rule-only
         # clients can supply invalid source, so reject any ambiguous binding.
         values = {
@@ -651,7 +651,7 @@ def _indexed_value_type_at(
         if re.fullmatch(r"\d(?:_?\d)*", index_expr):
             index = int(index_expr.replace("_", ""))
         elif facts is not None and index_expr.isidentifier():
-            index = facts.tuple_index_constants.get(index_expr)
+            index = facts.module_integer_constants.get(index_expr)
         else:
             index = None
         return parts[index].strip() if index is not None and 0 <= index < len(parts) else None

@@ -22,6 +22,7 @@ from ..analysis import (
     parse_source_facts,
     unwrap_type,
 )
+from ..constant_evaluation import eval_integer_constant_expr
 from ..models import Diagnostic, Fix
 from ..rule_helpers import implemented_interface_names
 from ..rule_registry import Rule, RuleContext, crossing
@@ -71,6 +72,12 @@ class _Bound:
     length: int
 
 
+@dataclass(frozen=True)
+class _Implementation:
+    returns: dict[str, str]
+    constants: dict[str, int]
+
+
 def _widen_interface_return_bounds(
     rule_context: RuleContext,
 ) -> tuple[str, list[Fix], list[Diagnostic]]:
@@ -80,18 +87,16 @@ def _widen_interface_return_bounds(
     declarations = _return_declarations(rule_context)
     if not declarations:
         return source, [], []
+    constants = rule_context.facts.module_integer_constants
     implementations = _implementation_returns_by_interface(rule_context)
     edits: list[TextEdit] = []
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
     for declaration in declarations:
         declared = source[declaration.start : declaration.end]
-        implemented = [
-            returns[declaration.function]
-            for returns in implementations.get(declaration.interface, ())
-            if declaration.function in returns
-        ]
-        widened = _widest_type(declared, implemented)
+        widened = _widest_type(
+            declared, constants, declaration.function, implementations.get(declaration.interface, [])
+        )
         if widened == declared:
             continue
         diagnostics.append(
@@ -166,14 +171,14 @@ def _interface_functions(rule_context: RuleContext) -> Iterator[tuple[str | None
 
 def _implementation_returns_by_interface(
     rule_context: RuleContext,
-) -> dict[str | None, list[dict[str, str]]]:
+) -> dict[str | None, list[_Implementation]]:
     if _is_interface_module(rule_context.path):
         return {None: list(_module_implementation_returns(rule_context))}
-    returns = _implementation_returns(rule_context.facts)
-    return {name: [returns] for name in implemented_interface_names(rule_context.source)}
+    implementation = _implementation_returns(rule_context.facts)
+    return {name: [implementation] for name in implemented_interface_names(rule_context.source)}
 
 
-def _module_implementation_returns(rule_context: RuleContext) -> Iterator[dict[str, str]]:
+def _module_implementation_returns(rule_context: RuleContext) -> Iterator[_Implementation]:
     """Return types of each closure contract that implements this `.vyi` module."""
     snapshot = rule_context.config.source_snapshot
     if snapshot is None or rule_context.path is None:
@@ -213,7 +218,7 @@ def _imported_modules(source: str) -> dict[str, str]:
     return modules
 
 
-def _implementation_returns(facts: SourceFacts) -> dict[str, str]:
+def _implementation_returns(facts: SourceFacts) -> _Implementation:
     """Return types of external functions and public getters, by name."""
     returns = {
         facts.function_names[line]: return_type
@@ -224,7 +229,7 @@ def _implementation_returns(facts: SourceFacts) -> dict[str, str]:
         getter = _public_getter_return_type(declared)
         if getter is not None:
             returns.setdefault(name, getter)
-    return returns
+    return _Implementation(returns, facts.module_integer_constants)
 
 
 def _public_getter_return_type(declared: str) -> str | None:
@@ -237,12 +242,20 @@ def _public_getter_return_type(declared: str) -> str | None:
     return getter_type
 
 
-def _widest_type(declared: str, implemented: list[str]) -> str:
+def _widest_type(
+    declared: str,
+    constants: dict[str, int],
+    function: str,
+    implementations: list[_Implementation],
+) -> str:
     """``declared`` with each length bound raised to the widest same-shaped implementation."""
-    shape, bounds = _bounded_shape(declared)
+    shape, bounds = _bounded_shape(declared, constants)
     lengths = [bound.length for bound in bounds]
-    for return_type in implemented:
-        implemented_shape, implemented_bounds = _bounded_shape(return_type)
+    for implementation in implementations:
+        return_type = implementation.returns.get(function)
+        if return_type is None:
+            continue
+        implemented_shape, implemented_bounds = _bounded_shape(return_type, implementation.constants)
         if implemented_shape == shape:
             lengths = [
                 max(length, bound.length)
@@ -258,8 +271,10 @@ def _widest_type(declared: str, implemented: list[str]) -> str:
     )
 
 
-def _bounded_shape(type_text: str) -> tuple[tuple[str | None, ...], list[_Bound]]:
-    """Split a type into its tokens with literal length bounds blanked, and those bounds."""
+def _bounded_shape(
+    type_text: str, constants: dict[str, int]
+) -> tuple[tuple[str | None, ...], list[_Bound]]:
+    """Split a type into its tokens with known length bounds blanked, and those bounds."""
     tokens = list(_TYPE_TOKEN_RE.finditer(type_text))
     shape: list[str | None] = []
     bounds: list[_Bound] = []
@@ -275,18 +290,20 @@ def _bounded_shape(type_text: str) -> tuple[tuple[str | None, ...], list[_Bound]
         elif text == "," and open_groups:
             constructor, argument = open_groups[-1]
             open_groups[-1] = (constructor, argument + 1)
-        elif _is_length_bound(tokens, index, open_groups):
-            bounds.append(_Bound(token.start(), token.end(), int(text)))
-            shape.append(None)
-            continue
+        elif _is_length_bound_position(tokens, index, open_groups):
+            length = eval_integer_constant_expr(text, constants)
+            if length is not None and length >= 0:
+                bounds.append(_Bound(token.start(), token.end(), length))
+                shape.append(None)
+                continue
         shape.append(text)
     return tuple(shape), bounds
 
 
-def _is_length_bound(
+def _is_length_bound_position(
     tokens: list[re.Match[str]], index: int, open_groups: list[tuple[str, int]]
 ) -> bool:
-    if not open_groups or not tokens[index].group().isdigit():
+    if not open_groups:
         return False
     constructor, argument = open_groups[-1]
     whole_argument = tokens[index - 1].group() in {"[", ","} and (
