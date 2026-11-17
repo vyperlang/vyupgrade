@@ -48,7 +48,7 @@ def write_closure_output(
                 (),
                 "refusing to write the closure into a directory that contains migration sources",
             )
-        relative_files = _closure_relative_files(sources, target_version, search_paths, snapshot)
+        relative_files = closure_relative_files(sources, target_version, search_paths, snapshot)
         linked = _linked_output_path(resolved, relative_files)
         if linked is not None:
             return ClosureWriteResult(
@@ -116,12 +116,13 @@ def write_closure_archive(
         return ClosureWriteResult("failed", resolved, (), str(exc))
 
 
-def _closure_relative_files(
+def closure_relative_files(
     sources: Mapping[Path, str],
     target_version: str,
     search_paths: tuple[Path, ...],
     snapshot: compiler.ImportClosure,
 ) -> tuple[Path, ...]:
+    """List the files staged by closure export, including copied project configuration."""
     with TemporaryDirectory(prefix="vyupgrade-closure-") as tmp:
         root = Path(tmp)
         overlay = compiler.materialize_target_overlay(

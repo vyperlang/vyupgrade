@@ -25,7 +25,7 @@ from .models import (
     ValidationDecision,
 )
 from .project import discover_files
-from .reporting import HumanReporter, write_json_report
+from .reporting import HumanReporter, validate_json_report_destination, write_json_report
 from .validation import decide_run_validation, validation_exit_code
 from .versions import MigrationContext
 from .write_plan import MigrationPlan, PlanConflictError, WriteTransactionError
@@ -137,6 +137,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 4
 
+    report_path = None
+    if config.report_json is not None:
+        try:
+            report_path = config.report_json.resolve()
+            validate_json_report_destination(report_path)
+        except (OSError, RuntimeError) as exc:
+            print(f"--report-json {config.report_json}: {exc}", file=sys.stderr)
+            return 4
+
     files = discover_files(
         config.paths,
         excluded_roots=(config.closure_output,) if config.closure_output is not None else (),
@@ -170,6 +179,12 @@ def main(argv: list[str] | None = None) -> int:
         closure_report.dependencies = tuple(str(path) for path in sorted(closure.dependencies))
     batch = engine.prepare_migrations(requests, config, snapshot=snapshot)
     reports, plan, plan_error = _build_migration_plan(batch)
+    if report_path is not None:
+        try:
+            _validate_report_collisions(report_path, config, batch, plan)
+        except (OSError, RuntimeError, compiler.OverlayLayoutConflictError) as exc:
+            print(f"--report-json {config.report_json}: {exc}", file=sys.stderr)
+            return 4
     if plan_error is None:
         validation_decision = _validate_or_layout_conflict(batch, config, plan.candidate_source)
         if validation_decision is None:
@@ -272,8 +287,12 @@ def main(argv: list[str] | None = None) -> int:
                 part for part in (run_report.test_output, drift) if part
             )
 
-    if config.report_json:
-        write_json_report(config.report_json, run_report)
+    if report_path is not None:
+        try:
+            write_json_report(report_path, run_report)
+        except (OSError, PlanConflictError) as exc:
+            print(f"--report-json {config.report_json}: {exc}", file=sys.stderr)
+            return 4
 
     if human_reporter:
         for report in reports:
@@ -388,6 +407,34 @@ def _build_migration_plan(
     except PlanConflictError as exc:
         return reports, plan, str(exc)
     return reports, plan, None
+
+
+def _validate_report_collisions(
+    report_path: Path,
+    config: Config,
+    batch: engine.MigrationBatch,
+    plan: MigrationPlan,
+) -> None:
+    protected = {entry.path for entry in plan.entries if config.write or not entry.generated}
+    if batch.snapshot is not None:
+        protected.update(batch.snapshot.files)
+    if config.closure_archive is not None:
+        protected.add(config.closure_archive.resolve())
+    if config.closure_output is not None:
+        root = config.closure_output.resolve()
+        if root.is_relative_to(report_path):
+            protected.add(root)
+        elif report_path.is_relative_to(root) and batch.snapshot is not None:
+            relative_files = closure.closure_relative_files(
+                engine.candidate_sources(batch, plan.candidate_source),
+                config.target_version,
+                config.compiler_search_paths,
+                batch.snapshot,
+            )
+            protected.update(root / relative for relative in relative_files)
+    for path in sorted(protected):
+        if report_path.is_relative_to(path) or path.is_relative_to(report_path):
+            raise FileExistsError(f"destination collides with migration path {path}")
 
 
 def _archive_entry(requests: list[engine.MigrationRequest]) -> Path:

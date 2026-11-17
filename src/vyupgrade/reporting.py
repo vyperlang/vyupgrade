@@ -12,6 +12,7 @@ from rich.theme import Theme
 
 from . import __version__
 from .models import Diagnostic, FileReport, Fix, RunReport
+from .write_plan import MigrationPlan, read_regular_file_or_missing
 
 
 THEME = Theme(
@@ -479,5 +480,33 @@ def _message_style(style: str) -> str:
     }.get(style, style)
 
 
+def validate_json_report_destination(path: Path) -> str | None:
+    """Return the previous report text or None for a missing destination."""
+    content = read_regular_file_or_missing(path)
+    if content is None:
+        return None
+    try:
+        previous = content.decode("utf-8")
+        data = json.loads(previous)
+    except (ValueError, RecursionError):
+        data = None
+    producer = data.get("producer") if isinstance(data, dict) else None
+    if (
+        isinstance(producer, dict)
+        and producer.get("name") == "vyupgrade"
+        and type(data.get("schema_version")) is int
+        and isinstance(data.get("files"), list)
+    ):
+        return previous
+    raise FileExistsError("destination already contains data other than a recognized vyupgrade report")
+
+
 def write_json_report(path: Path, report: RunReport) -> None:
-    path.write_text(json.dumps(report.to_json_obj(), indent=2, sort_keys=True) + "\n")
+    candidate = json.dumps(report.to_json_obj(), indent=2, sort_keys=True) + "\n"
+    original = validate_json_report_destination(path)
+    plan = MigrationPlan()
+    if original is None:
+        plan.add_generated(path, candidate)
+    else:
+        plan.add_source(path, original, candidate)
+    plan.commit()
