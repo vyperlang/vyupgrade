@@ -163,6 +163,17 @@ def main(argv: list[str] | None = None) -> int:
         if requests
         else None
     )
+    if (
+        config.report_json is not None
+        and snapshot is not None
+        and (report_path := config.report_json.resolve())
+        in {*snapshot.roots, *snapshot.dependencies}
+    ):
+        print(
+            f"--report-json {config.report_json} resolves to input or dependency {report_path}",
+            file=sys.stderr,
+        )
+        return 4
     closure_report = ClosureReport(requested=True) if config.include_dependencies else None
     if closure_report is not None and requests:
         dependency_requests, closure = _dependency_requests(requests, config, snapshot)

@@ -7,6 +7,9 @@
   the decorators are left unchanged. A single lock name is still rewritten.
 - Stop reporting `VYD003` for the argument of an interface cast such as
   `ERC20(token).decimals()`, whose call mutability is already resolved.
+- Refuse a `--report-json` path that resolves, through symlinks too, to an
+  input contract or one of its imports, instead of overwriting it with the
+  report.
 
 ## 0.10.0 - 2026-11-07
 

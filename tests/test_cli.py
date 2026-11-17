@@ -79,6 +79,49 @@ def __init__():
     assert any(fix["rule"] == "VY002" for fix in data["files"][0]["fixes"])
 
 
+LEGACY_CONTRACT = """# @version 0.3.10
+@external
+def __init__():
+    pass
+"""
+
+
+def test_report_json_refuses_input_contract(tmp_path: Path, failing_target_compiler) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(LEGACY_CONTRACT, encoding="utf-8")
+
+    code = main([str(contract), "--check", "--report-json", str(contract)])
+
+    assert contract.read_text(encoding="utf-8") == LEGACY_CONTRACT
+    assert code == 4
+
+
+def test_report_json_refuses_symlink_to_input_contract(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(LEGACY_CONTRACT, encoding="utf-8")
+    link = tmp_path / "report.json"
+    link.symlink_to(contract)
+
+    code = main([str(contract), "--write", "--report-json", str(link)])
+
+    assert contract.read_text(encoding="utf-8") == LEGACY_CONTRACT
+    assert code == 4
+
+
+def test_report_json_refuses_imported_module(tmp_path: Path, passing_compiler) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text("# pragma version 0.4.3\nimport lib\n", encoding="utf-8")
+    lib = tmp_path / "lib.vy"
+    lib.write_text(LEGACY_CONTRACT, encoding="utf-8")
+
+    code = main([str(contract), "--check", "--report-json", str(lib)])
+
+    assert lib.read_text(encoding="utf-8") == LEGACY_CONTRACT
+    assert code == 4
+
+
 def test_write_mode_is_idempotent(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "migration_03.vy"
     contract.write_text(
