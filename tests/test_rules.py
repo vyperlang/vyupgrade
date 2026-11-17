@@ -107,6 +107,22 @@ def f(token_addr: address) -> uint256:
     assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
 
 
+def test_native_dynamic_array_calls_accept_space_before_bracket(config) -> None:
+    source = """# @version 0.3.9
+@external
+def f() -> uint256:
+    xs: DynArray [uint256, 2] = []
+    xs.append(7)
+    return xs.pop()
+"""
+
+    result = apply_rules(source, config())
+
+    assert "    xs.append(7)" in result.source
+    assert "    return xs.pop()" in result.source
+    assert not [diag for diag in result.diagnostics if diag.rule == "VYD003"]
+
+
 def test_erc721_import_migration_preserves_staticcall_inference(config) -> None:
     source = """# @version 0.3.10
 from vyper.interfaces import ERC721

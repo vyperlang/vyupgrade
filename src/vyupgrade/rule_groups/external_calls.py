@@ -3,7 +3,13 @@ from __future__ import annotations
 import ast
 import re
 
-from ..analysis import SourceFacts, infer_expr_type, normalize_type, unwrap_type
+from ..analysis import (
+    SourceFacts,
+    dynamic_array_element_type,
+    infer_expr_type,
+    normalize_type,
+    unwrap_type,
+)
 from ..models import Diagnostic, Fix
 from ..rule_helpers import innermost_non_overlapping as _innermost_non_overlapping
 from ..rule_registry import Rule, RuleContext, crossing
@@ -173,12 +179,7 @@ def _external_call_keywords_once(
             or infer_expr_type(target, vars_for_line, facts, preserve_shape=True)
             or _conditional_receiver_type(target, vars_for_line, facts)
         )
-        if (
-            method in {"append", "pop"}
-            and target_type is not None
-            and target_type.startswith("DynArray[")
-            and find_matching(target_type, len("DynArray"), "[", "]") == len(target_type) - 1
-        ):
+        if method in {"append", "pop"} and dynamic_array_element_type(target_type) is not None:
             resolved.add(end)
             unknown.pop(end, None)
             continue

@@ -364,17 +364,26 @@ def unwrap_type(type_name: str) -> str:
     return wrapper.group(1).strip() if wrapper else type_name
 
 
+def dynamic_array_element_type(type_name: str | None) -> str | None:
+    if type_name is None:
+        return None
+    type_name = type_name.strip()
+    match = re.match(r"DynArray[ \t]*\[", type_name)
+    if match is None:
+        return None
+    open_index = match.end() - 1
+    if find_matching(type_name, open_index, "[", "]") != len(type_name) - 1:
+        return None
+    parts = split_top_level_args(type_name[open_index + 1 : -1])
+    return parts[0].strip() if parts is not None and len(parts) == 2 else None
+
+
 def iterable_element_type(type_name: str | None) -> str | None:
     if type_name is None:
         return None
     type_name = type_name.strip()
-    if type_name.startswith("DynArray["):
-        open_index = type_name.find("[")
-        close_index = find_matching(type_name, open_index, "[", "]")
-        if close_index == len(type_name) - 1:
-            parts = split_top_level_args(type_name[open_index + 1 : close_index])
-            if parts is not None and len(parts) == 2:
-                return parts[0].strip()
+    if (element_type := dynamic_array_element_type(type_name)) is not None:
+        return element_type
     if type_name.endswith("]"):
         depth = 0
         for index in range(len(type_name) - 1, -1, -1):
@@ -766,7 +775,7 @@ def _looks_like_type(type_name: str, known_types: set[str]) -> bool:
         return bool(parts) and all(_looks_like_type(part.strip(), known_types) for part in parts)
     if TYPE_WRAPPER_RE.fullmatch(type_name):
         return True
-    if type_name.startswith(("Bytes[", "String[", "DynArray[", "HashMap[")):
+    if re.match(r"(?:Bytes|String|DynArray|HashMap)[ \t]*\[", type_name):
         return True
     if type_name in known_types:
         return True

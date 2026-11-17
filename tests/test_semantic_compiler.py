@@ -241,6 +241,52 @@ def test_migration_writes_compiler_resolved_calls(tmp_path: Path) -> None:
     assert main([str(path), "--check"]) == 0
 
 
+def test_discarded_imported_return_uses_compiler_type(tmp_path: Path) -> None:
+    abi = [{
+        "type": "function",
+        "name": "totalSupply",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+    }]
+    (tmp_path / "Other.json").write_text(json.dumps(abi))
+    path = tmp_path / "caller.vy"
+    path.write_text("""# @version 0.3.10
+import Other as IERC20
+
+@external
+def probe(a: address):
+    IERC20(a).totalSupply()
+""")
+
+    assert main([str(path), "--write"]) == 0
+    assert ": bool = staticcall IERC20(a).totalSupply()" in path.read_text()
+
+
+def test_discarded_local_return_uses_widened_bound(tmp_path: Path) -> None:
+    path = tmp_path / "caller.vy"
+    path.write_text("""# @version 0.3.10
+interface Reader:
+    def data() -> Bytes[1]: view
+
+implements: Reader
+
+@external
+@view
+def data() -> Bytes[5]:
+    return b"abcde"
+
+@external
+def probe(a: address):
+    Reader(a).data()
+""")
+
+    assert main([str(path), "--write", "--aggressive", "--target-version", "0.5.0a3"]) == 0
+    migrated = path.read_text()
+    assert "def data() -> Bytes[5]: view" in migrated
+    assert ": Bytes[5] = staticcall Reader(a).data()" in migrated
+
+
 @pytest.mark.parametrize(
     ("body", "expected"),
     [

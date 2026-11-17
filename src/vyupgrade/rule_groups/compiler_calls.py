@@ -393,8 +393,9 @@ def _function_edits(
         start, end = starts[span.start], ends[span.end]
         mode = proof.mode
         interface = program.aliases.get(proof.interface, proof.interface)
+        local_interface = proof.interface in program.local_interfaces
         if (
-            proof.interface in program.local_interfaces or interface != proof.interface
+            local_interface or interface != proof.interface
         ) and context.facts.interfaces.get(interface, {}).get(method) != mode:
             return None
         keyword, code = (
@@ -424,11 +425,13 @@ def _function_edits(
             expr = source.span(discarded[call_id], source_id=source_id)
             if expr is None or expr.start not in starts:
                 return None
-            type_name = (
-                context.facts.interface_returns.get(interface, {}).get(method) or return_type
-            )
+            if local_interface:
+                # Earlier rules can change inline return bounds. Imported names can
+                # collide with the built-in interface table, so use compiler evidence for them.
+                current_type = context.facts.interface_returns.get(interface, {}).get(method)
+                return_type = current_type or return_type
             variable = discard_assignment_name(row, taken)
-            assignment = f"{variable}: {type_name} = "
+            assignment = f"{variable}: {return_type} = "
             prefixes[starts[expr.start]].append((-(len(context.source) + 1), assignment))
             fixes.append(
                 Fix(

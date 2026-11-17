@@ -9,6 +9,7 @@ from vyupgrade.analysis import infer_expr_type, iterable_element_type, parse_sou
     ("type_name", "expected"),
     [
         ("DynArray[DynArray[uint256, 2], 3]", "DynArray[uint256, 2]"),
+        ("DynArray [DynArray [uint256, 2], 3]", "DynArray [uint256, 2]"),
         ("DynArray[uint256[2], 3]", "uint256[2]"),
         ("uint256[2][3]", "uint256[2]"),
         ("DynArray[uint256, 2][3]", "DynArray[uint256, 2]"),
