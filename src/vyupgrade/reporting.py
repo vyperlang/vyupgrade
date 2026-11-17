@@ -480,12 +480,15 @@ def _message_style(style: str) -> str:
 
 
 def can_replace_json_report(path: Path) -> bool:
-    """Whether writing the JSON report to path replaces nothing but an empty file or a report."""
+    """Whether writing the JSON report to path replaces nothing but a blank file or a report.
+
+    Blank Vyper sources are still sources, so they are never replaceable.
+    """
     if not path.is_file():
         return True
     text = path.read_text(encoding="utf-8", errors="replace")
     if not text.strip():
-        return True
+        return path.resolve().suffix not in {".vy", ".vyi"}
     try:
         data = json.loads(text)
     except json.JSONDecodeError:

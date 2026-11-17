@@ -110,6 +110,21 @@ def test_report_json_refuses_symlink_to_input_contract(
     assert code == 4
 
 
+@pytest.mark.parametrize("source", ["", "\n\n"])
+def test_report_json_refuses_symlink_to_blank_input_contract(
+    tmp_path: Path, failing_target_compiler, source: str
+) -> None:
+    contract = tmp_path / "Empty.vy"
+    contract.write_text(source, encoding="utf-8")
+    link = tmp_path / "report.json"
+    link.symlink_to(contract)
+
+    code = main([str(contract), "--check", "--report-json", str(link)])
+
+    assert contract.read_text(encoding="utf-8") == source
+    assert code == 4
+
+
 def test_report_json_refuses_module_from_multiline_import(
     tmp_path: Path, passing_compiler
 ) -> None:
