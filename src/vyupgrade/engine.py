@@ -6,6 +6,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .closure import RetainedClosureInputs, stage_retained_closure_inputs
 from .compiler import (
     CompileResult,
     ImportClosure,
@@ -110,6 +111,7 @@ class MigrationBatch:
     files: list[MigrationFile]
     generated: list[GeneratedMigration]
     snapshot: ImportClosure | None = None
+    retained_closure_inputs: RetainedClosureInputs | None = None
 
     @property
     def reports(self) -> list[FileReport]:
@@ -313,6 +315,7 @@ def validate_migrations(
 ) -> ValidationDecision:
     """Validate each project's coherent candidate overlay and return its typed decision."""
     resolve_candidate = candidate_source or _unchanged_candidate
+    batch.retained_closure_inputs = None
     target_sources = candidate_sources(batch, resolve_candidate)
     scopes = tuple(_target_scopes(batch, target_sources))
     if batch.snapshot is not None:
@@ -325,7 +328,9 @@ def validate_migrations(
     has_dependencies = batch.snapshot is not None and bool(batch.snapshot.dependencies)
     with ExitStack() as overlays:
         shared_overlay = None
-        if config.include_dependencies and len(scopes) > 1:
+        if config.include_dependencies and target_sources and (
+            len(scopes) > 1 or config.closure_output is not None
+        ):
             # Closure output uses one import-root-relative layout for all projects.
             try:
                 shared_overlay = overlays.enter_context(target_overlay(
@@ -337,6 +342,11 @@ def validate_migrations(
                 ))
             except OverlayLayoutConflictError as exc:
                 raise OverlayLayoutConflictError(f"cannot export a shared closure: {exc}") from exc
+        if shared_overlay is not None and config.closure_output is not None:
+            retained = stage_retained_closure_inputs(config.closure_output, shared_overlay.root)
+            batch.retained_closure_inputs = retained
+            if not retained.files and len(scopes) == 1:
+                shared_overlay = None
         for files, generated, sources, snapshot in scopes:
             _validate_target_scope(
                 files, generated, sources, snapshot, config, has_dependencies, shared_overlay

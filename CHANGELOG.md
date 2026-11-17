@@ -13,6 +13,8 @@
   and imports, preserving the meaning of same-named modules in independent
   projects. Reject shared closure exports whose layout would change how an entry
   compiles.
+- Validate closure exports against files retained in an existing output directory
+  and reject changes to those inputs during the write.
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.

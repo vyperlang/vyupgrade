@@ -223,9 +223,15 @@ def main(argv: list[str] | None = None) -> int:
                 run_report.write_output = "formatter failed before the write transaction"
         if run_report.formatter_status != "failed" and validation_decision.write_allowed:
             try:
+                if batch.retained_closure_inputs is not None:
+                    assert config.closure_output is not None
+                    batch.retained_closure_inputs.verify(config.closure_output)
                 run_report.wrote_changes = plan.commit()
                 run_report.write_status = "committed" if run_report.wrote_changes else "no-op"
                 run_report.wrote_changes, _mismatches = plan.refresh_final_state()
+            except compiler.OverlayLayoutConflictError as exc:
+                run_report.write_status = "failed"
+                run_report.write_output = str(exc)
             except WriteTransactionError as exc:
                 changed, mismatches = plan.refresh_final_state()
                 run_report.wrote_changes = changed
@@ -504,6 +510,7 @@ def _emit_closure_output(
         config.target_version,
         config.compiler_search_paths,
         snapshot=batch.snapshot,
+        retained=batch.retained_closure_inputs,
     )
     run_report.closure.output_dir = str(result.root)
     run_report.closure.output_status = result.status

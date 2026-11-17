@@ -311,6 +311,62 @@ def test_shared_closure_preserves_each_projects_compilation(tmp_path, capsys, sh
         )
 
 
+@pytest.mark.parametrize("shadow", [False, True], ids=["unused-extra", "shadowing-extra"])
+def test_single_project_closure_compiles_with_retained_output_sources(tmp_path, capsys, shadow):
+    project = tmp_path / "project"
+    entry = project / "Main.vy"
+    output = tmp_path / "output"
+    project.mkdir()
+    output.mkdir()
+    (project / "helper.vyi").write_text(
+        "#pragma version ^0.4.2\n@external\n@view\ndef g() -> uint256:\n    ...\n"
+    )
+    source = (
+        "#pragma version 0.4.2\nimport helper\n"
+        "@external\n@view\ndef f(peer: address) -> uint256:\n"
+        "    return staticcall helper(peer).g()\n"
+    )
+    entry.write_text(source)
+    extra = output / ("helper.vy" if shadow else "unrelated.vy")
+    extra.write_text("#pragma version 0.4.3\nVALUE: constant(uint256) = 42\n")
+    extra_bytes = extra.read_bytes()
+
+    code = main([str(entry), "--include-dependencies", "--closure-output", str(output), "--write"])
+
+    assert extra.read_bytes() == extra_bytes
+    if shadow:
+        assert code == 4
+        assert "cannot export a shared closure" in capsys.readouterr().err
+        assert entry.read_text() == source
+        assert not (output / "Main.vy").exists()
+    else:
+        assert code == 0, capsys.readouterr().err
+        assert (output / "Main.vy").read_bytes() == entry.read_bytes()
+
+
+def test_late_retained_closure_file_blocks_source_writes(tmp_path, monkeypatch, capsys):
+    entry, _helper = _project(tmp_path)
+    source = entry.read_bytes()
+    output = tmp_path / "output"
+    original_validate = engine.validate_migrations
+
+    def validate(*args, **kwargs):
+        decision = original_validate(*args, **kwargs)
+        assert decision.status == "passed"
+        output.mkdir()
+        (output / "new.vy").write_text("# new retained source\n")
+        return decision
+
+    monkeypatch.setattr(engine, "validate_migrations", validate)
+    code = main([str(entry), "--include-dependencies", "--closure-output", str(output), "--write"])
+
+    assert code == 9
+    assert "retained closure output files changed after validation" in capsys.readouterr().out
+    assert entry.read_bytes() == source
+    assert not (output / "main.vy").exists()
+    assert (output / "new.vy").read_text() == "# new retained source\n"
+
+
 @pytest.mark.parametrize(
     "import_line",
     ["from.lib import Main as m", "from . lib import Main as m", "import lib . Main as m"],
