@@ -8,12 +8,19 @@ from rich.console import Console
 from vyupgrade import __version__
 from vyupgrade.models import (
     ClosureReport,
+    ContentIdentity,
+    DeclaredSpec,
+    DependencyContext,
     Diagnostic,
+    ExitStatus,
     FileReport,
     Fix,
+    ResolvedPackage,
     RunReport,
+    ValidationAttestation,
     ValidationDecision,
     ValidationIssue,
+    package_set_sha256,
 )
 from vyupgrade.reporting import (
     THEME,
@@ -50,12 +57,51 @@ def test_render_text_includes_compile_errors() -> None:
     assert 'Version specification "0.2.11" is not compatible' in text
 
 
+def test_json_report_states_shared_inventories_once() -> None:
+    sources = (ContentIdentity("/p/a.vy", "a" * 64), ContentIdentity("/p/b.vy", "b" * 64))
+    attestation = ValidationAttestation(
+        declared_spec=DeclaredSpec("c" * 64, sources, ()),
+        authority_rule="source-exact",
+        resolved_compiler=None,
+        dependency_context=DependencyContext(
+            mode="isolated",
+            resolved_packages=(ResolvedPackage("vyper", "0.4.3", None, "d" * 64),),
+        ),
+        compiler_started=True,
+        completion_status="completed",
+        exit_status=ExitStatus(0),
+        validated_source_set=sources[:1],
+        attempt_sequence=(),
+        failure_origin=None,
+        compiler_output=None,
+    )
+    files = [
+        FileReport(Path(source.path), source_attestation=attestation, target_attestation=attestation)
+        for source in sources
+    ]
+
+    data = RunReport(source_version=None, target_version="0.4.3", files=files).to_json_obj()
+
+    packages = [{"name": "vyper", "version": "0.4.3", "source": None, "artifact_sha256": "d" * 64}]
+    assert data["source_sets"] == {"c" * 64: [source.to_json_obj() for source in sources]}
+    assert data["package_sets"] == {package_set_sha256(packages): packages}
+    for file in data["files"]:
+        for side in ("source_attestation", "target_attestation"):
+            reported = file["validation"][side]
+            assert reported["declared_spec"]["snapshot"] == {"sha256": "c" * 64}
+            assert "sources" not in reported["declared_spec"]
+            assert "resolved_packages" not in reported["dependency_context"]
+            assert reported["dependency_context"]["resolved_packages_sha256"] == (
+                package_set_sha256(packages)
+            )
+
+
 def test_json_report_declares_structured_error_schema_version() -> None:
     report = RunReport(source_version=None, target_version="0.4.3", files=[])
 
     data = report.to_json_obj()
 
-    assert data["schema_version"] == 6
+    assert data["schema_version"] == 7
     assert data["files"] == []
     assert data["target_version"] == "0.4.3"
     assert data["closure"] is None

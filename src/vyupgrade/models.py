@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -55,7 +57,7 @@ ValidationIssueCode = Literal[
     "method_identifiers_changed",
     "storage_layout_changed",
 ]
-REPORT_SCHEMA_VERSION = 6
+REPORT_SCHEMA_VERSION = 7
 DEFAULT_COMPILER_TIMEOUT_SECONDS = 120.0
 DEFAULT_NETWORK_TIMEOUT_SECONDS = 300.0
 
@@ -159,9 +161,9 @@ class DeclaredSpec:
     compiler_declarations: tuple[CompilerDeclaration, ...]
 
     def to_json_obj(self) -> dict[str, object]:
+        """The spec without its sources, which the report states once under ``source_sets``."""
         return {
             "snapshot": {"sha256": self.snapshot_sha256},
-            "sources": [source.to_json_obj() for source in self.sources],
             "compiler_declarations": [
                 declaration.to_json_obj() for declaration in self.compiler_declarations
             ],
@@ -263,14 +265,20 @@ class ValidationAttestation:
     failure_origin: FailureOrigin | TargetFailureOrigin | None
     compiler_output: CompilerOutput | None
 
-    def to_json_obj(self) -> dict[str, object]:
+    def to_json_obj(self, inventories: ReportInventories) -> dict[str, object]:
+        dependency_context = self.dependency_context.to_json_obj()
+        del dependency_context["resolved_packages"]
+        dependency_context["resolved_packages_sha256"] = inventories.add_packages(
+            self.dependency_context.resolved_packages
+        )
+        inventories.add_sources(self.declared_spec)
         return {
             "declared_spec": self.declared_spec.to_json_obj(),
             "authority_rule": self.authority_rule,
             "resolved_compiler": (
                 self.resolved_compiler.to_json_obj() if self.resolved_compiler is not None else None
             ),
-            "dependency_context": self.dependency_context.to_json_obj(),
+            "dependency_context": dependency_context,
             "compiler_started": self.compiler_started,
             "completion_status": self.completion_status,
             "exit_status": self.exit_status.to_json_obj(),
@@ -281,6 +289,31 @@ class ValidationAttestation:
                 self.compiler_output.to_json_obj() if self.compiler_output is not None else None
             ),
         }
+
+
+@dataclass
+class ReportInventories:
+    """Source and package lists the report states once, keyed by digest, for attestations to reference."""
+
+    source_sets: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    package_sets: dict[str, list[dict[str, str | None]]] = field(default_factory=dict)
+
+    def add_sources(self, declared_spec: DeclaredSpec) -> None:
+        self.source_sets[declared_spec.snapshot_sha256] = [
+            source.to_json_obj() for source in declared_spec.sources
+        ]
+
+    def add_packages(self, packages: tuple[ResolvedPackage, ...]) -> str:
+        entries = [package.to_json_obj() for package in packages]
+        digest = package_set_sha256(entries)
+        self.package_sets[digest] = entries
+        return digest
+
+
+def package_set_sha256(packages: list[dict[str, str | None]]) -> str:
+    """Digest of a resolved package list: SHA-256 of its compact, key-sorted JSON."""
+    encoded = json.dumps(packages, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 @dataclass
@@ -428,7 +461,8 @@ class RunReport:
     def to_json_obj(self) -> dict[str, Any]:
         from . import __version__
 
-        return {
+        inventories = ReportInventories()
+        report = {
             "schema_version": REPORT_SCHEMA_VERSION,
             "producer": {"name": "vyupgrade", "version": __version__},
             "source_version": self.source_version,
@@ -456,12 +490,12 @@ class RunReport:
                         "source_compiler": file.source_compiler,
                         "source_compile": file.source_compile,
                         "source_attestation": (
-                            file.source_attestation.to_json_obj()
+                            file.source_attestation.to_json_obj(inventories)
                             if file.source_attestation is not None
                             else None
                         ),
                         "target_attestation": (
-                            file.target_attestation.to_json_obj()
+                            file.target_attestation.to_json_obj(inventories)
                             if file.target_attestation is not None
                             else None
                         ),
@@ -493,3 +527,6 @@ class RunReport:
             "test_output": self.test_output,
             "closure": self.closure.to_json_obj() if self.closure else None,
         }
+        report["source_sets"] = inventories.source_sets
+        report["package_sets"] = inventories.package_sets
+        return report
