@@ -26,7 +26,11 @@ from packaging.version import InvalidVersion, Version
 from uv import find_uv_bin
 
 from .ast_facts import compiler_source_sha256, iter_nodes
-from .compiler_runner import SOURCE_EVIDENCE_FORMATS
+from .compiler_runner import (
+    SOURCE_EVIDENCE_FORMATS,
+    SOURCE_VALIDATION_ARGUMENT,
+    source_validation_command,
+)
 from .models import (
     DEFAULT_NETWORK_TIMEOUT_SECONDS,
     CompilerAuthority,
@@ -1704,6 +1708,13 @@ def _run_compile_with_formats(
         source_text=source_text,
         requested_evidence=requested_evidence,
     )
+    if project_compiler and process.compiler_started and "layout" in formats:
+        # Mirror the adapter's effective source command using the resolved identity.
+        effective_command = source_validation_command(process.command, process.resolved_compiler)
+        if effective_command != process.command:
+            process = replace(process, command=effective_command)
+            unavailable_formats = (*unavailable_formats, "layout")
+            formats = tuple(name for name in formats if name != "layout")
     if process.compiler_started and path.is_file():
         process = replace(
             process,
@@ -2011,6 +2022,7 @@ def _run_compiler_process(
             full,
             context,
             managed_compiler=managed_compiler,
+            source_compiler=project_compiler,
             requested_evidence=requested_evidence,
             compiler_authority=authority,
             compiler_declarations=declarations,
@@ -2199,6 +2211,7 @@ def _run_compiler_adapter(
     context: DependencyContext,
     *,
     managed_compiler: bool,
+    source_compiler: bool,
     requested_evidence: tuple[str, ...] = (),
     compiler_authority: CompilerAuthority,
     compiler_declarations: tuple[CompilerDeclaration, ...],
@@ -2222,6 +2235,7 @@ def _run_compiler_adapter(
         f"{compiler_timeout:g}",
         "managed" if managed_compiler else "explicit",
         coherence_spec or "",
+        *((SOURCE_VALIDATION_ARGUMENT,) if source_compiler else ()),
         *(
             ("--source-evidence", ",".join(requested_evidence))
             if managed_compiler and requested_evidence

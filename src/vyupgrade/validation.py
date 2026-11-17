@@ -145,12 +145,21 @@ def decide_file_validation(report: FileReport, config: Config) -> ValidationDeci
             waiver="--allow-unvalidated-source",
         )
     elif report.source_unavailable_artifacts:
+        layout_only = (
+            report.source_unavailable_artifacts == ["layout"]
+            and "layout" in report.source_unavailable_formats
+            and report.abi_equal is not None
+            and report.method_ids_equal is not None
+        )
+        use_layout_waiver = (
+            layout_only and config.allow_storage_layout_change and not config.allow_unvalidated_source
+        )
         require(
             "source_artifacts_unavailable",
             "source compiler did not produce required artifacts: "
             + ", ".join(report.source_unavailable_artifacts),
-            allowed=config.allow_unvalidated_source,
-            waiver="--allow-unvalidated-source",
+            allowed=config.allow_unvalidated_source or use_layout_waiver,
+            waiver="--allow-storage-layout-change" if use_layout_waiver else "--allow-unvalidated-source",
         )
 
     comparisons = (

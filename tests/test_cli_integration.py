@@ -879,6 +879,83 @@ def __init__():
     assert validation["decision"]["status"] == "passed"
 
 
+def test_real_legacy_source_layout_requires_explicit_waiver(tmp_path: Path) -> None:
+    contract = tmp_path / "Owned.vy"
+    original = """# @version 0.2.4
+
+owner: public(address)
+
+@external
+def __init__():
+    self.owner = msg.sender
+"""
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    args = [str(contract), "--write", "--report-json", str(report)]
+
+    assert main(args) == 3
+    assert contract.read_text(encoding="utf-8") == original
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "degraded"
+    assert validation["source_unavailable_formats"] == ["layout"]
+    assert validation["source_unavailable_artifacts"] == ["layout"]
+    assert validation["abi_equal"] is True
+    assert validation["method_ids_equal"] is True
+    assert validation["storage_layout_equal"] is None
+    assert validation["decision"]["status"] == "blocked"
+    assert len(validation["source_attestation"]["attempt_sequence"]) == 1
+
+    assert main([*args, "--allow-storage-layout-change"]) == 0
+    assert contract.read_text(encoding="utf-8").startswith("#pragma version 0.4.3")
+    decision = json.loads(report.read_text())["files"][0]["validation"]["decision"]
+    assert decision["status"] == "waived"
+    assert [(issue["code"], issue["waiver"]) for issue in decision["waivers"]] == [
+        ("source_artifacts_unavailable", "--allow-storage-layout-change")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("project_version", "requested_version", "expected_status", "unavailable"),
+    [("0.2.4", "0.2.16", "degraded", ("layout",)), ("0.2.16", "0.2.4", "passed", ())],
+)
+def test_real_project_source_layout_depends_on_resolved_compiler(
+    tmp_path: Path,
+    project_version: str,
+    requested_version: str,
+    expected_status: str,
+    unavailable: tuple[str, ...],
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        f"""[project]
+name = "legacy-layout"
+version = "0.1.0"
+requires-python = ">=3.8,<3.9"
+dependencies = ["vyper=={project_version}", "setuptools<82"]
+""",
+        encoding="utf-8",
+    )
+    contract = tmp_path / "Owned.vy"
+    contract.write_text(
+        f"# @version {project_version}\nowner: public(address)\n",
+        encoding="utf-8",
+    )
+
+    result = compile_source_file(contract, Config(paths=(contract,)), requested_version)
+
+    assert result.status == expected_status, result.stderr
+    assert result.compiler_authority == "project-manifest"
+    assert result.resolved_compiler == project_version
+    assert result.unavailable_formats == unavailable
+    assert unavailable_validation_artifacts(result) == list(unavailable)
+    assert result.command is not None
+    formats = result.command[result.command.index("-f") + 1].split(",")
+    assert formats == [
+        name for name in ("abi", "method_identifiers", "layout", "bytecode", "ast")
+        if name not in unavailable
+    ]
+    assert set(result.artifacts or ()) == set(formats)
+
+
 def test_real_python38_compiler_reports_vyper_exception(tmp_path: Path) -> None:
     contract = tmp_path / "Broken.vy"
     contract.write_text(

@@ -34,6 +34,10 @@
   assigning heterogeneous tuple members.
 - Require `--report-json` to use a separate path from migration inputs and
   outputs. An existing destination must be a recognized vyupgrade report.
+- Compile sources using Vyper before 0.2.16 without requesting the unsupported
+  storage layout output, so available ABI and method identifiers can be compared.
+  `--allow-storage-layout-change` can waive the unchecked layout when both
+  other comparisons ran.
 
 ## 0.10.0 - 2026-11-07
 
