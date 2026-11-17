@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 _BOUND_TYPES = frozenset({"String", "Bytes", "DynArray"})
 _SCALAR_TYPE_RE = re.compile(r"(?:bool|address|decimal|u?int\d+|bytes\d+)")
 _EXTERNAL_CALLS = frozenset({"StaticCall", "ExtCall"})
+# vyper.compiler.input_bundle.BUILTIN: the source id of every module Vyper itself ships.
+_BUILTIN_SOURCE_ID = -2
 
 RULES = (
     Rule(
@@ -130,14 +132,22 @@ def _compiler_modules(
     ):
         return None
     modules: dict[int, _Module] = {}
-    seen_ids: set[int] = set()
+    seen_paths: dict[int, object] = {}
     missing_caller = False
     for module in [root, *imports]:
         resolved = module.get("resolved_path")
         source_id = module.get("source_id")
-        if type(source_id) is not int or source_id < 0 or source_id in seen_ids:
+        if source_id == _BUILTIN_SOURCE_ID and module.get("is_interface") is True:
+            # Vyper's own interfaces share one id and are never captured candidates.
+            continue
+        if type(source_id) is not int or source_id < 0:
             return None
-        seen_ids.add(source_id)
+        if source_id in seen_paths:
+            # The compiler lists a module once per import request that reached it.
+            if seen_paths[source_id] != resolved:
+                return None
+            continue
+        seen_paths[source_id] = resolved
         actual_path = paths.get(resolved) if isinstance(resolved, str) else None
         module_path = Path(actual_path) if isinstance(actual_path, str) else None
         source = sources.get(module_path) if module_path is not None else None
@@ -377,6 +387,8 @@ def _check_consumers(
             identity = _node(_node(function.get("type")).get("type_decl_node"))
             source_id = identity.get("source_id")
             node_id = identity.get("node_id")
+            if source_id == _BUILTIN_SOURCE_ID:
+                continue
             span = module.span(call)
             line = line_number(module.source.original, span.start) if span is not None else 1
             if (
