@@ -10,7 +10,9 @@ from eth_tester.exceptions import TransactionFailed
 from eth_utils import keccak
 
 from vyupgrade import engine
+from vyupgrade.compiler import CompileResult
 from vyupgrade.models import Config
+from vyupgrade.rule_groups.interface_wildcards import _compiled_before_interfaces
 
 
 INTERFACE = """#pragma version 0.4.3
@@ -295,8 +297,9 @@ def test_wildcard_groups_one_declaration_across_compiler_source_ids(tmp_path: Pa
     assert engine.validate_migrations(batch, config).status == "passed", batch.reports
 
 
+@pytest.mark.parametrize("digest", [None, "0" * 64])
 def test_wildcard_keeps_bound_when_compiler_resolves_an_uncaptured_import(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, digest: str | None,
 ) -> None:
     compile_source_file = engine.compile_source_file
 
@@ -312,6 +315,8 @@ def test_wildcard_keeps_bound_when_compiler_resolves_an_uncaptured_import(
             "is_interface": False,
             "body": [],
         }
+        if digest is not None:
+            external_module["source_sha256sum"] = digest
         return replace(result, artifacts={
             **result.artifacts,
             "annotated_ast": {**annotated, "imports": [*annotated["imports"], external_module]},
@@ -427,3 +432,17 @@ def test_wildcard_keeps_bound_when_a_same_project_root_fails_to_compile(tmp_path
     assert _wildcards(batch) == []
     diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
     assert "no matching compiler evidence is available for other.vy" in diagnostic.message
+
+
+@pytest.mark.parametrize(
+    ("compiler", "artifacts", "exempt"),
+    [
+        ("0.3.10", {"bytecode": "0x00", "ast": {}}, True),
+        ("0.3.10", {"ast": {}}, False),
+        ("0.4.0b6", {"bytecode": "0x00", "ast": {}}, False),
+        ("0.4.3", {"bytecode": "0x00", "ast": {}}, False),
+    ],
+)
+def test_only_a_full_pre_04_compile_is_exempt(compiler, artifacts, exempt) -> None:
+    result = CompileResult("passed", artifacts=artifacts, resolved_compiler=compiler)
+    assert _compiled_before_interfaces(result) is exempt
