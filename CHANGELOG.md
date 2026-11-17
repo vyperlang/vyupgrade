@@ -8,8 +8,8 @@
 - Stop reporting `VYD003` for the argument of an interface cast such as
   `ERC20(token).decimals()`, whose call mutability is already resolved.
 - `--report-json` no longer overwrites an existing file, such as an input
-  contract, an imported module or a symlink to one, unless it is empty or an
-  earlier vyupgrade report; the run exits with status 4 instead.
+  contract, an imported module or a symlink to one, unless it is an earlier
+  vyupgrade report; the run exits with status 4 instead.
 
 ## 0.10.0 - 2026-11-07
 

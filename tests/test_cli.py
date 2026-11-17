@@ -111,17 +111,22 @@ def test_report_json_refuses_symlink_to_input_contract(
 
 
 @pytest.mark.parametrize("source", ["", "\n\n"])
+@pytest.mark.parametrize("target_name", ["Empty.vy", "empty"])
 def test_report_json_refuses_symlink_to_blank_input_contract(
-    tmp_path: Path, failing_target_compiler, source: str
+    tmp_path: Path, failing_target_compiler, source: str, target_name: str
 ) -> None:
-    contract = tmp_path / "Empty.vy"
-    contract.write_text(source, encoding="utf-8")
+    target = tmp_path / target_name
+    target.write_text(source, encoding="utf-8")
+    contract = target
+    if target.suffix != ".vy":
+        contract = tmp_path / "Contract.vy"
+        contract.symlink_to(target)
     link = tmp_path / "report.json"
-    link.symlink_to(contract)
+    link.symlink_to(target)
 
     code = main([str(contract), "--check", "--report-json", str(link)])
 
-    assert contract.read_text(encoding="utf-8") == source
+    assert target.read_text(encoding="utf-8") == source
     assert code == 4
 
 
@@ -164,13 +169,10 @@ def test_report_json_refuses_imported_json_interface(
     assert code == 4
 
 
-def test_report_json_replaces_empty_file_and_earlier_report(
-    tmp_path: Path, passing_compiler
-) -> None:
+def test_report_json_replaces_earlier_report(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text(LEGACY_CONTRACT, encoding="utf-8")
     report = tmp_path / "report.json"
-    report.write_text("", encoding="utf-8")
 
     first = main([str(contract), "--check", "--report-json", str(report)])
     first_report = report.read_text(encoding="utf-8")
