@@ -25,7 +25,7 @@ from .models import (
     ValidationDecision,
 )
 from .project import discover_files
-from .reporting import HumanReporter, write_json_report
+from .reporting import HumanReporter, can_replace_json_report, write_json_report
 from .validation import decide_run_validation, validation_exit_code
 from .versions import MigrationContext
 from .write_plan import MigrationPlan, PlanConflictError, WriteTransactionError
@@ -136,12 +136,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 4
-    # The import closure below comes from a line-based scanner that can miss
-    # imports, so refuse Vyper sources outright whether or not it finds them.
-    if config.report_json and config.report_json.resolve().suffix in {".vy", ".vyi"}:
+    if config.report_json and not can_replace_json_report(config.report_json):
         print(
-            f"--report-json {config.report_json} resolves to Vyper source "
-            f"{config.report_json.resolve()}",
+            f"--report-json {config.report_json} exists and is not a vyupgrade report; "
+            "refusing to overwrite it",
             file=sys.stderr,
         )
         return 4
@@ -172,17 +170,6 @@ def main(argv: list[str] | None = None) -> int:
         if requests
         else None
     )
-    if (
-        config.report_json is not None
-        and snapshot is not None
-        and (report_path := config.report_json.resolve())
-        in {*snapshot.roots, *snapshot.dependencies}
-    ):
-        print(
-            f"--report-json {config.report_json} resolves to input or dependency {report_path}",
-            file=sys.stderr,
-        )
-        return 4
     closure_report = ClosureReport(requested=True) if config.include_dependencies else None
     if closure_report is not None and requests:
         dependency_requests, closure = _dependency_requests(requests, config, snapshot)

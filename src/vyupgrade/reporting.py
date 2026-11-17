@@ -479,5 +479,20 @@ def _message_style(style: str) -> str:
     }.get(style, style)
 
 
+def can_replace_json_report(path: Path) -> bool:
+    """Whether writing the JSON report to path replaces nothing but an empty file or a report."""
+    if not path.is_file():
+        return True
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        return True
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    producer = data.get("producer") if isinstance(data, dict) else None
+    return isinstance(producer, dict) and producer.get("name") == "vyupgrade"
+
+
 def write_json_report(path: Path, report: RunReport) -> None:
     path.write_text(json.dumps(report.to_json_obj(), indent=2, sort_keys=True) + "\n")

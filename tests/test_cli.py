@@ -126,13 +126,20 @@ def test_report_json_refuses_module_from_multiline_import(
     assert code == 4
 
 
-def test_report_json_refuses_json_interface_from_multiline_import(
-    tmp_path: Path, passing_compiler
+@pytest.mark.parametrize(
+    "import_statement",
+    [
+        "import token_abi",
+        "from . import (\n    token_abi,\n)",
+        "from . import \\\n    token_abi",
+        "from . import(token_abi)",
+    ],
+)
+def test_report_json_refuses_imported_json_interface(
+    tmp_path: Path, passing_compiler, import_statement: str
 ) -> None:
     contract = tmp_path / "main.vy"
-    contract.write_text(
-        "# pragma version 0.4.3\nfrom . import (\n    token_abi,\n)\n", encoding="utf-8"
-    )
+    contract.write_text(f"# pragma version 0.4.3\n{import_statement}\n", encoding="utf-8")
     interface = tmp_path / "token_abi.json"
     interface.write_text("[]\n", encoding="utf-8")
 
@@ -142,16 +149,22 @@ def test_report_json_refuses_json_interface_from_multiline_import(
     assert code == 4
 
 
-def test_report_json_refuses_imported_json_interface(tmp_path: Path, passing_compiler) -> None:
-    contract = tmp_path / "main.vy"
-    contract.write_text("# pragma version 0.4.3\nimport token_abi\n", encoding="utf-8")
-    interface = tmp_path / "token_abi.json"
-    interface.write_text("[]\n", encoding="utf-8")
+def test_report_json_replaces_empty_file_and_earlier_report(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text(LEGACY_CONTRACT, encoding="utf-8")
+    report = tmp_path / "report.json"
+    report.write_text("", encoding="utf-8")
 
-    code = main([str(contract), "--check", "--report-json", str(interface)])
+    first = main([str(contract), "--check", "--report-json", str(report)])
+    first_report = report.read_text(encoding="utf-8")
+    second = main([str(contract), "--check", "--report-json", str(report)])
 
-    assert interface.read_text(encoding="utf-8") == "[]\n"
-    assert code == 4
+    assert first in {1, 2}
+    assert second == first
+    assert json.loads(first_report)["producer"]["name"] == "vyupgrade"
+    assert json.loads(report.read_text(encoding="utf-8"))["producer"]["name"] == "vyupgrade"
 
 
 def test_write_mode_is_idempotent(tmp_path: Path, passing_compiler) -> None:
