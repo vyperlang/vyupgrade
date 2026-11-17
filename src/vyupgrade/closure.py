@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 
 from . import compiler
 from .models import Config
+from .write_plan import read_regular_file_or_missing
 
 
 @dataclass(frozen=True)
@@ -20,12 +21,87 @@ class ClosureWriteResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class RetainedClosureInputs:
+    root: Path
+    replaced: frozenset[Path]
+    files: tuple[tuple[Path, bytes], ...]
+
+    def verify(self, output: Path) -> None:
+        root = _closure_output_root(output)
+        if root != self.root or _retained_inputs(root, self.replaced) != self.files:
+            raise compiler.OverlayLayoutConflictError(
+                f"retained closure output files changed after validation: {output}"
+            )
+
+
+def stage_retained_closure_inputs(output: Path, stage: Path) -> RetainedClosureInputs:
+    """Mirror the existing files that will remain visible to the compiler after export."""
+    root = _closure_output_root(output)
+    replaced = frozenset(path.relative_to(stage) for path in stage.rglob("*") if path.is_file())
+    files = _retained_inputs(root, replaced)
+    try:
+        for relative, content in files:
+            destination = stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+    except OSError as exc:
+        raise compiler.OverlayLayoutConflictError(
+            f"could not stage retained closure output files from {root}: {exc}"
+        ) from exc
+    return RetainedClosureInputs(root, replaced, files)
+
+
+def _closure_output_root(output: Path) -> Path:
+    try:
+        return output.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise compiler.OverlayLayoutConflictError(
+            f"could not resolve closure output directory {output}: {exc}"
+        ) from exc
+
+
+def _retained_inputs(
+    root: Path, replaced: frozenset[Path],
+) -> tuple[tuple[Path, bytes], ...]:
+    def raise_walk_error(exc: OSError) -> None:
+        raise exc
+
+    files = []
+    try:
+        if not root.is_dir():
+            return ()
+        for directory, subdirectories, names in os.walk(root, onerror=raise_walk_error):
+            current = Path(directory)
+            for name in subdirectories:
+                if (current / name).is_symlink():
+                    raise OSError(f"cannot isolate a retained directory symlink: {current / name}")
+            for name in names:
+                path = current / name
+                relative = path.relative_to(root)
+                if relative in replaced or (
+                    path.suffix not in compiler.VALIDATION_SOURCE_SUFFIXES
+                    and name not in {"pyproject.toml", "uv.lock", "uv.toml"}
+                ):
+                    continue
+                content = read_regular_file_or_missing(path)
+                if content is not None:
+                    files.append((relative, content))
+    except OSError as exc:
+        raise compiler.OverlayLayoutConflictError(
+            f"could not capture retained closure output files in {root}: {exc}"
+        ) from exc
+    return tuple(sorted(files))
+
+
 def write_closure_output(
     output_root: Path,
     sources: Mapping[Path, str],
     target_version: str,
     search_paths: tuple[Path, ...] = (),
-    *, snapshot: compiler.ImportClosure | None = None,
+    *,
+    snapshot: compiler.ImportClosure | None = None,
+    retained: RetainedClosureInputs | None = None,
 ) -> ClosureWriteResult:
     resolved = output_root
     try:
@@ -57,6 +133,12 @@ def write_closure_output(
                 (),
                 f"refusing to write the closure through linked output path: {linked}",
             )
+        if retained is not None:
+            if frozenset(relative_files) != retained.replaced:
+                raise compiler.OverlayLayoutConflictError(
+                    f"closure output file plan changed after validation: {resolved}"
+                )
+            retained.verify(output_root)
         resolved.mkdir(parents=True, exist_ok=True)
         overlay = compiler.materialize_target_overlay(
             sources,
@@ -67,6 +149,8 @@ def write_closure_output(
             snapshot=snapshot,
         )
         assert overlay is not None
+        if retained is not None:
+            retained.verify(output_root)
         return ClosureWriteResult("written", resolved, tuple(sorted(set(overlay.paths.values()))))
     except (compiler.OverlayLayoutConflictError, OSError) as exc:
         return ClosureWriteResult("failed", resolved, (), str(exc))

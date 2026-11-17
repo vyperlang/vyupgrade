@@ -19,6 +19,7 @@ from pathlib import Path
 
 _VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*)?\b")
 _MANAGED_WORKER_ARGUMENT = "--managed-compiler-worker"
+SOURCE_VALIDATION_ARGUMENT = "--source-validation"
 SOURCE_EVIDENCE_FORMATS = {
     "0.3.10": "external_calls_v1",
     "0.5.0a3": "annotated_ast",
@@ -31,6 +32,9 @@ def main() -> None:
         _managed_compiler_worker(sys.argv[3:], sys.argv[2] or None)
         return
     result_path, timeout, managed_value, coherence, *command = sys.argv[1:]
+    source_validation = command[:1] == [SOURCE_VALIDATION_ARGUMENT]
+    if source_validation:
+        command = command[1:]
     requested = ()
     if managed_value == "managed" and command[:1] == ["--source-evidence"]:
         requested = command[1].split(",")
@@ -80,6 +84,8 @@ def main() -> None:
         )
         return
 
+    if source_validation:
+        command = source_validation_command(command, resolved_compiler)
     capability = SOURCE_EVIDENCE_FORMATS.get(resolved_compiler)
     try:
         process = (
@@ -130,6 +136,20 @@ def main() -> None:
             **evidence,
         },
     )
+
+
+def source_validation_command(command: list[str], resolved_compiler: str | None) -> list[str]:
+    """Select source outputs after identifying the compiler that will run."""
+    release = re.match(r"^(\d+)\.(\d+)\.(\d+)", resolved_compiler or "")
+    if release is None or tuple(map(int, release.groups())) >= (0, 2, 16):
+        return command
+    index = command.index("-f", 1) + 1
+    formats = command[index].split(",")
+    if "layout" not in formats:
+        return command
+    # Vyper 0.2.16 added layout output. Keep the other source formats required.
+    formats.remove("layout")
+    return [*command[:index], ",".join(formats), *command[index + 1 :]]
 
 
 def _run_managed_compiler(

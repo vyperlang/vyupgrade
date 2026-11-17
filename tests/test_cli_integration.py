@@ -35,6 +35,72 @@ def _tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def test_real_legacy_source_error_uses_original_project_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = tmp_path / "project"
+    contract = project / "contracts" / "Broken.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.3.10\n@external\ndef probe() -> uint256:\n    return True\n")
+    report = tmp_path / "errors.json"
+
+    assert main(
+        [
+            str(contract), "--compiler-search-paths", str(project),
+            "--target-version", "0.4.3", "--report-json", str(report),
+        ]
+    ) == 2
+
+    file = json.loads(report.read_text())["files"][0]
+    assert 'contract "project/contracts/Broken.vy:4"' in file["source_error"]
+    assert file["source_error_type"] == "InvalidType"
+    attestation = file["validation"]["source_attestation"]
+    assert 'contract "contracts/Broken.vy:4"' in attestation["compiler_output"]["stderr"]
+    assert attestation["validated_source_set"] == [{
+        "path": str(contract.resolve()),
+        "sha256": hashlib.sha256(contract.read_bytes()).hexdigest(),
+    }]
+
+
+def test_real_staged_errors_name_dependency_with_same_basename(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = tmp_path / "project"
+    contract = project / "contracts" / "Broken.vy"
+    dependency = project / "dep" / "Broken.vy"
+    contract.parent.mkdir(parents=True)
+    dependency.parent.mkdir()
+    contract.write_text(
+        "#pragma version 0.4.3\nfrom dep import Broken\n\n"
+        "@external\ndef probe() -> uint256:\n    return Broken.bad()\n"
+    )
+    dependency.write_text("#pragma version 0.4.3\n@internal\ndef bad() -> uint256:\n    return True\n")
+    report = tmp_path / "errors.json"
+
+    assert main(
+        [
+            str(contract), "--compiler-search-paths", str(project),
+            "--target-version", "0.4.3", "--report-json", str(report),
+        ]
+    ) == 2
+
+    location = 'contract "project/dep/Broken.vy:4"'
+    output = capsys.readouterr().out
+    assert output.count(location) == 2
+    assert "vyupgrade-target-" not in output
+    file = json.loads(report.read_text())["files"][0]
+    for side in ("source", "target"):
+        error = file[f"{side}_error"]
+        assert location in error
+        assert "return True" in error
+        assert "vyupgrade-target-" not in error
+        assert file[f"{side}_error_type"] == "TypeMismatch"
+        raw = file["validation"][f"{side}_attestation"]["compiler_output"]["stderr"]
+        assert "vyupgrade-target-" in raw and 'dep/Broken.vy:4"' in raw
+
+
 def test_beta_wrapper_attests_vyper_distribution(tmp_path: Path) -> None:
     path = tmp_path / "entry.vy"
     path.write_text("# @version 0.1.0b8\n@public\ndef f():\n    pass\n")
@@ -200,6 +266,73 @@ pools: HashMap[address, uint256]
         "label": 2,
         "pools": 1,
     }
+
+
+def test_real_mapped_struct_bound_change_blocks_write(tmp_path: Path) -> None:
+    contract = tmp_path / "mapped_struct.vy"
+    source = """# @version 0.3.10
+
+struct Record:
+    items: DynArray[uint256, max_value(int128)]
+    tail: uint256
+
+records: HashMap[address, Record]
+
+@external
+@view
+def tail_of(owner: address) -> uint256:
+    return self.records[owner].tail
+
+@external
+def set_tail(owner: address, v: uint256):
+    self.records[owner].tail = v
+"""
+    contract.write_text(source, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--source-version",
+            "0.3.10",
+            "--target-version",
+            "0.4.3",
+            "--write",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    data = json.loads(report.read_text(encoding="utf-8"))
+    file = data["files"][0]
+    validation = file["validation"]
+    assert validation["source_compile"] == validation["target_compile"] == "passed"
+    assert "VY094" in {fix["rule"] for fix in file["fixes"]}
+    assert validation["storage_layout_equal"] is False
+    assert validation["decision"]["status"] == "blocked"
+    assert code == 7
+    assert data["wrote_changes"] is False
+    assert contract.read_text(encoding="utf-8") == source
+
+
+def test_real_mapped_struct_constant_arithmetic_bound_can_migrate(tmp_path: Path) -> None:
+    contract = tmp_path / "constant_bound.vy"
+    source = """# @version 0.3.10
+
+BASE: constant(uint256) = 2
+BOUND: constant(uint256) = BASE + 3
+
+struct Record:
+    items: DynArray[uint256, BOUND]
+
+records: HashMap[address, Record]
+"""
+    contract.write_text(source, encoding="utf-8")
+
+    assert main([str(contract), "--target-version", "0.4.3", "--write"]) == 0
+    assert contract.read_text(encoding="utf-8") == source.replace(
+        "# @version 0.3.10", "#pragma version 0.4.3", 1
+    )
 
 
 def test_real_compiler_nested_array_layouts_are_comparable(tmp_path: Path) -> None:
@@ -810,6 +943,83 @@ def __init__():
     validation = json.loads(report.read_text())["files"][0]["validation"]
     assert validation["source_compile"] == "passed"
     assert validation["decision"]["status"] == "passed"
+
+
+def test_real_legacy_source_layout_requires_explicit_waiver(tmp_path: Path) -> None:
+    contract = tmp_path / "Owned.vy"
+    original = """# @version 0.2.4
+
+owner: public(address)
+
+@external
+def __init__():
+    self.owner = msg.sender
+"""
+    contract.write_text(original, encoding="utf-8")
+    report = tmp_path / "report.json"
+    args = [str(contract), "--write", "--report-json", str(report)]
+
+    assert main(args) == 3
+    assert contract.read_text(encoding="utf-8") == original
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "degraded"
+    assert validation["source_unavailable_formats"] == ["layout"]
+    assert validation["source_unavailable_artifacts"] == ["layout"]
+    assert validation["abi_equal"] is True
+    assert validation["method_ids_equal"] is True
+    assert validation["storage_layout_equal"] is None
+    assert validation["decision"]["status"] == "blocked"
+    assert len(validation["source_attestation"]["attempt_sequence"]) == 1
+
+    assert main([*args, "--allow-storage-layout-change"]) == 0
+    assert contract.read_text(encoding="utf-8").startswith("#pragma version 0.4.3")
+    decision = json.loads(report.read_text())["files"][0]["validation"]["decision"]
+    assert decision["status"] == "waived"
+    assert [(issue["code"], issue["waiver"]) for issue in decision["waivers"]] == [
+        ("source_artifacts_unavailable", "--allow-storage-layout-change")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("project_version", "requested_version", "expected_status", "unavailable"),
+    [("0.2.4", "0.2.16", "degraded", ("layout",)), ("0.2.16", "0.2.4", "passed", ())],
+)
+def test_real_project_source_layout_depends_on_resolved_compiler(
+    tmp_path: Path,
+    project_version: str,
+    requested_version: str,
+    expected_status: str,
+    unavailable: tuple[str, ...],
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        f"""[project]
+name = "legacy-layout"
+version = "0.1.0"
+requires-python = ">=3.8,<3.9"
+dependencies = ["vyper=={project_version}", "setuptools<82"]
+""",
+        encoding="utf-8",
+    )
+    contract = tmp_path / "Owned.vy"
+    contract.write_text(
+        f"# @version {project_version}\nowner: public(address)\n",
+        encoding="utf-8",
+    )
+
+    result = compile_source_file(contract, Config(paths=(contract,)), requested_version)
+
+    assert result.status == expected_status, result.stderr
+    assert result.compiler_authority == "project-manifest"
+    assert result.resolved_compiler == project_version
+    assert result.unavailable_formats == unavailable
+    assert unavailable_validation_artifacts(result) == list(unavailable)
+    assert result.command is not None
+    formats = result.command[result.command.index("-f") + 1].split(",")
+    assert formats == [
+        name for name in ("abi", "method_identifiers", "layout", "bytecode", "ast")
+        if name not in unavailable
+    ]
+    assert set(result.artifacts or ()) == set(formats)
 
 
 def test_real_python38_compiler_reports_vyper_exception(tmp_path: Path) -> None:

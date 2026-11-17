@@ -11,10 +11,12 @@ import tempfile
 import threading
 import time
 import tomllib
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
+from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -26,7 +28,11 @@ from packaging.version import InvalidVersion, Version
 from uv import find_uv_bin
 
 from .ast_facts import compiler_source_sha256, iter_nodes
-from .compiler_runner import SOURCE_EVIDENCE_FORMATS
+from .compiler_runner import (
+    SOURCE_EVIDENCE_FORMATS,
+    SOURCE_VALIDATION_ARGUMENT,
+    source_validation_command,
+)
 from .models import (
     DEFAULT_NETWORK_TIMEOUT_SECONDS,
     CompilerAuthority,
@@ -183,6 +189,11 @@ class ImportClosure:
     contents: Mapping[Path, bytes]
     layouts: Mapping[Path, Path]
     import_roots: tuple[Path, ...]
+    search_roots: tuple[Path, ...]
+    _layout_roots: Mapping[Path, Path]
+    _imports: Mapping[Path, tuple[Path, ...]]
+    # Lexical paths keep resolving to the same member if a symlink is retargeted.
+    _import_candidates: Mapping[Path, Path]
 
     @property
     def sources(self) -> dict[Path, str]:
@@ -193,22 +204,34 @@ class ImportClosure:
         return self.roots + self.dependencies
 
     def resolve_import(self, consumer: Path, module: str) -> Path | None:
-        """Return the member that dotted ``module`` names when ``consumer`` imports it.
-
-        Leading dots mark a relative import. Candidates are searched in the same
-        order used to capture the closure.
-        """
-        consumer = consumer.resolve()
-        source_root = _containing_import_roots(consumer, self.import_roots)[0]
+        """Look up a dotted import in the captured consumer's dependencies."""
+        consumer = self.captured_path(consumer)
+        if consumer is None:
+            return None
+        source_root = self._layout_roots[consumer]
+        imports = self._imports[consumer]
+        containing, fallback = _project_import_roots(consumer, self.source_roots)
         bases, parts = _validation_import_bases(
-            consumer, source_root, module, self.import_roots, None
+            consumer, source_root, module, (*self.search_roots, *containing, *fallback), None
         )
         for base, _root, _relative_base in bases:
             for candidate in _validation_module_candidates(base.joinpath(*parts)):
-                resolved = candidate.resolve()
-                if resolved in self.contents:
-                    return resolved
+                member = self._import_candidates.get(candidate)
+                if member is not None and member in imports:
+                    return member
         return None
+
+    def layout_root(self, path: Path) -> Path:
+        member = self.captured_path(path)
+        if member is None:
+            raise ValueError(f"source is outside the captured import closure: {path}")
+        return self._layout_roots[member]
+
+    def captured_path(self, path: Path) -> Path | None:
+        if path in self.contents:
+            return path
+        member = self._import_candidates.get(path.absolute())
+        return member if member is not None and member in self.contents else None
 
 
 @dataclass(frozen=True)
@@ -273,24 +296,128 @@ def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+_COMPILER_ERROR_LOCATION = re.compile(
+    r'^(?P<prefix>[ \t]*contract "|Error compiling: )(?P<path>[^\r\n]+?)(?=:\d+",|$)',
+    re.MULTILINE,
+)
+
+
+def _restore_compile_error_paths(
+    result: CompileResult,
+    paths: Mapping[Path, Path],
+    entry: Path,
+    *,
+    cwd: Path | None = None,
+) -> CompileResult:
+    """Restore source paths in diagnostics while keeping raw compiler output intact."""
+    if result.status != "failed" or not result.stderr or not paths:
+        return result
+    if not _COMPILER_ERROR_LOCATION.search(result.stderr):
+        return result
+
+    originals: dict[Path, Path] = {}
+    entries = list(paths.items())
+    # Identical inputs can share a staged path. Prefer the current entry for it.
+    if (staged_entry := paths.get(entry.resolve())) is not None:
+        entries.append((entry, staged_entry))
+    for original, staged in entries:
+        originals[staged.absolute()] = original
+        originals[staged.resolve()] = original
+
+    working_dir = cwd or Path.cwd()
+    root = working_dir
+    version = parse_version(result.resolved_compiler)
+    if version is not None and version < Version("0.4.0"):
+        # Legacy compilers name contracts relative to their import root.
+        command = result.command or []
+        for flag, value in pairwise(command):
+            if flag == "-p":
+                root = working_dir / value
+
+    def replace_location(match: re.Match[str]) -> str:
+        staged = Path(os.path.abspath(root / match.group("path")))
+        original = originals.get(staged)
+        if original is None:
+            return match.group()
+        try:
+            display = os.path.relpath(original)
+        except ValueError:
+            display = str(original)
+        return f"{match.group('prefix')}{display}"
+
+    return replace(result, stderr=_COMPILER_ERROR_LOCATION.sub(replace_location, result.stderr))
+
+
 @contextmanager
-def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Config]]:
+def _source_compile_path(
+    path: Path, config: Config
+) -> Iterator[tuple[Path, Config, Mapping[Path, Path]]]:
     if config.source_snapshot is None:
-        yield path, config
+        yield path, config, {}
         return
     snapshot = config.source_snapshot
-    with target_overlay(snapshot.sources, config.target_version, config.compiler_search_paths,
-                        snapshot=snapshot, include_dependencies=True) as overlay:
+    entry = snapshot.captured_path(path) or path.resolve()
+    snapshot = _entry_closure(snapshot, entry)
+    with target_overlay(
+        {entry: snapshot.contents[entry].decode("utf-8")},
+        config.target_version,
+        snapshot.search_roots,
+        snapshot=snapshot,
+        include_dependencies=True,
+    ) as overlay:
         assert overlay is not None
-        yield overlay.paths[path.resolve()], replace(
-            config, compiler_search_paths=_overlay_search_paths(overlay, config.compiler_search_paths)
+        compile_config = replace(
+            config, compiler_search_paths=_overlay_search_paths(overlay, snapshot.search_roots)
         )
+        yield overlay.paths[entry], compile_config, overlay.paths
+
+
+def _reachable_imports(
+    entries: Iterable[Path], imports: Mapping[Path, tuple[Path, ...]]
+) -> set[Path]:
+    pending = list(entries)
+    members = set(pending)
+    while pending:
+        for dependency in imports[pending.pop()]:
+            if dependency not in members:
+                members.add(dependency)
+                pending.append(dependency)
+    return members
+
+
+def _entry_closure(snapshot: ImportClosure, entry: Path) -> ImportClosure:
+    """Narrow the snapshot to the entry's project inputs and their captured imports.
+
+    Separate projects can use the same overlay-relative paths. Keep the entry's
+    project inputs together so their imports still work if the scanner misses an edge.
+    """
+    entry_root = snapshot.layout_root(entry)
+    same_root = {path for path in snapshot.roots if snapshot._layout_roots[path] == entry_root}
+    members = _reachable_imports(same_root | {entry}, snapshot._imports)
+    dependencies = tuple(sorted(members - {entry}))
+    return replace(
+        snapshot,
+        roots=(entry,),
+        dependencies=dependencies,
+        consumers=MappingProxyType({path: (entry,) for path in dependencies}),
+        source_roots=tuple(
+            root
+            for root in snapshot.source_roots
+            if any(path.is_relative_to(root) for path in members)
+        ),
+        contents=MappingProxyType(
+            {path: content for path, content in snapshot.contents.items() if path in members}
+        ),
+        layouts=MappingProxyType(
+            {path: layout for path, layout in snapshot.layouts.items() if path in members}
+        ),
+    )
 
 
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    with _source_compile_path(path, config) as (staged, compile_config):
+    with _source_compile_path(path, config) as (staged, compile_config, paths):
         command, suppress_warnings = _prepare_command(
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
@@ -302,7 +429,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
             return _add_explicit_error_evidence(
                 result, command, staged, path, compile_config, suppress_warnings
             )
-        return result
+        return _restore_compile_error_paths(result, paths, path)
 
 
 def compile_target_source(
@@ -311,29 +438,33 @@ def compile_target_source(
     if path.suffix not in {".vy", ".vyi"}:
         return CompileResult("skipped")
     if overlay is not None:
-        tmp_path = overlay.paths.get(path.resolve())
-        if tmp_path is not None:
-            command, suppress_warnings = _prepare_command(
-                config.target_vyper, config.target_version, config.target_python
+        tmp_path = overlay.paths.get(path) or overlay.paths.get(path.resolve())
+        if tmp_path is None:
+            return CompileResult(
+                "failed", stderr=f"target entry was not staged in its project overlay: {path}"
             )
-            compile_config = _target_compile_config(source, config)
-            compile_config = replace(
+        command, suppress_warnings = _prepare_command(
+            config.target_vyper, config.target_version, config.target_python
+        )
+        compile_config = _target_compile_config(source, config)
+        compile_config = replace(
+            compile_config,
+            compiler_search_paths=_overlay_search_paths(
+                overlay, compile_config.compiler_search_paths
+            ),
+        )
+        if path.suffix == ".vyi":
+            result = _compile_target_interface(
+                command,
+                tmp_path,
+                source,
                 compile_config,
-                compiler_search_paths=_overlay_search_paths(
-                    overlay, compile_config.compiler_search_paths
-                ),
+                (),
+                suppress_warnings,
+                environment_path=path,
             )
-            if path.suffix == ".vyi":
-                return _compile_target_interface(
-                    command,
-                    tmp_path,
-                    source,
-                    compile_config,
-                    (),
-                    suppress_warnings,
-                    environment_path=path,
-                )
-            return _run_compile(
+        else:
+            result = _run_compile(
                 command,
                 tmp_path,
                 compile_config,
@@ -341,6 +472,7 @@ def compile_target_source(
                 suppress_warnings=suppress_warnings,
                 environment_path=path,
             )
+        return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
     )
@@ -376,7 +508,7 @@ def compile_target_source(
         tmp.write(source)
         tmp_path = Path(tmp.name)
     try:
-        return _run_compile(
+        result = _run_compile(
             command,
             tmp_path,
             compile_config,
@@ -384,6 +516,7 @@ def compile_target_source(
             suppress_warnings=suppress_warnings,
             environment_path=path,
         )
+        return _restore_compile_error_paths(result, {path.resolve(): tmp_path}, path)
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -430,13 +563,16 @@ def _compile_target_interface(
                 f"#pragma version {config.target_version}\n"
                 f"import {interface_path.stem} as InterfaceUnderTest\n"
             )
-        return _run_compile(
+        result = _run_compile(
             command,
             harness_path,
             config,
             extra_paths=tuple(dict.fromkeys((path.parent, *extra_paths))),
             suppress_warnings=suppress_warnings,
             environment_path=environment_path,
+        )
+        return _restore_compile_error_paths(
+            result, {environment_path.resolve(): interface_path}, environment_path
         )
     except OSError as exc:
         return CompileResult(
@@ -505,10 +641,11 @@ def compile_target_archive(
                 process.error or "compiler process did not return a result",
             )
         if process.returncode != 0:
-            return _failed_compile_result(
+            failure = _failed_compile_result(
                 process,
                 process.stderr.strip() or process.stdout.strip(),
             )
+            return _restore_compile_error_paths(failure, overlay.paths, path, cwd=overlay.root)
         if not tmp_out.is_file():
             return _failed_compile_result(
                 replace(process, failure_origin="adapter"),
@@ -543,38 +680,50 @@ def resolve_import_closure(
     Capture all discovered contract and import bytes for source compilation,
     target validation, and closure exports.
     """
-    resolved_sources = {path.resolve(): source for path, source in sources.items()}
+    input_paths = {path.absolute(): path.resolve() for path in sources}
+    resolved_sources = {input_paths[path.absolute()]: source for path, source in sources.items()}
     if not resolved_sources:
         raise ValueError("resolve_import_closure requires at least one source")
-    source_roots, import_roots, common_root = _overlay_roots(resolved_sources, search_paths)
-    members = tuple(_walk_validation_closure(
-        source_roots, import_roots, common_root, resolved_sources
-    ))
-    captured = {path: source for path, source, _relative, _override in members}
-    dependencies = [path for path in captured if path not in resolved_sources]
-    dependency_paths = set(dependencies)
-    consumers: dict[Path, list[Path]] = {path: [] for path in dependency_paths}
+    search_roots = tuple(path.resolve() for path in search_paths)
+    source_roots, import_roots, common_root = _overlay_roots(resolved_sources, search_roots)
+    import_candidates: dict[Path, Path | None] = dict(input_paths)
+    members = {
+        location.path: (location, source, imports)
+        for location, source, imports in _walk_validation_closure(
+            source_roots, search_roots, resolved_sources, import_candidates
+        )
+    }
+    imports_by_source = {
+        path: tuple(dependency.path for dependency in imports if dependency.path in members)
+        for path, (_location, _source, imports) in members.items()
+    }
+    dependencies = set(members) - resolved_sources.keys()
+    consumers: dict[Path, list[Path]] = {path: [] for path in sorted(dependencies)}
     for root in sorted(resolved_sources):
-        for path, _source, _relative_path, _is_override in _walk_validation_closure(
-            source_roots,
-            import_roots,
-            common_root,
-            captured,
-            entry_paths=(root,),
-        ):
-            if path in dependency_paths:
-                consumers[path].append(root)
+        for path in _reachable_imports((root,), imports_by_source) & dependencies:
+            consumers[path].append(root)
     return ImportClosure(
         roots=tuple(sorted(resolved_sources)),
-        dependencies=tuple(sorted(dict.fromkeys(dependencies))),
-        consumers={
-            path: tuple(sorted(dict.fromkeys(paths))) for path, paths in sorted(consumers.items())
-        },
+        dependencies=tuple(sorted(dependencies)),
+        consumers=MappingProxyType({path: tuple(roots) for path, roots in consumers.items()}),
         source_roots=source_roots,
         common_root=common_root,
-        contents=MappingProxyType({path: text.encode("utf-8") for path, text in captured.items()}),
-        layouts=MappingProxyType({path: relative for path, _s, relative, _o in members}),
+        contents=MappingProxyType({
+            path: source.encode("utf-8") for path, (_location, source, _imports) in members.items()
+        }),
+        layouts=MappingProxyType({
+            path: location.relative_path for path, (location, _source, _imports) in members.items()
+        }),
         import_roots=import_roots,
+        search_roots=search_roots,
+        _layout_roots=MappingProxyType({
+            path: location.root for path, (location, _source, _imports) in members.items()
+        }),
+        _imports=MappingProxyType(imports_by_source),
+        _import_candidates=MappingProxyType({
+            candidate: member for candidate, member in import_candidates.items()
+            if member is not None and member in members
+        }),
     )
 
 
@@ -587,7 +736,10 @@ def target_overlay(
     include_dependencies: bool = False,
     snapshot: ImportClosure | None = None,
 ) -> Iterator[TargetOverlay | None]:
-    resolved_sources = {path.resolve(): source for path, source in sources.items()}
+    resolved_sources = {
+        (snapshot.captured_path(path) if snapshot else None) or path.resolve(): source
+        for path, source in sources.items()
+    }
     if not resolved_sources:
         yield None
         return
@@ -614,7 +766,10 @@ def materialize_target_overlay(
     snapshot: ImportClosure | None = None,
 ) -> TargetOverlay | None:
     """Stage captured bytes without repairing imports, pragmas, or interfaces."""
-    resolved_sources = {path.resolve(): source for path, source in sources.items()}
+    resolved_sources = {
+        (snapshot.captured_path(path) if snapshot else None) or path.resolve(): source
+        for path, source in sources.items()
+    }
     if not resolved_sources:
         return None
     snapshot = snapshot or resolve_import_closure(resolved_sources, search_paths)
@@ -644,7 +799,9 @@ def materialize_target_overlay(
     if not include_dependencies:
         for search_path in snapshot.import_roots:
             if search_path.is_relative_to(common):
-                staged_search_paths.add(root / search_path.relative_to(common))
+                staged_root = root / search_path.relative_to(common)
+                if staged_root.is_dir():
+                    staged_search_paths.add(staged_root)
     configured = tuple(path.resolve() for path in search_paths)
     for source_root in snapshot.source_roots:
         if include_dependencies and source_root in configured:
@@ -736,118 +893,76 @@ def _validation_roots(path: Path, search_paths: tuple[Path, ...]) -> tuple[Path,
     return (_nearest_project_root(path.parent) or path.parent,)
 
 
+def _project_import_roots(path: Path, roots: tuple[Path, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    containing, fallback = [], []
+    for root in roots:
+        (containing if path.is_relative_to(root) else fallback).append(root)
+    return tuple(containing), tuple(fallback)
+
+
 def _walk_validation_closure(
     source_roots: tuple[Path, ...],
-    import_roots: tuple[Path, ...],
-    common_root: Path,
+    search_roots: tuple[Path, ...],
     overrides: Mapping[Path, str],
-    *,
-    entry_paths: Iterable[Path] | None = None,
-) -> Iterator[tuple[Path, str, Path, bool]]:
-    override_paths = set(overrides)
+    import_candidates: dict[Path, Path | None],
+) -> Iterator[tuple[_ResolvedValidationImport, str, tuple[_ResolvedValidationImport, ...]]]:
+    """Capture sources and their import edges using each file's own roots first."""
     source_cache = dict(overrides)
-    if entry_paths is None:
-        incoming_overrides: set[Path] = set()
-        for path, source in overrides.items():
-            import_source = source
-            for source_root in _containing_import_roots(path, source_roots):
-                relative_path = path.relative_to(source_root)
-                incoming_overrides.update(
-                    imported.path
-                    for imported in _validation_import_sources(
-                        path,
-                        import_source,
-                        source_root,
-                        import_roots,
-                        relative_path,
-                    )
-                    if imported.path in override_paths
-                )
-        initial_paths = override_paths - incoming_overrides
-        include_disconnected_overrides = True
-    else:
-        initial_paths = {path.resolve() for path in entry_paths}
-        if not initial_paths <= override_paths:
-            missing = ", ".join(str(path) for path in sorted(initial_paths - override_paths))
-            raise ValueError(f"closure entry paths are not source overrides: {missing}")
-        include_disconnected_overrides = False
+    import_cache: dict[_ResolvedValidationImport, tuple[_ResolvedValidationImport, ...]] = {}
 
-    queue: list[tuple[Path, str, Path, Path, bool]] = []
-    for path in sorted(initial_paths):
-        source_root = _containing_import_roots(path, source_roots)[0]
-        queue.append(
-            (
-                path,
-                overrides[path],
-                source_root,
-                path.relative_to(source_root),
-                True,
+    def imports_at(location: _ResolvedValidationImport) -> tuple[_ResolvedValidationImport, ...]:
+        if location not in import_cache:
+            containing, fallback = _project_import_roots(location.path, source_roots)
+            import_cache[location] = _validation_import_sources(
+                location.path,
+                source_cache[location.path],
+                location.root,
+                (*search_roots, *containing),
+                location.relative_path,
+                import_candidates,
+                fallback_roots=fallback,
             )
-        )
+        return import_cache[location]
+
+    roots_by_path = {path: _containing_import_roots(path, source_roots) for path in overrides}
+    incoming = {
+        dependency.path
+        for path, roots in roots_by_path.items()
+        for root in roots
+        for dependency in imports_at(_ResolvedValidationImport(path, root, path.relative_to(root)))
+        if dependency.path in overrides
+    }
+    root_locations = {
+        path: _ResolvedValidationImport(path, roots[0], path.relative_to(roots[0]))
+        for path, roots in roots_by_path.items()
+    }
+    pending = deque(root_locations[path] for path in sorted(overrides.keys() - incoming))
+    remaining = iter(sorted(overrides))
+    uncaptured = set(overrides)
     layouts: dict[Path, Path] = {}
-    processed: set[Path] = set()
-    while queue or (include_disconnected_overrides and override_paths - processed):
-        if not queue:
-            path = min(override_paths - processed)
-            source_root = _containing_import_roots(path, source_roots)[0]
-            queue.append(
-                (
-                    path,
-                    overrides[path],
-                    source_root,
-                    path.relative_to(source_root),
-                    True,
+    while pending or uncaptured:
+        if not pending:
+            path = next(path for path in remaining if path in uncaptured)
+            pending.append(root_locations[path])
+        location = pending.popleft()
+        path, relative = location.path, location.relative_path
+        if path in layouts:
+            old_relative = layouts[path]
+            if old_relative != relative:
+                raise OverlayLayoutConflictError(
+                    f"closure member {path} maps to both {old_relative} and {relative}"
                 )
-            )
-        (
-            current,
-            current_source,
-            current_root,
-            current_relative,
-            is_override,
-        ) = queue.pop(0)
-        existing_relative = layouts.get(current)
-        if existing_relative is not None and existing_relative != current_relative:
-            raise OverlayLayoutConflictError(
-                f"closure member {current} maps to both {existing_relative} and {current_relative}"
-            )
-        layouts[current] = current_relative
-        if current in processed:
             continue
-        processed.add(current)
-        yield current, current_source, current_relative, is_override
-        import_source = current_source
-        for imported in _validation_import_sources(
-            current,
-            import_source,
-            current_root,
-            import_roots,
-            current_relative,
-        ):
-            if imported.path in processed:
-                existing_relative = layouts[imported.path]
-                if existing_relative != imported.relative_path:
-                    raise OverlayLayoutConflictError(
-                        f"closure member {imported.path} maps to both "
-                        f"{existing_relative} and {imported.relative_path}"
-                    )
-                continue
-            source = source_cache.get(imported.path)
-            if source is None:
-                try:
-                    source = imported.path.read_bytes().decode("utf-8")
-                    source_cache[imported.path] = source
-                except (OSError, UnicodeDecodeError):
-                    continue
-            queue.append(
-                (
-                    imported.path,
-                    source,
-                    imported.root,
-                    imported.relative_path,
-                    imported.path in override_paths,
-                )
-            )
+        try:
+            if path not in source_cache:
+                source_cache[path] = path.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        layouts[path] = relative
+        uncaptured.discard(path)
+        dependencies = imports_at(location)
+        yield location, source_cache[path], dependencies
+        pending.extend(dependencies)
 
 
 def _containing_import_roots(path: Path, import_roots: tuple[Path, ...]) -> tuple[Path, ...]:
@@ -861,51 +976,67 @@ def _validation_import_sources(
     source: str,
     source_root: Path,
     import_roots: tuple[Path, ...],
-    relative_path: Path | None = None,
+    relative_path: Path,
+    import_candidates: dict[Path, Path | None],
+    *,
+    fallback_roots: tuple[Path, ...] = (),
 ) -> tuple[_ResolvedValidationImport, ...]:
+    """Resolve each import against ``import_roots``, else against ``fallback_roots``."""
+
+    def resolve(module: str, names: tuple[str, ...]) -> tuple[_ResolvedValidationImport, ...]:
+        resolved = _resolve_validation_import(
+            path, source_root, module, names, import_roots, relative_path, import_candidates
+        )
+        if not resolved and fallback_roots:
+            resolved = _resolve_validation_import(
+                path, source_root, module, names, fallback_roots, relative_path, import_candidates
+            )
+        return resolved
+
     imports: list[_ResolvedValidationImport] = []
     mask = code_mask(source)
     code_source = "".join(
         char if is_code or char in "\r\n" else " "
         for char, is_code in zip(source, mask, strict=True)
     )
-    for line in code_source.splitlines():
-        stripped = line.split("#", 1)[0].strip()
+    for stripped in _joined_code_lines(code_source):
         if not stripped:
             continue
         import_match = re.match(
-            r"import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\b",
+            r"import\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\b",
             stripped,
         )
         if import_match:
-            imports.extend(
-                _resolve_validation_import(
-                    path,
-                    source_root,
-                    import_match.group(1),
-                    (),
-                    import_roots,
-                    relative_path,
-                )
-            )
+            imports.extend(resolve(re.sub(r"\s+", "", import_match.group(1)), ()))
             continue
         from_match = re.match(
-            r"from\s+([.A-Za-z_][.A-Za-z0-9_]*)\s+import\s+(.+)$",
+            # ``.`` and ``(`` are tokens of their own: ``from.lib import x``,
+            # ``from . lib import x``, ``from .import x`` and ``from . import(x)``
+            # are all legal.
+            r"from(?:\s+|(?=\.))([.A-Za-z_][.A-Za-z0-9_\s]*?)(?:\s+|(?<=\.))import\b\s*(.+)$",
             stripped,
         )
         if from_match:
-            names = tuple(_imported_module_names(from_match.group(2)))
-            imports.extend(
-                _resolve_validation_import(
-                    path,
-                    source_root,
-                    from_match.group(1),
-                    names,
-                    import_roots,
-                    relative_path,
-                )
-            )
+            module = re.sub(r"\s+", "", from_match.group(1))
+            # Each name falls back on its own: ``from x import a, b`` may find
+            # ``a`` in the file's roots and ``b`` only in another project.
+            for name in tuple(_imported_module_names(from_match.group(2))) or (None,):
+                imports.extend(resolve(module, () if name is None else (name,)))
     return tuple(dict.fromkeys(imports))
+
+
+def _joined_code_lines(code_source: str) -> Iterator[str]:
+    """Yield stripped code lines, joining backslash and parenthesized continuations."""
+    pending = ""
+    for line in code_source.splitlines():
+        pending = f"{pending} {line.split('#', 1)[0].strip()}"
+        if pending.endswith("\\"):
+            pending = pending[:-1]
+        elif pending.count("(") <= pending.count(")"):
+            yield pending.strip()
+            pending = ""
+    if pending.strip():
+        yield pending.strip()
 
 
 def _imported_module_names(imports: str) -> Iterator[str]:
@@ -924,8 +1055,10 @@ def _resolve_validation_import(
     module: str,
     names: tuple[str, ...],
     import_roots: tuple[Path, ...],
-    relative_path: Path | None,
+    relative_path: Path,
+    import_candidates: dict[Path, Path | None],
 ) -> tuple[_ResolvedValidationImport, ...]:
+    """Resolve an import against the filesystem during snapshot capture."""
     bases, module_parts = _validation_import_bases(
         path, source_root, module, import_roots, relative_path
     )
@@ -950,15 +1083,19 @@ def _resolve_validation_import(
                 _validation_module_candidate_layouts(module_path, relative_module, import_root)
             )
     resolved: dict[Path, tuple[Path, Path]] = {}
-    roots = tuple(root.resolve() for root in (source_root, *import_roots))
+    roots = (source_root, *import_roots)
     for candidate, import_root, candidate_relative in candidates:
-        try:
-            resolved_candidate = candidate.resolve()
-            if not any(_is_relative_to(resolved_candidate, root) for root in roots):
-                continue
-        except (OSError, ValueError):
-            continue
-        if resolved_candidate.exists() and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES:
+        if candidate not in import_candidates:
+            try:
+                import_candidates[candidate] = candidate.resolve(strict=True)
+            except (OSError, RuntimeError, ValueError):
+                import_candidates[candidate] = None
+        resolved_candidate = import_candidates[candidate]
+        if (
+            resolved_candidate is not None
+            and resolved_candidate.suffix in VALIDATION_SOURCE_SUFFIXES
+            and any(resolved_candidate.is_relative_to(root) for root in roots)
+        ):
             resolved.setdefault(resolved_candidate, (import_root, candidate_relative))
     return tuple(
         _ResolvedValidationImport(path, import_root, candidate_relative)
@@ -1086,7 +1223,7 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
     """Load rewrite facts without requiring a module to be a deployable entry point."""
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    with _source_compile_path(path, config) as (staged, compile_config):
+    with _source_compile_path(path, config) as (staged, compile_config, paths):
         command, suppress_warnings = _prepare_command(
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
@@ -1119,7 +1256,7 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
                         facts["annotated_ast"] = artifact
                 return replace(result, artifacts=facts)
         assert result is not None
-        return result
+        return _restore_compile_error_paths(result, paths, path)
 
 
 def _source_evidence_formats(config: Config) -> tuple[str, ...]:
@@ -1259,7 +1396,10 @@ def compare_validation_artifacts(source: CompileResult, target: CompileResult) -
     layout = ArtifactComparison()
     if source_layout is not None and target_layout is not None:
         result = compare_storage_layouts(
-            source_layout, target_layout, target_ast=target.artifacts.get("ast")
+            source_layout,
+            target_layout,
+            source_ast=source.artifacts.get("ast"),
+            target_ast=target.artifacts.get("ast"),
         )
         layout = ArtifactComparison(result.equal, tuple(result.differences))
     source_abi = source.artifacts.get("abi")
@@ -1701,6 +1841,13 @@ def _run_compile_with_formats(
         source_text=source_text,
         requested_evidence=requested_evidence,
     )
+    if project_compiler and process.compiler_started and "layout" in formats:
+        # Mirror the adapter's effective source command using the resolved identity.
+        effective_command = source_validation_command(process.command, process.resolved_compiler)
+        if effective_command != process.command:
+            process = replace(process, command=effective_command)
+            unavailable_formats = (*unavailable_formats, "layout")
+            formats = tuple(name for name in formats if name != "layout")
     if process.compiler_started and path.is_file():
         process = replace(
             process,
@@ -2008,6 +2155,7 @@ def _run_compiler_process(
             full,
             context,
             managed_compiler=managed_compiler,
+            source_compiler=project_compiler,
             requested_evidence=requested_evidence,
             compiler_authority=authority,
             compiler_declarations=declarations,
@@ -2196,6 +2344,7 @@ def _run_compiler_adapter(
     context: DependencyContext,
     *,
     managed_compiler: bool,
+    source_compiler: bool,
     requested_evidence: tuple[str, ...] = (),
     compiler_authority: CompilerAuthority,
     compiler_declarations: tuple[CompilerDeclaration, ...],
@@ -2219,6 +2368,7 @@ def _run_compiler_adapter(
         f"{compiler_timeout:g}",
         "managed" if managed_compiler else "explicit",
         coherence_spec or "",
+        *((SOURCE_VALIDATION_ARGUMENT,) if source_compiler else ()),
         *(
             ("--source-evidence", ",".join(requested_evidence))
             if managed_compiler and requested_evidence

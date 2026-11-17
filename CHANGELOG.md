@@ -6,6 +6,15 @@
   (`VYD001`) and `block.prevrandao` usage (`VYD010`).
 - Preserve expression grouping and multiline comments when removing
   `as_unitless_number()` (`VY208`).
+- Compare struct member definitions inside storage mappings and arrays. Changed
+  members or bounds now block writes unless `--allow-storage-layout-change` is
+  supplied; unresolved container types require the same waiver.
+- Compile each source and migration candidate against its own captured project
+  and imports, preserving the meaning of same-named modules in independent
+  projects. Reject shared closure exports whose layout would change how an entry
+  compiles.
+- Validate closure exports against files retained in an existing output directory
+  and reject changes to those inputs during the write.
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.
@@ -26,11 +35,17 @@
   declaration.
 - Preserve source and compiler positions across CRLF, lone CR and mixed line
   endings when rewriting version pragmas and compiler-confirmed literals.
+- Report source and target compiler errors with the original contract and
+  dependency paths when compilation uses a staged overlay.
 - Resolve literal and named tuple indices before choosing external call syntax
   or changing numeric conversions. Preserve signed behavior when reading and
   assigning heterogeneous tuple members.
 - Require `--report-json` to use a separate path from migration inputs and
   outputs. An existing destination must be a recognized vyupgrade report.
+- Compile sources using Vyper before 0.2.16 without requesting the unsupported
+  storage layout output, so available ABI and method identifiers can be compared.
+  `--allow-storage-layout-change` can waive the unchecked layout when both
+  other comparisons ran.
 
 ## 0.10.0 - 2026-11-07
 

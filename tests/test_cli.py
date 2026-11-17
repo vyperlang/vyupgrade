@@ -13,6 +13,7 @@ from vyupgrade.cli import _write_diff, main
 from vyupgrade.compiler import CompileResult
 from vyupgrade.engine import _add_validation_diagnostics, _evm_default_diagnostic
 from vyupgrade.models import Config, Diagnostic, FileReport
+from vyupgrade.validation import decide_file_validation
 
 
 VALIDATION_ARTIFACTS = {"abi": [], "method_identifiers": {}, "layout": {}}
@@ -985,6 +986,42 @@ def test_missing_source_artifact_blocks_without_source_waiver(
     assert validation["source_compile"] == "degraded"
     assert validation["source_unavailable_artifacts"] == ["method_identifiers"]
     assert validation["source_unavailable_formats"] == ["method_identifiers"]
+
+
+@pytest.mark.parametrize(
+    ("formats", "missing", "abi_equal", "method_ids_equal", "expected_blockers"),
+    [
+        ([], ["layout"], True, True, ["source_artifacts_unavailable"]),
+        (
+            ["layout"], ["layout", "method_identifiers"], True, None,
+            ["source_artifacts_unavailable"],
+        ),
+        (["layout"], ["layout"], None, True, ["source_artifacts_unavailable"]),
+        (["layout"], ["layout"], False, False, ["abi_changed", "method_identifiers_changed"]),
+    ],
+)
+def test_layout_waiver_requires_layout_omission_and_preserves_other_comparisons(
+    tmp_path: Path,
+    formats: list[str],
+    missing: list[str],
+    abi_equal: bool | None,
+    method_ids_equal: bool | None,
+    expected_blockers: list[str],
+) -> None:
+    path = tmp_path / "contract.vy"
+    report = FileReport(
+        path=path,
+        source_compile="degraded",
+        target_compile="passed",
+        abi_equal=abi_equal,
+        method_ids_equal=method_ids_equal,
+        source_unavailable_artifacts=missing,
+        source_unavailable_formats=formats,
+    )
+    decision = decide_file_validation(report, Config(paths=(path,), allow_storage_layout_change=True))
+
+    assert decision.status == "blocked"
+    assert [issue.code for issue in decision.blockers] == expected_blockers
 
 
 def test_optional_source_ast_unavailability_is_degraded_but_safe(
