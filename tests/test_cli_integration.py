@@ -35,6 +35,72 @@ def _tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def test_real_legacy_source_error_uses_original_project_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = tmp_path / "project"
+    contract = project / "contracts" / "Broken.vy"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("# @version 0.3.10\n@external\ndef probe() -> uint256:\n    return True\n")
+    report = tmp_path / "errors.json"
+
+    assert main(
+        [
+            str(contract), "--compiler-search-paths", str(project),
+            "--target-version", "0.4.3", "--report-json", str(report),
+        ]
+    ) == 2
+
+    file = json.loads(report.read_text())["files"][0]
+    assert 'contract "project/contracts/Broken.vy:4"' in file["source_error"]
+    assert file["source_error_type"] == "InvalidType"
+    attestation = file["validation"]["source_attestation"]
+    assert 'contract "contracts/Broken.vy:4"' in attestation["compiler_output"]["stderr"]
+    assert attestation["validated_source_set"] == [{
+        "path": str(contract.resolve()),
+        "sha256": hashlib.sha256(contract.read_bytes()).hexdigest(),
+    }]
+
+
+def test_real_staged_errors_name_dependency_with_same_basename(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    project = tmp_path / "project"
+    contract = project / "contracts" / "Broken.vy"
+    dependency = project / "dep" / "Broken.vy"
+    contract.parent.mkdir(parents=True)
+    dependency.parent.mkdir()
+    contract.write_text(
+        "#pragma version 0.4.3\nfrom dep import Broken\n\n"
+        "@external\ndef probe() -> uint256:\n    return Broken.bad()\n"
+    )
+    dependency.write_text("#pragma version 0.4.3\n@internal\ndef bad() -> uint256:\n    return True\n")
+    report = tmp_path / "errors.json"
+
+    assert main(
+        [
+            str(contract), "--compiler-search-paths", str(project),
+            "--target-version", "0.4.3", "--report-json", str(report),
+        ]
+    ) == 2
+
+    location = 'contract "project/dep/Broken.vy:4"'
+    output = capsys.readouterr().out
+    assert output.count(location) == 2
+    assert "vyupgrade-target-" not in output
+    file = json.loads(report.read_text())["files"][0]
+    for side in ("source", "target"):
+        error = file[f"{side}_error"]
+        assert location in error
+        assert "return True" in error
+        assert "vyupgrade-target-" not in error
+        assert file[f"{side}_error_type"] == "TypeMismatch"
+        raw = file["validation"][f"{side}_attestation"]["compiler_output"]["stderr"]
+        assert "vyupgrade-target-" in raw and 'dep/Broken.vy:4"' in raw
+
+
 def test_beta_wrapper_attests_vyper_distribution(tmp_path: Path) -> None:
     path = tmp_path / "entry.vy"
     path.write_text("# @version 0.1.0b8\n@public\ndef f():\n    pass\n")

@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from functools import cache
+from itertools import pairwise
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -289,10 +290,64 @@ def _nonempty_string(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+_COMPILER_ERROR_LOCATION = re.compile(
+    r'^(?P<prefix>[ \t]*contract "|Error compiling: )(?P<path>[^\r\n]+?)(?=:\d+",|$)',
+    re.MULTILINE,
+)
+
+
+def _restore_compile_error_paths(
+    result: CompileResult,
+    paths: Mapping[Path, Path],
+    entry: Path,
+    *,
+    cwd: Path | None = None,
+) -> CompileResult:
+    """Restore source paths in diagnostics while keeping raw compiler output intact."""
+    if result.status != "failed" or not result.stderr or not paths:
+        return result
+    if not _COMPILER_ERROR_LOCATION.search(result.stderr):
+        return result
+
+    originals: dict[Path, Path] = {}
+    entries = list(paths.items())
+    # Identical inputs can share a staged path. Prefer the current entry for it.
+    if (staged_entry := paths.get(entry.resolve())) is not None:
+        entries.append((entry, staged_entry))
+    for original, staged in entries:
+        originals[staged.absolute()] = original
+        originals[staged.resolve()] = original
+
+    working_dir = cwd or Path.cwd()
+    root = working_dir
+    version = parse_version(result.resolved_compiler)
+    if version is not None and version < Version("0.4.0"):
+        # Legacy compilers name contracts relative to their import root.
+        command = result.command or []
+        for flag, value in pairwise(command):
+            if flag == "-p":
+                root = working_dir / value
+
+    def replace_location(match: re.Match[str]) -> str:
+        staged = Path(os.path.abspath(root / match.group("path")))
+        original = originals.get(staged)
+        if original is None:
+            return match.group()
+        try:
+            display = os.path.relpath(original)
+        except ValueError:
+            display = str(original)
+        return f"{match.group('prefix')}{display}"
+
+    return replace(result, stderr=_COMPILER_ERROR_LOCATION.sub(replace_location, result.stderr))
+
+
 @contextmanager
-def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Config]]:
+def _source_compile_path(
+    path: Path, config: Config
+) -> Iterator[tuple[Path, Config, Mapping[Path, Path]]]:
     if config.source_snapshot is None:
-        yield path, config
+        yield path, config, {}
         return
     snapshot = config.source_snapshot
     entry = snapshot.captured_path(path) or path.resolve()
@@ -305,9 +360,10 @@ def _source_compile_path(path: Path, config: Config) -> Iterator[tuple[Path, Con
         include_dependencies=True,
     ) as overlay:
         assert overlay is not None
-        yield overlay.paths[entry], replace(
+        compile_config = replace(
             config, compiler_search_paths=_overlay_search_paths(overlay, snapshot.search_roots)
         )
+        yield overlay.paths[entry], compile_config, overlay.paths
 
 
 def _reachable_imports(
@@ -355,7 +411,7 @@ def _entry_closure(snapshot: ImportClosure, entry: Path) -> ImportClosure:
 def compile_source_file(path: Path, config: Config, source_version: str | None) -> CompileResult:
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    with _source_compile_path(path, config) as (staged, compile_config):
+    with _source_compile_path(path, config) as (staged, compile_config, paths):
         command, suppress_warnings = _prepare_command(
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
@@ -367,7 +423,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
             return _add_explicit_error_evidence(
                 result, command, staged, path, compile_config, suppress_warnings
             )
-        return result
+        return _restore_compile_error_paths(result, paths, path)
 
 
 def compile_target_source(
@@ -389,7 +445,7 @@ def compile_target_source(
                 ),
             )
             if path.suffix == ".vyi":
-                return _compile_target_interface(
+                result = _compile_target_interface(
                     command,
                     tmp_path,
                     source,
@@ -398,14 +454,16 @@ def compile_target_source(
                     suppress_warnings,
                     environment_path=path,
                 )
-            return _run_compile(
-                command,
-                tmp_path,
-                compile_config,
-                extra_paths=(),
-                suppress_warnings=suppress_warnings,
-                environment_path=path,
-            )
+            else:
+                result = _run_compile(
+                    command,
+                    tmp_path,
+                    compile_config,
+                    extra_paths=(),
+                    suppress_warnings=suppress_warnings,
+                    environment_path=path,
+                )
+            return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
     )
@@ -441,7 +499,7 @@ def compile_target_source(
         tmp.write(source)
         tmp_path = Path(tmp.name)
     try:
-        return _run_compile(
+        result = _run_compile(
             command,
             tmp_path,
             compile_config,
@@ -449,6 +507,7 @@ def compile_target_source(
             suppress_warnings=suppress_warnings,
             environment_path=path,
         )
+        return _restore_compile_error_paths(result, {path.resolve(): tmp_path}, path)
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -495,13 +554,16 @@ def _compile_target_interface(
                 f"#pragma version {config.target_version}\n"
                 f"import {interface_path.stem} as InterfaceUnderTest\n"
             )
-        return _run_compile(
+        result = _run_compile(
             command,
             harness_path,
             config,
             extra_paths=tuple(dict.fromkeys((path.parent, *extra_paths))),
             suppress_warnings=suppress_warnings,
             environment_path=environment_path,
+        )
+        return _restore_compile_error_paths(
+            result, {environment_path.resolve(): interface_path}, environment_path
         )
     except OSError as exc:
         return CompileResult(
@@ -570,10 +632,11 @@ def compile_target_archive(
                 process.error or "compiler process did not return a result",
             )
         if process.returncode != 0:
-            return _failed_compile_result(
+            failure = _failed_compile_result(
                 process,
                 process.stderr.strip() or process.stdout.strip(),
             )
+            return _restore_compile_error_paths(failure, overlay.paths, path, cwd=overlay.root)
         if not tmp_out.is_file():
             return _failed_compile_result(
                 replace(process, failure_origin="adapter"),
@@ -1149,7 +1212,7 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
     """Load rewrite facts without requiring a module to be a deployable entry point."""
     if path.suffix != ".vy":
         return CompileResult("skipped")
-    with _source_compile_path(path, config) as (staged, compile_config):
+    with _source_compile_path(path, config) as (staged, compile_config, paths):
         command, suppress_warnings = _prepare_command(
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
         )
@@ -1182,7 +1245,7 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
                         facts["annotated_ast"] = artifact
                 return replace(result, artifacts=facts)
         assert result is not None
-        return result
+        return _restore_compile_error_paths(result, paths, path)
 
 
 def _source_evidence_formats(config: Config) -> tuple[str, ...]:

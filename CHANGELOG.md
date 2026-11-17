@@ -32,6 +32,8 @@
   declaration.
 - Preserve source and compiler positions across CRLF, lone CR and mixed line
   endings when rewriting version pragmas and compiler-confirmed literals.
+- Report source and target compiler errors with the original contract and
+  dependency paths when compilation uses a staged overlay.
 - Resolve literal and named tuple indices before choosing external call syntax
   or changing numeric conversions. Preserve signed behavior when reading and
   assigning heterogeneous tuple members.
