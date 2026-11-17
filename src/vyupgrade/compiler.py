@@ -861,7 +861,7 @@ def _validation_import_sources(
         char if is_code or char in "\r\n" else " "
         for char, is_code in zip(source, mask, strict=True)
     )
-    for line in code_source.splitlines():
+    for line in _bracket_joined_lines(code_source):
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
@@ -898,6 +898,19 @@ def _validation_import_sources(
                 )
             )
     return tuple(dict.fromkeys(imports))
+
+
+def _bracket_joined_lines(code_source: str) -> list[str]:
+    """Split comment- and string-masked code into lines, keeping bracketed spans on one line."""
+    depth = 0
+    chars: list[str] = []
+    for char in code_source:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(depth - 1, 0)
+        chars.append(" " if depth and char in "\r\n" else char)
+    return "".join(chars).splitlines()
 
 
 def _imported_module_names(imports: str) -> Iterator[str]:
