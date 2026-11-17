@@ -136,6 +136,15 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 4
+    # The import closure below comes from a line-based scanner that can miss
+    # imports, so refuse Vyper sources outright whether or not it finds them.
+    if config.report_json and config.report_json.resolve().suffix in {".vy", ".vyi"}:
+        print(
+            f"--report-json {config.report_json} resolves to Vyper source "
+            f"{config.report_json.resolve()}",
+            file=sys.stderr,
+        )
+        return 4
 
     files = discover_files(
         config.paths,

@@ -110,15 +110,31 @@ def test_report_json_refuses_symlink_to_input_contract(
     assert code == 4
 
 
-def test_report_json_refuses_imported_module(tmp_path: Path, passing_compiler) -> None:
+def test_report_json_refuses_module_from_multiline_import(
+    tmp_path: Path, passing_compiler
+) -> None:
     contract = tmp_path / "main.vy"
-    contract.write_text("# pragma version 0.4.3\nimport lib\n", encoding="utf-8")
+    contract.write_text(
+        "# pragma version 0.4.3\nfrom . import (\n    lib,\n)\n", encoding="utf-8"
+    )
     lib = tmp_path / "lib.vy"
     lib.write_text(LEGACY_CONTRACT, encoding="utf-8")
 
     code = main([str(contract), "--check", "--report-json", str(lib)])
 
     assert lib.read_text(encoding="utf-8") == LEGACY_CONTRACT
+    assert code == 4
+
+
+def test_report_json_refuses_imported_json_interface(tmp_path: Path, passing_compiler) -> None:
+    contract = tmp_path / "main.vy"
+    contract.write_text("# pragma version 0.4.3\nimport token_abi\n", encoding="utf-8")
+    interface = tmp_path / "token_abi.json"
+    interface.write_text("[]\n", encoding="utf-8")
+
+    code = main([str(contract), "--check", "--report-json", str(interface)])
+
+    assert interface.read_text(encoding="utf-8") == "[]\n"
     assert code == 4
 
 
