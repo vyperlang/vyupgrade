@@ -18,7 +18,7 @@
   return types, including nested calls and branch-local interface receivers.
   Share block-scoped variable bindings across external call and numeric rules.
 - Require `--aggressive` for interface changes that could alter outgoing call
-  behavior or accept previously rejected ETH. `VYD023` explains the affected
+  behavior or accept previously rejected ETH. `VYD025` explains the affected
   declaration.
 - Preserve source and compiler positions across CRLF, lone CR and mixed line
   endings when rewriting version pragmas and compiler-confirmed literals.

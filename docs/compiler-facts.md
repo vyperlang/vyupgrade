@@ -118,7 +118,7 @@ from its changed interior. Nested argument calls and calls on returned
 receivers get keywords and parentheses at their own boundaries. When a
 function cannot be matched, the current-source rules take over.
 
-`VYD023` flags an interface edit that could turn a read-only external call
+`VYD025` flags an interface edit that could turn a read-only external call
 into a state-changing call, reject a previously permitted call, or make an
 entry point accept ETH. Changing a local declaration purely for conformance
 is possible when the affected method has no outgoing use. The riskier edits

@@ -97,7 +97,7 @@ def literal_value() -> String[1]:
     assert 'return keccak256("é")' in migration.rewrite.source
     assert r"return convert(b'\xe9', String[1])" in migration.rewrite.source
     hash_line = source.splitlines().index('    return keccak256("é")') + 1
-    assert [d.line for d in migration.rewrite.diagnostics if d.rule == "VYD022"] == [hash_line]
+    assert [d.line for d in migration.rewrite.diagnostics if d.rule == "VYD024"] == [hash_line]
 
 
 def test_cli_preserves_cr_only_source_and_multiline_literal_payload(tmp_path):

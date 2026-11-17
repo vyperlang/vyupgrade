@@ -82,14 +82,14 @@ def test_behavior_changing_call_mode_requires_aggressive(tmp_path, source, befor
     assert router.report.source_compile == "passed"
     assert router.report.target_compile == "failed"
     assert decision.status == "blocked" and not decision.write_allowed
-    assert any(d.rule == "VYD023" for d in router.rewrite.diagnostics)
+    assert any(d.rule == "VYD025" for d in router.rewrite.diagnostics)
     assert not any(f.rule == "VY014" for f in router.rewrite.fixes)
 
     batch, decision = _migrate(tmp_path, source, aggressive=True)
     router, writer = batch.files
     assert decision.status == "passed", router.report.target_error
     assert router.report.abi_equal and router.report.method_ids_equal and router.report.storage_layout_equal
-    assert any(d.rule == "VYD023" for d in router.rewrite.diagnostics)
+    assert any(d.rule == "VYD025" for d in router.rewrite.diagnostics)
     assert _run(router.source_compile, writer.source_compile) == before
     assert _run(router.target_compile, writer.target_compile) == after
 
@@ -99,7 +99,7 @@ def test_unrelated_view_function_preserves_remote_writes(tmp_path):
     router, writer = batch.files
     assert decision.status == "passed", router.report.target_error
     assert "return extcall Checker(a).touch()" in router.rewrite.source
-    assert not any(d.rule == "VYD023" for d in router.rewrite.diagnostics)
+    assert not any(d.rule == "VYD025" for d in router.rewrite.diagnostics)
     assert _run(router.source_compile, writer.source_compile) == (1, 1)
     assert _run(router.target_compile, writer.target_compile) == (1, 1)
 
@@ -149,11 +149,11 @@ def test_method_conformance_is_separate_from_other_bucket_calls(tmp_path, calls_
     # SplitBucket implements both entries, but funnels deposits to child buckets
     # through convert(). A read on the child would make above_floor's mode observable.
     source = """# @version 0.3.10
-interface Bucket:
+interface Bucket :
     def above_floor() -> bool: nonpayable
     def convert(child: address): nonpayable
 
-implements: Bucket
+implements : Bucket
 
 @external
 @view
@@ -175,11 +175,11 @@ def probe(child: address) -> bool:
     assert router.report.source_compile == "passed"
     if calls_above_floor:
         assert "def above_floor() -> bool: nonpayable" in router.rewrite.source
-        assert any(d.rule == "VYD023" for d in router.rewrite.diagnostics)
+        assert any(d.rule == "VYD025" for d in router.rewrite.diagnostics)
         assert decision.status == "blocked" and not decision.write_allowed
     else:
         assert "def above_floor() -> bool: view" in router.rewrite.source
         assert "extcall Bucket(child).convert(child)" in router.rewrite.source
-        assert not any(d.rule == "VYD023" for d in router.rewrite.diagnostics)
+        assert not any(d.rule == "VYD025" for d in router.rewrite.diagnostics)
         assert decision.status == "passed", router.report.target_error
         assert router.report.abi_equal and router.report.method_ids_equal and router.report.storage_layout_equal

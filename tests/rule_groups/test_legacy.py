@@ -441,14 +441,14 @@ def test_non_ascii_string_literals_in_cr_only_source(config) -> None:
     source = '# @version 0.3.7\r# note\r@external\rdef f() -> String[2]:\r    return "é"\r'
     text = '"é"'
     literal = {"ast_type": "Str", "value": "é", "src": f"{source.index(text)}:{len(text)}:0"}
-    rules = frozenset({"VY224", "VYD022"})
+    rules = frozenset({"VY224", "VYD024"})
 
     result = apply_rules(source, config(source_ast={"ast_type": "Return", "value": literal}, select=rules))
     unverified = apply_rules(source, config(select=rules))
 
     assert "    return convert(b'\\xe9', String[1])\r" in result.source
     assert [(fix.rule, fix.line) for fix in result.fixes] == [("VY224", 5)]
-    assert [(d.rule, d.line) for d in unverified.diagnostics] == [("VYD022", 5)]
+    assert [(d.rule, d.line) for d in unverified.diagnostics] == [("VYD024", 5)]
 
 
 def test_non_ascii_string_diagnostic_needs_a_verified_runtime_literal(config) -> None:

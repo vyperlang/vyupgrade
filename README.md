@@ -227,7 +227,7 @@ diagnostic instead of being applied.
   including errors defined in imported Vyper modules.
 - Managed Vyper `0.3.10` supplies external call modes and return types during
   source compilation. Other compilers can use block-scoped analysis to resolve
-  local receivers. `VYD023` flags an interface change that could affect outgoing
+  local receivers. `VYD025` flags an interface change that could affect outgoing
   calls or make an entry point accept ETH. [Compiler-backed rewrites](docs/compiler-facts.md)
 - [docs/migration-coverage.md](docs/migration-coverage.md) — every syntax
   change mapped to a rule, diagnostic, explicit no-op, or validation-only

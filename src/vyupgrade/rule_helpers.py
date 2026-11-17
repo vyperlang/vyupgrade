@@ -125,7 +125,7 @@ def is_keyword_argument_name(source: str, start: int, end: int) -> bool:
 def implemented_interface_names(source: str) -> set[str]:
     mask = code_mask(source)
     names: set[str] = set()
-    for match in re.finditer(r"^[ \t]*implements:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
+    for match in re.finditer(r"^[ \t]*implements[ \t]*:[ \t]*(.+?)[ \t]*(?:#.*)?$", source, re.MULTILINE):
         if not span_is_code(mask, match.start(1), match.end(1)):
             continue
         names.update(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", match.group(1)))

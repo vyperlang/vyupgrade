@@ -361,8 +361,8 @@ def _local_interface_mutability(context: RuleContext) -> tuple[str, list[Fix], l
 
         row, column = token.start
         if risk is not None:
-            if context.is_enabled("VYD023"):
-                diagnostics.append(Diagnostic("VYD023", row, risk))
+            if context.is_enabled("VYD025"):
+                diagnostics.append(Diagnostic("VYD025", row, risk))
             if not context.config.aggressive:
                 continue
         if context.is_enabled("VY014"):
@@ -483,9 +483,9 @@ def _implemented_payable_mutability(
         decorator_match = re.match(r"([ \t]*)@external\b", line)
         if decorator_match is None:
             continue
-        if rule_context.is_enabled("VYD023"):
+        if rule_context.is_enabled("VYD025"):
             diagnostics.append(Diagnostic(
-                "VYD023", external_line,
+                "VYD025", external_line,
                 f"making {function_name} payable would accept ETH that its original implementation rejects",
             ))
         if not rule_context.config.aggressive or not rule_context.is_enabled("VY014"):
@@ -1225,7 +1225,7 @@ RULES = (
     Rule("interface_storage_assignment_casts", runner=_interface_storage_assignment_casts, changes=(crossing("VY019", (0, 4, 0)),)),
     Rule(
         "local_interface_mutability", runner=_local_interface_mutability,
-        changes=(crossing("VY014", (0, 4, 0)), crossing("VYD023", (0, 4, 0))),
+        changes=(crossing("VY014", (0, 4, 0)), crossing("VYD025", (0, 4, 0))),
     ),
     Rule("pure_immutable_reads", runner=_pure_immutable_reads, changes=(crossing("VY015", (0, 4, 0)),)),
     Rule("view_log_mutability", runner=_view_log_mutability, changes=(crossing("VY017", (0, 4, 0)),)),
@@ -1245,7 +1245,7 @@ RULES = (
     Rule(
         "implemented_payable_mutability",
         runner=_implemented_payable_mutability,
-        changes=(crossing("VY014", (0, 4, 0)), crossing("VYD023", (0, 4, 0))),
+        changes=(crossing("VY014", (0, 4, 0)), crossing("VYD025", (0, 4, 0))),
     ),
     Rule(
         "dependency_imports",

@@ -262,7 +262,7 @@ modern Python interpreter.
   asks for review when the source evidence or expression context is insufficient.
 - Local interface mutability is checked more strictly. `VY014` can update
   the declaration for conformance when the affected method has no outgoing
-  uses, or change a pure implementation to match a view declaration. `VYD023`
+  uses, or change a pure implementation to match a view declaration. `VYD025`
   flags changes that could switch an outgoing call between `CALL` and
   `STATICCALL` or allow an entry point to accept ETH. Those changes require
   `--aggressive`; artifact differences still require their own waivers.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from vyupgrade.rules import apply_rules
 
 
@@ -491,7 +493,7 @@ def __init__():
 
     assert "def configureClaimableGas(): view" in result.source
     assert "staticcall Blast(0x4300000000000000000000000000000000000002).configureClaimableGas()" in result.source
-    assert [d.rule for d in result.diagnostics].count("VYD023") == 1
+    assert [d.rule for d in result.diagnostics].count("VYD025") == 1
     assert not any(fix.rule == "VY014" for fix in result.fixes)
 
     result = apply_rules(source, config(aggressive=True))
@@ -658,12 +660,13 @@ def f(eta: uint256):
     assert "eta + _GRACE_PERIOD" in result.source
 
 
-def test_local_interface_nonpayable_matches_view_function(config) -> None:
-    source = """# @version 0.3.10
-interface Bucket:
+@pytest.mark.parametrize("colon", [":", " :"])
+def test_local_interface_nonpayable_matches_view_function(config, colon) -> None:
+    source = f"""# @version 0.3.10
+interface Bucket{colon}
     def above_floor() -> bool: nonpayable
 
-implements: Bucket
+implements{colon} Bucket
 
 @external
 @view
@@ -710,7 +713,7 @@ def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]):
     assert "def receiveFlashLoan(tokens: DynArray[address, 1], data: Bytes[32]): nonpayable" in result.source
     assert "@external\ndef receiveFlashLoan" in result.source
     assert any(fix.rule == "VY014" for fix in result.fixes)
-    review = apply_rules(source, config(select=frozenset({"VYD023"})))
+    review = apply_rules(source, config(select=frozenset({"VYD025"})))
     assert review.source == source and not review.diagnostics
 
 
@@ -730,10 +733,10 @@ def receiveFunds():
 def relay(target: address):
     Receiver(target).receiveFunds(value=msg.value)
 """
-    result = apply_rules(source, config(select=frozenset({"VY014", "VYD023"})))
+    result = apply_rules(source, config(select=frozenset({"VY014", "VYD025"})))
     assert result.source == source
-    assert [d.rule for d in result.diagnostics] == ["VYD023"]
-    aggressive = apply_rules(source, config(aggressive=True, select=frozenset({"VY014", "VYD023"})))
+    assert [d.rule for d in result.diagnostics] == ["VYD025"]
+    aggressive = apply_rules(source, config(aggressive=True, select=frozenset({"VY014", "VYD025"})))
     assert "def receiveFunds(): payable" in aggressive.source
     assert "@external\n@payable\ndef receiveFunds" in aggressive.source
 
@@ -747,9 +750,9 @@ interface Target:
 def run(dest: address):
     Target(dest).check()
 """
-    program = apply_rules(source, config(aggressive=True, select=frozenset({"VYD023"})))
+    program = apply_rules(source, config(aggressive=True, select=frozenset({"VYD025"})))
     assert program.source == source
-    assert [d.rule for d in program.diagnostics] == ["VYD023"]
+    assert [d.rule for d in program.diagnostics] == ["VYD025"]
     program = apply_rules(source, config(select=frozenset({"VY014"})))
     assert program.source == source
     assert not program.diagnostics
@@ -1023,6 +1026,6 @@ def probe(other: Bucket) -> bool:
     return (other.  # continued receiver
             \N{FULLWIDTH LATIN SMALL LETTER A}bove_floor())
 """
-    result = apply_rules(source, config(select=frozenset({"VY014", "VYD023"})))
+    result = apply_rules(source, config(select=frozenset({"VY014", "VYD025"})))
     assert result.source == source
-    assert [d.rule for d in result.diagnostics] == ["VYD023"]
+    assert [d.rule for d in result.diagnostics] == ["VYD025"]
