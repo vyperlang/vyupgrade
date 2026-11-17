@@ -152,7 +152,10 @@ imported definitions fail closed and require `--allow-storage-layout-change`.
 Unsupported bound expressions also require this waiver, even when their source
 text is unchanged.
 
-JSON reports use the existing top-level envelope with `schema_version: 6`.
+JSON reports use the existing top-level envelope with `schema_version: 7`.
+Lists shared by many attestations (declared sources, resolved packages) are
+stated once in top-level tables keyed by digest and referenced from each
+attestation, so report size stays linear in the number of files.
 Within a schema version, fields may be added but existing
 fields are not renamed, removed, or type-changed. A missing version identifies
 the legacy unversioned format; incompatible changes require a new schema
