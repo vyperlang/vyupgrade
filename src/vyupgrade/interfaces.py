@@ -47,8 +47,17 @@ def split_interfaces_to_vyi(source: str, path: Path) -> InterfaceSplitResult:
     rewritten = apply_edits(source, edits)
     if import_lines:
         rewritten = _insert_imports(rewritten, import_lines)
-    rewritten = re.sub(r"\n{3,}", "\n\n", rewritten)
+    rewritten = _collapse_blank_lines(rewritten)
     return InterfaceSplitResult(rewritten, tuple(generated), tuple(fixes))
+
+
+def _collapse_blank_lines(source: str) -> str:
+    mask = code_mask(source)
+    return re.sub(
+        r"\n{3,}",
+        lambda match: "\n\n" if span_is_code(mask, match.start(), match.end()) else match.group(),
+        source,
+    )
 
 
 @dataclass(frozen=True)

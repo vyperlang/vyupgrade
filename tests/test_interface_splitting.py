@@ -31,3 +31,23 @@ import Token
 '''
     )
     assert result.generated[0].path == tmp_path / "Token.vyi"
+
+
+def test_split_interface_keeps_blank_lines_inside_strings(tmp_path: Path) -> None:
+    source = '''#pragma version 0.4.3
+
+interface Foo:
+    def bar() -> uint256: view
+
+@external
+@view
+def f() -> uint256:
+    return len("""a
+
+
+""")
+'''
+
+    result = split_interfaces_to_vyi(source, tmp_path / "Main.vy")
+
+    assert '"""a\n\n\n"""' in result.source
