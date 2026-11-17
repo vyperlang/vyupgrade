@@ -253,3 +253,30 @@ def test_nested_project_interface_resolves_imports_from_its_own_root(tmp_path):
     )
     paths = (entry, helper, thing)
     assert main([*map(str, paths), "--check", "--target-version", "0.4.3"]) == 0
+
+
+@pytest.mark.parametrize("all_inputs", [True, False], ids=["batch", "dependencies"])
+def test_import_closures_scan_each_file_once(tmp_path, monkeypatch, all_inputs):
+    # Per-entry closures re-walked every file's imports, quadratic in project size.
+    paths = []
+    for index in range(20):
+        path = tmp_path / f"m{index}.vy"
+        imports = f"import m{index - 1}\n" if index else ""
+        path.write_text(f"#pragma version 0.4.3\n{imports}")
+        paths.append(path)
+    scans = []
+    scan = compiler._validation_import_sources
+    monkeypatch.setattr(
+        compiler,
+        "_validation_import_sources",
+        lambda path, *args, **kwargs: scans.append(path) or scan(path, *args, **kwargs),
+    )
+    inputs = paths if all_inputs else paths[-1:]
+    snapshot = compiler.resolve_import_closure({p: p.read_text() for p in inputs}, (tmp_path,))
+    entries = snapshot.roots + snapshot.dependencies
+    assert len(entries) == len(paths)
+    assert len(scans) <= 3 * len(paths)
+    scans.clear()
+    for entry in entries:
+        compiler._entry_closure(snapshot, entry, (tmp_path,))
+    assert sorted(scans) == sorted(p.resolve() for p in paths)

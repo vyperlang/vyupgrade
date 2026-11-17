@@ -180,6 +180,11 @@ class ImportClosure:
     contents: Mapping[Path, bytes]
     layouts: Mapping[Path, Path]
     import_roots: tuple[Path, ...]
+    # Resolved imports per member, shared by the per-entry closure walks of
+    # this snapshot: they resolve only to its members, so the answer is fixed.
+    _resolved_imports: dict[tuple[object, ...], tuple[_ResolvedValidationImport, ...]] = (
+        dataclass_field(default_factory=dict, init=False, repr=False, compare=False)
+    )
 
     @property
     def sources(self) -> dict[Path, str]:
@@ -309,6 +314,7 @@ def _entry_closure(
             entry_paths=same_root | {entry},
             project_roots=tuple(dict.fromkeys((entry_root, *snapshot.source_roots))),
             captured_only=True,
+            resolved_imports=snapshot._resolved_imports,
         )
     }
     return replace(
@@ -597,6 +603,7 @@ def resolve_import_closure(
     dependencies = [path for path in captured if path not in resolved_sources]
     dependency_paths = set(dependencies)
     consumers: dict[Path, list[Path]] = {path: [] for path in dependency_paths}
+    resolved_imports: dict[tuple[object, ...], tuple[_ResolvedValidationImport, ...]] = {}
     for root in sorted(resolved_sources):
         for path, _source, _relative_path, _is_override in _walk_validation_closure(
             source_roots,
@@ -604,6 +611,7 @@ def resolve_import_closure(
             common_root,
             captured,
             entry_paths=(root,),
+            resolved_imports=resolved_imports,
         ):
             if path in dependency_paths:
                 consumers[path].append(root)
@@ -788,6 +796,7 @@ def _walk_validation_closure(
     entry_paths: Iterable[Path] | None = None,
     project_roots: tuple[Path, ...] = (),
     captured_only: bool = False,
+    resolved_imports: dict[tuple[object, ...], tuple[_ResolvedValidationImport, ...]] | None = None,
 ) -> Iterator[tuple[Path, str, Path, bool]]:
     """Walk the import closure of ``overrides``.
 
@@ -795,6 +804,8 @@ def _walk_validation_closure(
     ``project_roots`` that contain it; an import none of those resolve falls
     back to the other ``project_roots``. With ``captured_only``, imports
     resolve only to ``overrides``, never to the live filesystem.
+    ``resolved_imports`` memoizes each file's resolved imports across walks
+    that share ``overrides`` and roots, so each file is scanned once.
     """
 
     def file_import_roots(path: Path) -> tuple[Path, ...]:
@@ -875,16 +886,23 @@ def _walk_validation_closure(
             continue
         processed.add(current)
         yield current, current_source, current_relative, is_override
-        import_source = current_source
-        for imported in _validation_import_sources(
-            current,
-            import_source,
-            current_root,
-            file_import_roots(current),
-            current_relative,
-            captured=override_paths if captured_only else None,
-            fallback_roots=fallback_import_roots(current),
-        ):
+        file_roots = file_import_roots(current)
+        fallback_roots = fallback_import_roots(current)
+        key = (current, current_root, current_relative, file_roots, fallback_roots)
+        current_imports = None if resolved_imports is None else resolved_imports.get(key)
+        if current_imports is None:
+            current_imports = _validation_import_sources(
+                current,
+                current_source,
+                current_root,
+                file_roots,
+                current_relative,
+                captured=override_paths if captured_only else None,
+                fallback_roots=fallback_roots,
+            )
+            if resolved_imports is not None:
+                resolved_imports[key] = current_imports
+        for imported in current_imports:
             if imported.path in processed:
                 existing_relative = layouts[imported.path]
                 if existing_relative != imported.relative_path:
