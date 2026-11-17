@@ -361,3 +361,69 @@ def test_wildcard_keeps_evidence_with_repeated_and_builtin_imports(tmp_path: Pat
     declaration = batch.files[-1].rewrite
     assert [fix.after for fix in declaration.fixes if fix.rule == "VY125"] == ["Bytes[...]"], batch.reports
     assert engine.validate_migrations(batch, config).status == "passed", batch.reports
+
+
+def _prepare_with_unrelated_root(tmp_path: Path, unrelated: str):
+    entry, interface, other = tmp_path / "entry.vy", tmp_path / "Narrow.vyi", tmp_path / "other.vy"
+    source = IMPLEMENTATION + _read_function("Bytes[1]", "    return staticcall Narrow(other).data(large)")
+    for path, text in ((entry, source), (interface, INTERFACE), (other, unrelated)):
+        path.write_text(text)
+    config = Config(paths=(entry, other), target_version="0.5.0b2", include_dependencies=True)
+    requests = [
+        engine.bounded_migration_request(entry, source, config),
+        engine.bounded_migration_request(other, unrelated, config),
+        engine.bounded_migration_request(
+            interface, INTERFACE, config, role="dependency", consumer_roots=(entry,),
+        ),
+    ]
+    return engine.prepare_migrations(requests, config)
+
+
+def _wildcards(batch) -> list[str]:
+    return [fix.after for fix in batch.files[-1].rewrite.fixes if fix.rule == "VY125"]
+
+
+def test_wildcard_ignores_an_unrelated_root_compiled_before_04(tmp_path: Path) -> None:
+    batch = _prepare_with_unrelated_root(
+        tmp_path, "# pragma version 0.3.10\n\n@external\n@view\ndef answer() -> uint256:\n    return 42\n",
+    )
+    assert batch.files[1].source_compile.resolved_compiler == "0.3.10"
+    assert _wildcards(batch) == ["Bytes[...]"], batch.reports
+
+
+def test_wildcard_ignores_an_unrelated_compile_with_an_uncaptured_import(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    compile_source_file = engine.compile_source_file
+
+    def compile_other_with_uncaptured_import(path, config, source_version):
+        result = compile_source_file(path, config, source_version)
+        if path.name != "other.vy":
+            return result
+        annotated = result.artifacts["annotated_ast"]
+        external_module = {
+            "ast_type": "Module",
+            "source_id": 20,
+            "source_sha256sum": "0" * 64,
+            "resolved_path": str(tmp_path / "installed" / "Caller.vy"),
+            "is_interface": False,
+            "body": [],
+        }
+        return replace(result, artifacts={
+            **result.artifacts,
+            "annotated_ast": {**annotated, "imports": [*annotated["imports"], external_module]},
+        })
+
+    monkeypatch.setattr(engine, "compile_source_file", compile_other_with_uncaptured_import)
+    batch = _prepare_with_unrelated_root(tmp_path, "#pragma version 0.4.3\nANSWER: constant(uint256) = 42\n")
+    assert _wildcards(batch) == ["Bytes[...]"], batch.reports
+
+
+def test_wildcard_keeps_bound_when_a_same_project_root_fails_to_compile(tmp_path: Path) -> None:
+    # Without compiler evidence the failed root could import the interface in a
+    # way the import scanner misses.
+    batch = _prepare_with_unrelated_root(tmp_path, "#pragma version 0.4.3\nANSWER: constant(uint256) = \n")
+    assert batch.files[1].source_compile.status == "failed"
+    assert _wildcards(batch) == []
+    diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
+    assert "no matching compiler evidence is available for other.vy" in diagnostic.message

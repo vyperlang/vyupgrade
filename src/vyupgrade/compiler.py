@@ -229,6 +229,16 @@ class ImportClosure:
             raise ValueError(f"source is outside the captured import closure: {path}")
         return self._layout_roots[member]
 
+    def entry_members(self, entry: Path) -> set[Path]:
+        """Return what a compile of ``entry`` stages: its project inputs and their captured imports.
+
+        Separate projects can use the same overlay-relative paths. Keep the entry's
+        project inputs together so their imports still work if the scanner misses an edge.
+        """
+        entry_root = self.layout_root(entry)
+        same_root = {path for path in self.roots if self._layout_roots[path] == entry_root}
+        return _reachable_imports(same_root | {entry}, self._imports)
+
     def captured_path(self, path: Path) -> Path | None:
         if path in self.contents:
             return path
@@ -388,14 +398,8 @@ def _reachable_imports(
 
 
 def _entry_closure(snapshot: ImportClosure, entry: Path) -> ImportClosure:
-    """Narrow the snapshot to the entry's project inputs and their captured imports.
-
-    Separate projects can use the same overlay-relative paths. Keep the entry's
-    project inputs together so their imports still work if the scanner misses an edge.
-    """
-    entry_root = snapshot.layout_root(entry)
-    same_root = {path for path in snapshot.roots if snapshot._layout_roots[path] == entry_root}
-    members = _reachable_imports(same_root | {entry}, snapshot._imports)
+    """Narrow the snapshot to what a compile of the entry stages (``entry_members``)."""
+    members = snapshot.entry_members(entry)
     dependencies = tuple(sorted(members - {entry}))
     return replace(
         snapshot,
