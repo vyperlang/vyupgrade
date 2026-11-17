@@ -14,7 +14,7 @@ from ..constant_evaluation import eval_integer_constant_expr, integer_constant_v
 from ..models import Config, Diagnostic, Fix, RewriteResult
 from ..rule_registry import Rule, crossing, is_enabled, rule_changes
 from ..source import TextEdit, apply_edits, line_number
-from ..versions import MigrationContext, VyperVersion, infer_pragma, parse_version
+from ..versions import MigrationContext, infer_pragma, parse_version
 
 if TYPE_CHECKING:
     from ..compiler import CompileResult, ImportClosure
@@ -401,7 +401,7 @@ def _check_consumers(
             identity = _node(_node(function.get("type")).get("type_decl_node"))
             source_id = identity.get("source_id")
             node_id = identity.get("node_id")
-            if source_id == _BUILTIN_SOURCE_ID:
+            if source_id == _BUILTIN_SOURCE_ID and type(node_id) is int:
                 continue
             span = module.span(call)
             line = line_number(module.source.original, span.start) if span is not None else 1
@@ -423,10 +423,16 @@ def _check_consumers(
 
 
 def _compiled_before_interfaces(result: CompileResult | None) -> bool:
-    if result is None or result.status != "passed":
+    """Whether a full compile (bytecode, not an AST-only parse) passed on a release before 0.4."""
+    if (
+        result is None
+        or result.status != "passed"
+        or not isinstance((result.artifacts or {}).get("bytecode"), str)
+    ):
         return False
     version = parse_version(result.resolved_compiler)
-    return version is not None and version < VyperVersion("0.4.0")
+    # 0.4.0 prereleases already resolve .vyi imports, so compare the release only.
+    return version is not None and version.release < (0, 4, 0)
 
 
 def plan_interface_wildcards(
