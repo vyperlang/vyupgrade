@@ -4,6 +4,7 @@ import re
 
 from ..models import Diagnostic, Fix
 from .legacy_call_helpers import iter_calls
+from ..rule_helpers import operator_operand
 from ..rule_registry import Rule, RuleContext, crossing, target_floor
 from ..source import (
     TextEdit,
@@ -236,12 +237,34 @@ def _replace_assert_modifiable(source: str) -> tuple[str, list[Fix]]:
 def _unwrap_legacy_builtin(source: str, call_name: str, rule: str) -> tuple[str, list[Fix]]:
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
-    for match, _open_index, close, raw_args in iter_calls(source, call_name):
-        args = split_top_level_args(raw_args)
-        if args is None or len(args) != 1:
+    for match, open_index, close, raw_args in iter_calls(source, call_name):
+        args = split_top_level_arg_spans(raw_args, include_empty_separators=True)
+        if args is None or not args:
             continue
-        replacement = args[0].strip()
-        edits.append(TextEdit(match.start(), close + 1, replacement))
+        if len(args) == 2 and args[1][2] and all(
+            not line.strip() or line.lstrip().startswith("#")
+            for line in args[1][2].splitlines()
+        ):
+            # A trailing comma can leave a comment-only span.
+            args.pop()
+        if len(args) != 1 or not args[0][2]:
+            continue
+        arg_start, arg_end, argument = args[0]
+        start = open_index + 1 + arg_start
+        end = open_index + 1 + arg_end
+        if "\n" in raw_args or "\r" in raw_args or operator_operand(argument) != argument:
+            # Keep the original delimiters so multiline comments cannot swallow
+            # the closing parenthesis. A trailing comma would create a tuple.
+            trailing = source[end:close]
+            without_comma = trailing.replace(",", "", 1)
+            edits.append(TextEdit(match.start(), open_index, ""))
+            if without_comma != trailing:
+                edits.append(TextEdit(end, close, without_comma))
+            replacement = source[open_index:end] + without_comma + ")"
+        else:
+            # Edit only the wrapper so nested calls can be unwrapped too.
+            edits.extend((TextEdit(match.start(), start, ""), TextEdit(end, close + 1, "")))
+            replacement = argument
         fixes.append(
             Fix(
                 rule,

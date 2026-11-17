@@ -54,6 +54,22 @@ def _calldata(signature: str, args: tuple[int, ...]) -> str:
     )
 
 
+def test_unitless_number_preserves_grouping_and_multiline_comments(tmp_path):
+    source = """# @version 0.1.0b17
+@public
+def f(x: uint256, y: uint256) -> uint256:
+    return as_unitless_number(
+        x + y,  # Keep this comment with the sum.
+    ) * 2
+"""
+    path = tmp_path / "entry.vy"
+    rewritten = apply_rules(source, Config(paths=(path,), target_version="0.4.3")).source
+    original = _deploy(path, source, "0.1.0b17")
+    migrated = _deploy(path, rewritten, "0.4.3")
+
+    assert _call(original, "f(uint256,uint256)", 2, 3) == _call(migrated, "f(uint256,uint256)", 2, 3) == 10
+
+
 @pytest.mark.parametrize(("expression", "expected"), [
     ("max_value(int128) % 7", 1),
     ("(-5) % 3", -2),
