@@ -424,6 +424,41 @@ def test_wildcard_ignores_an_unrelated_compile_with_an_uncaptured_import(
     assert _wildcards(batch) == ["Bytes[...]"], batch.reports
 
 
+@pytest.mark.parametrize(("imports", "wildcards"), [("", ["Bytes[...]"]), ("import Narrow\n", [])])
+def test_failed_root_in_another_project_blocks_only_what_it_imports(
+    tmp_path: Path, imports: str, wildcards: list[str],
+) -> None:
+    project, other_project, library = tmp_path / "project", tmp_path / "other", tmp_path / "lib"
+    for directory in (project, other_project, library):
+        directory.mkdir()
+    for directory in (project, other_project):
+        (directory / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "0"\ndependencies = ["vyper==0.4.3"]\n'
+        )
+    entry, interface, other = project / "entry.vy", library / "Narrow.vyi", other_project / "other.vy"
+    source = IMPLEMENTATION + _read_function("Bytes[1]", "    return staticcall Narrow(other).data(large)")
+    failing = f"#pragma version 0.4.3\n{imports}ANSWER: constant(uint256) = \n"
+    for path, text in ((entry, source), (interface, INTERFACE), (other, failing)):
+        path.write_text(text)
+    config = Config(
+        paths=(entry, other), target_version="0.5.0b2", include_dependencies=True,
+        compiler_search_paths=(library,),
+    )
+    consumers = (entry, other) if imports else (entry,)
+    batch = engine.prepare_migrations([
+        engine.bounded_migration_request(entry, source, config),
+        engine.bounded_migration_request(other, failing, config),
+        engine.bounded_migration_request(
+            interface, INTERFACE, config, role="dependency", consumer_roots=consumers,
+        ),
+    ], config)
+    assert batch.files[1].source_compile.status == "failed"
+    assert _wildcards(batch) == wildcards, batch.reports
+    if not wildcards:
+        diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
+        assert "no matching compiler evidence is available for other.vy" in diagnostic.message
+
+
 def _without_declarations(node):
     if isinstance(node, list):
         return [_without_declarations(item) for item in node]
