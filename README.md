@@ -137,6 +137,8 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--split-interfaces` — move top-level `interface` blocks into sibling `.vyi` files and import them.
 - `--select` / `--ignore` — comma-separated rule codes to include or exclude.
 - `--report-json PATH` — write a JSON report of fixes, diagnostics, and validation results.
+  Use a path separate from migration inputs and outputs. The command can replace
+  an existing report bearing vyupgrade producer metadata.
 - `--format mamushi` — format staged candidates, then revalidate the exact output before writing.
 - `--test-command CMD` — run a test command after a successful write, record its result, and fail when it does not pass.
 - `--enable-decimals` — treat decimals as enabled when reasoning about `0.4.x` rules.

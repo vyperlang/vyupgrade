@@ -4,6 +4,8 @@
 
 - Ignore comments, string literals, and docstrings when reporting decimal usage
   (`VYD001`) and `block.prevrandao` usage (`VYD010`).
+- Preserve expression grouping and multiline comments when removing
+  `as_unitless_number()` (`VY208`).
 - Merging multiple distinct named reentrancy locks into the global lock
   (`VY090`) now requires `--aggressive`; by default `VYD002` reports them and
   the decorators are left unchanged. A single lock name is still rewritten.
@@ -27,6 +29,8 @@
 - Resolve literal and named tuple indices before choosing external call syntax
   or changing numeric conversions. Preserve signed behavior when reading and
   assigning heterogeneous tuple members.
+- Require `--report-json` to use a separate path from migration inputs and
+  outputs. An existing destination must be a recognized vyupgrade report.
 
 ## 0.10.0 - 2026-11-07
 

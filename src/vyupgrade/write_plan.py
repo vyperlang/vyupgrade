@@ -75,7 +75,7 @@ class MigrationPlan:
         path: Path,
         original: str,
         candidate: str,
-        report: FileReport,
+        report: FileReport | None = None,
     ) -> None:
         destination = path.resolve()
         if destination in self._entries:
@@ -100,12 +100,14 @@ class MigrationPlan:
             candidate_bytes,
             stat.S_IMODE(source_stat.st_mode),
             False,
-            [report],
+            [report] if report is not None else [],
         )
         self._entries[destination] = entry
         self._refresh_entry_reports(entry)
 
-    def add_generated(self, path: Path, candidate: str, report: FileReport) -> None:
+    def add_generated(
+        self, path: Path, candidate: str, report: FileReport | None = None
+    ) -> None:
         try:
             lexical_stat = path.lstat()
         except FileNotFoundError:
@@ -131,7 +133,8 @@ class MigrationPlan:
                 raise PlanConflictError(
                     f"generated destination collides with a migration source: {destination}"
                 )
-            existing_entry.reports.append(report)
+            if report is not None:
+                existing_entry.reports.append(report)
             self._refresh_entry_reports(existing_entry)
             return
 
@@ -161,7 +164,7 @@ class MigrationPlan:
             candidate_bytes,
             mode,
             True,
-            [report],
+            [report] if report is not None else [],
         )
         self._entries[destination] = entry
         self._refresh_entry_reports(entry)
@@ -245,7 +248,7 @@ class MigrationPlan:
     ) -> None:
         for entry in writes:
             try:
-                current = _read_regular_file_or_missing(entry.path)
+                current = read_regular_file_or_missing(entry.path)
             except OSError as exc:
                 raise WriteTransactionError(
                     f"could not recheck migration destination {entry.path}: {exc}"
@@ -261,7 +264,7 @@ class MigrationPlan:
         differs_from_candidate: list[Path] = []
         for entry in self.entries:
             try:
-                current = _read_regular_file_or_missing(entry.path)
+                current = read_regular_file_or_missing(entry.path)
                 readable = True
             except OSError:
                 current = None
@@ -282,7 +285,7 @@ class MigrationPlan:
         affected: list[Path] = []
         for entry in self.entries:
             try:
-                current = _read_regular_file_or_missing(entry.path)
+                current = read_regular_file_or_missing(entry.path)
             except OSError:
                 affected.append(entry.path)
                 continue
@@ -394,7 +397,7 @@ def _require_replaceable_regular_file(path: Path, value: os.stat_result) -> None
         raise PlanConflictError(f"migration destination is read-only: {path}")
 
 
-def _read_regular_file_or_missing(path: Path) -> bytes | None:
+def read_regular_file_or_missing(path: Path) -> bytes | None:
     try:
         content, _value = _snapshot_existing(path)
     except FileNotFoundError:

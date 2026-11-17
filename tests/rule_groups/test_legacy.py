@@ -601,8 +601,38 @@ def f(start: uint256) -> uint256:
 
     result = apply_rules(source, config(target_version="0.2.1"))
 
-    assert "return block.timestamp - start" in result.source
+    assert "return (block.timestamp - start)" in result.source
     assert "as_unitless_number" not in result.source
+
+
+def test_legacy_as_unitless_number_keeps_grouping_and_unwraps_atoms(config) -> None:
+    source = """# @version 0.2.1
+@external
+def f(x: uint256, y: uint256) -> uint256:
+    a: uint256 = as_unitless_number(x + y,) * 2
+    return a + as_unitless_number(as_unitless_number(x)) * 2
+"""
+    settings = config(target_version="0.2.1")
+
+    result = apply_rules(source, settings)
+
+    assert "a: uint256 = (x + y) * 2" in result.source
+    assert "return a + x * 2" in result.source
+    assert apply_rules(result.source, settings).source == result.source
+
+
+def test_legacy_as_unitless_number_preserves_multiline_comments(config) -> None:
+    source = """# @version 0.2.1
+@external
+def f(x: uint256, y: uint256) -> uint256:
+    return as_unitless_number(
+        x + y,  # Keep this comment with the sum.
+    ) * 2
+"""
+
+    result = apply_rules(source, config(target_version="0.2.1"))
+
+    assert result.source == source.replace("as_unitless_number(", "(").replace("y,  #", "y  #")
 
 
 def test_reserved_value_parameter_is_renamed_with_function_references(config) -> None:

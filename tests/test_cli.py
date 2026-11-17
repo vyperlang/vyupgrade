@@ -79,6 +79,133 @@ def __init__():
     assert any(fix["rule"] == "VY002" for fix in data["files"][0]["fixes"])
 
 
+@pytest.mark.parametrize("alias", [False, True])
+def test_report_json_cannot_overwrite_input(
+    tmp_path: Path, passing_compiler, capsys, alias: bool
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original)
+    report = contract
+    if alias:
+        report = tmp_path / "report.json"
+        report.symlink_to(contract)
+
+    assert main([str(contract), "--write", "--report-json", str(report)]) == 4
+    assert contract.read_text() == original
+    assert "recognized vyupgrade report" in capsys.readouterr().err
+
+
+def test_report_json_cannot_overwrite_imported_abi(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("#pragma version 0.4.3\nimport Token\n")
+    abi = tmp_path / "Token.json"
+    abi.write_text("[]\n")
+
+    assert main([str(contract), "--check", "--report-json", str(abi)]) == 4
+    assert abi.read_text() == "[]\n"
+
+
+def test_report_json_replaces_earlier_report(tmp_path: Path, passing_compiler) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("# @version 0.3.10\n@external\ndef __init__():\n    pass\n")
+    report = tmp_path / "report.json"
+
+    assert main([str(contract), "--check", "--report-json", str(report)]) == 1
+    assert main([str(contract), "--write", "--report-json", str(report)]) == 0
+    assert json.loads(report.read_text())["write_status"] == "committed"
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_report_json_cannot_overwrite_generated_interface(
+    tmp_path: Path, passing_compiler, capsys, alias: bool
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    original = """#pragma version 0.4.3
+interface Token:
+    def balance() -> uint256: view
+
+@external
+def read(token: Token) -> uint256:
+    return staticcall token.balance()
+"""
+    contract.write_text(original)
+    interface = tmp_path / "Token.vyi"
+    report = interface
+    if alias:
+        report = tmp_path / "report.json"
+        report.symlink_to(interface)
+
+    code = main([
+        str(contract), "--write", "--split-interfaces", "--report-json", str(report),
+    ])
+
+    assert code == 4
+    assert str(interface) in capsys.readouterr().err
+    assert contract.read_text() == original
+    assert not interface.exists()
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_report_json_cannot_overwrite_closure_output(
+    tmp_path: Path, passing_compiler, capsys, archive: bool
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    original = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+    contract.write_text(original)
+    output = tmp_path / ("closure.vyz" if archive else "closure")
+    report = output if archive else output / contract.name
+
+    code = main([
+        str(contract), "--write", "--include-dependencies",
+        "--closure-archive" if archive else "--closure-output", str(output),
+        "--report-json", str(report),
+    ])
+
+    assert code == 4
+    assert str(report) in capsys.readouterr().err
+    assert contract.read_text() == original
+    assert not output.exists()
+
+
+def test_report_json_allows_a_separate_file_inside_closure_output(
+    tmp_path: Path, passing_compiler
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("# @version 0.3.10\n@external\ndef __init__():\n    pass\n")
+    output = tmp_path / "closure"
+    report = output / "report.json"
+    code = main([
+        str(contract), "--write", "--include-dependencies", "--closure-output", str(output),
+        "--report-json", str(report),
+    ])
+
+    assert code == 0
+    assert (output / contract.name).read_bytes() == contract.read_bytes()
+    assert json.loads(report.read_text())["closure"]["output_status"] == "written"
+
+
+def test_report_json_refuses_new_non_report_at_emission(
+    tmp_path: Path, passing_compiler, capsys, monkeypatch
+) -> None:
+    contract = tmp_path / "Contract.vy"
+    contract.write_text("# @version 0.3.10\n@external\ndef __init__():\n    pass\n")
+    report = tmp_path / "report.json"
+
+    def write_output(command, **kwargs):
+        report.write_text("created by test command\n")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", write_output)
+    code = main([str(contract), "--write", "--test-command", "tests", "--report-json", str(report)])
+
+    assert code == 4
+    assert "recognized vyupgrade report" in capsys.readouterr().err
+    assert report.read_text() == "created by test command\n"
+
+
 def test_write_mode_is_idempotent(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "migration_03.vy"
     contract.write_text(
@@ -583,8 +710,12 @@ def test_incomplete_rollback_is_reported_as_partial_on_disk_change(
     )
     report = tmp_path / "report.json"
 
+    commit = cli.MigrationPlan.commit
+
     def leave_candidate_behind(plan):
         entry = plan.writes[0]
+        if entry.path != contract.resolve():
+            return commit(plan)
         entry.path.write_bytes(entry.candidate)
         raise cli.WriteTransactionError(
             "injected incomplete rollback",
