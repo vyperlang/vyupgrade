@@ -85,18 +85,60 @@ def test_snapshot_bytes_are_read_once_and_reused_for_validation_and_export(tmp_p
     assert len(reads) == 1
 
 
-def test_source_compilation_uses_captured_bytes_even_after_live_changes(tmp_path):
+@pytest.mark.parametrize("deleted", [False, True])
+def test_source_compilation_uses_captured_bytes_even_after_live_changes(tmp_path, deleted):
     entry, helper = _project(tmp_path)
     source = entry.read_text()
     snapshot = compiler.resolve_import_closure({entry: source})
     entry.write_text("invalid source\n")
-    helper.write_text("invalid dependency\n")
+    if deleted:
+        helper.unlink()
+    else:
+        helper.write_text("invalid dependency\n")
     config = Config(paths=(entry,), target_version="0.4.2")
     batch = engine.prepare_migrations(
         [engine.bounded_migration_request(entry, source, config)], config, snapshot=snapshot
     )
     assert batch.files[0].source_compile.status == "passed", batch.files[0].source_compile.stderr
     assert engine.validate_migrations(batch, config).status == "passed"
+
+
+@pytest.mark.parametrize("retarget", [False, True], ids=["unlinked", "retargeted"])
+def test_source_compilation_uses_captured_symlink_import(tmp_path, retarget):
+    project = tmp_path / "project"
+    search_path = tmp_path / "site-packages"
+    dependency = search_path / "depkg" / "mod.vy"
+    competing = search_path / "competing" / "mod.vy"
+    dependency.parent.mkdir(parents=True)
+    competing.parent.mkdir()
+    project.mkdir()
+    alias = project / "alias"
+    alias.symlink_to(dependency.parent, target_is_directory=True)
+    dependency.write_text(
+        "#pragma version 0.4.3\n@internal\n@pure\ndef f() -> uint256:\n    return 1\n"
+    )
+    competing.write_text("invalid dependency\n")
+    entry = project / "Main.vy"
+    source = (
+        "#pragma version 0.4.3\nfrom alias import mod\n"
+        "@external\n@pure\ndef g() -> uint256:\n    return mod.f()\n"
+    )
+    entry.write_text(source)
+    snapshot = compiler.resolve_import_closure({entry: source}, (search_path,))
+    assert snapshot.layouts[dependency.resolve()] == Path("alias/mod.vy")
+    alias.unlink()
+    if retarget:
+        alias.symlink_to(competing.parent, target_is_directory=True)
+
+    config = Config(
+        paths=(entry,),
+        target_version="0.4.3",
+        compiler_search_paths=(search_path,),
+        source_snapshot=snapshot,
+    )
+    result = compiler.compile_source_file(entry, config, "0.4.3")
+    assert result.status == "passed", result.stderr
+    assert snapshot.resolve_import(entry, "alias.mod") == dependency.resolve()
 
 
 def test_write_transaction_rechecks_unmodified_dependency(tmp_path):
@@ -115,3 +157,164 @@ def test_write_transaction_rechecks_unmodified_dependency(tmp_path):
 def test_missing_or_malformed_bytecode_fails_output_parsing(raw):
     with pytest.raises(ValueError):
         compiler._parse_outputs(raw, ("bytecode",))
+
+
+def test_independent_projects_with_same_named_files_compile_separately(tmp_path):
+    paths = []
+    for name, value in (("a", 1), ("b", 2)):
+        root = tmp_path / name
+        root.mkdir()
+        (root / "pyproject.toml").write_text("[project]\nname = 'p'\nversion = '0.0.0'\n")
+        (root / "helper.vy").write_text(
+            f"#pragma version ^0.4.2\n@internal\n@pure\ndef g() -> uint256:\n    return {value}\n"
+        )
+        path = root / "Main.vy"
+        path.write_text(
+            "#pragma version 0.4.2\nimport helper\n"
+            "@external\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
+        )
+        paths.append(path)
+    config = Config(paths=tuple(paths), target_version="0.4.3")
+    requests = [engine.bounded_migration_request(p, p.read_text(), config) for p in paths]
+    batch = engine.prepare_migrations(requests, config)
+    assert [f.source_compile.status for f in batch.files] == ["passed", "passed"]
+    assert engine.validate_migrations(batch, config).status == "passed"
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    ["from.lib import Main as m", "from . lib import Main as m", "import lib . Main as m"],
+)
+def test_source_compile_follows_import_spelled_with_any_spacing(tmp_path, import_line):
+    # ``.`` is its own token, so spacing around it is free.
+    (tmp_path / "lib").mkdir()
+    library = tmp_path / "lib" / "Main.vy"
+    library.write_text(
+        "#pragma version 0.4.3\n@internal\n@pure\ndef f(x: uint256) -> uint256:\n    return x\n"
+    )
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        f"#pragma version 0.4.3\n{import_line}\n"
+        "@external\n@pure\ndef g(x: uint256) -> uint256:\n    return m.f(x)\n"
+    )
+    assert main([str(entry), str(library), "--check", "--target-version", "0.4.3"]) == 0
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    ["from . import(helper)", "from . import (\n    helper,\n)", "from . import \\\n    helper"],
+)
+def test_source_compile_follows_continued_from_import(tmp_path, import_line):
+    helper = tmp_path / "helper.vy"
+    helper.write_text("#pragma version 0.4.3\n@internal\n@pure\ndef f() -> uint256:\n    return 1\n")
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        f"#pragma version 0.4.3\n{import_line}\n"
+        "@external\n@pure\ndef g() -> uint256:\n    return helper.f()\n"
+    )
+    assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
+
+
+def test_source_compile_stages_its_project_when_the_import_scanner_misses(tmp_path):
+    # Vyper NFKC-normalizes identifiers: fullwidth `\uff48elper` imports `helper.vy`.
+    # ``lib.vy`` is not a batch input: only walking ``helper.vy`` finds it.
+    (tmp_path / "lib.vy").write_text(
+        "#pragma version 0.4.3\n@internal\n@pure\ndef one() -> uint256:\n    return 1\n"
+    )
+    helper = tmp_path / "helper.vy"
+    helper.write_text(
+        "#pragma version 0.4.3\nimport lib\n@internal\n@pure\ndef f() -> uint256:\n    return lib.one()\n"
+    )
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nimport \uff48elper as h\n"
+        "@external\n@pure\ndef g() -> uint256:\n    return h.f()\n"
+    )
+    assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
+
+
+def test_search_path_dependency_does_not_resolve_against_the_entry_root(tmp_path):
+    entry_dir, search_dir = tmp_path / "a", tmp_path / "b"
+    entry_dir.mkdir()
+    search_dir.mkdir()
+    for directory, value in ((entry_dir, 1), (search_dir, 2)):
+        (directory / "helper.vy").write_text(
+            f"#pragma version 0.4.3\n@internal\n@pure\ndef g() -> uint256:\n    return {value}\n"
+        )
+    (search_dir / "lib.vy").write_text(
+        "#pragma version 0.4.3\nimport helper\n"
+        "@internal\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
+    )
+    entry = entry_dir / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nimport lib\n"
+        "@external\n@pure\ndef h() -> uint256:\n    return lib.f()\n"
+    )
+    args = [str(entry), "--check", "--target-version", "0.4.3", "--compiler-search-paths", str(search_dir)]
+    assert main(args) == 0
+
+
+def test_source_compile_falls_back_to_a_sibling_project_root(tmp_path):
+    # ``helper`` isn't in ``app``, so it resolves through the other input's root.
+    app, lib = tmp_path / "app", tmp_path / "libs" / "mylib"
+    for directory in (app, lib):
+        directory.mkdir(parents=True)
+        (directory / "pyproject.toml").write_text(
+            f"[project]\nname = '{directory.name}'\nversion = '0.0.0'\n"
+        )
+    helper = lib / "helper.vy"
+    helper.write_text("#pragma version 0.4.3\n@internal\n@pure\ndef g() -> uint256:\n    return 1\n")
+    entry = app / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nimport helper\n"
+        "@external\n@pure\ndef f() -> uint256:\n    return helper.g()\n"
+    )
+    assert main([str(entry), str(helper), "--check", "--target-version", "0.4.3"]) == 0
+
+
+def test_nested_project_interface_resolves_imports_from_its_own_root(tmp_path):
+    nested = tmp_path / "nested"
+    (nested / "interfaces").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'outer'\nversion = '0.0.0'\n")
+    (nested / "pyproject.toml").write_text("[project]\nname = 'nested'\nversion = '0.0.0'\n")
+    helper = nested / "interfaces" / "IHelper.vyi"
+    helper.write_text(
+        "#pragma version 0.4.3\nfrom interfaces import IThing\n"
+        "@external\n@view\ndef thing() -> IThing:\n    ...\n"
+    )
+    thing = nested / "interfaces" / "IThing.vyi"
+    thing.write_text("#pragma version 0.4.3\n@external\n@view\ndef value() -> uint256:\n    ...\n")
+    entry = tmp_path / "Main.vy"
+    entry.write_text(
+        "#pragma version 0.4.3\nfrom nested.interfaces import IHelper\n"
+        "@external\ndef register(helper: IHelper):\n    pass\n"
+    )
+    paths = (entry, helper, thing)
+    assert main([*map(str, paths), "--check", "--target-version", "0.4.3"]) == 0
+
+
+@pytest.mark.parametrize("all_inputs", [True, False], ids=["batch", "dependencies"])
+def test_import_closures_scan_each_file_once(tmp_path, monkeypatch, all_inputs):
+    # Per-entry closures re-walked every file's imports, quadratic in project size.
+    paths = []
+    for index in range(20):
+        path = tmp_path / f"m{index}.vy"
+        imports = f"import m{index - 1}\n" if index else ""
+        path.write_text(f"#pragma version 0.4.3\n{imports}")
+        paths.append(path)
+    scans = []
+    scan = compiler._validation_import_sources
+    monkeypatch.setattr(
+        compiler,
+        "_validation_import_sources",
+        lambda path, *args, **kwargs: scans.append(path) or scan(path, *args, **kwargs),
+    )
+    inputs = paths if all_inputs else paths[-1:]
+    snapshot = compiler.resolve_import_closure({p: p.read_text() for p in inputs}, (tmp_path,))
+    entries = snapshot.roots + snapshot.dependencies
+    assert len(entries) == len(paths)
+    assert len(scans) <= 3 * len(paths)
+    scans.clear()
+    for entry in entries:
+        compiler._entry_closure(snapshot, entry)
+    assert scans == []
