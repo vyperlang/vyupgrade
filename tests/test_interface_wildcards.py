@@ -326,3 +326,38 @@ def test_wildcard_keeps_bound_when_compiler_resolves_an_uncaptured_import(
     assert "def data(large: bool) -> Bytes[WIDTH]:" in interface.rewrite.source
     diagnostic = next(d for d in interface.rewrite.diagnostics if d.rule == "VYD022")
     assert "a module imported by entry.vy lacks verified caller evidence" in diagnostic.message
+
+
+def test_wildcard_keeps_evidence_with_repeated_and_builtin_imports(tmp_path: Path) -> None:
+    # The compiler lists helper once per import request, and gives both builtin
+    # interfaces the same source id.
+    library = tmp_path / "lib"
+    library.mkdir()
+    dependencies = {
+        library / "helper.vy": "#pragma version 0.4.3\nX: constant(uint256) = 1\n",
+        library / "user.vy": "#pragma version 0.4.3\nfrom . import helper\nY: constant(uint256) = helper.X\n",
+        tmp_path / "Narrow.vyi": INTERFACE,
+    }
+    entry = tmp_path / "entry.vy"
+    source = IMPLEMENTATION.replace(
+        "import Narrow\n",
+        "import Narrow\nfrom ethereum.ercs import IERC20\nfrom ethereum.ercs import IERC20Detailed\n"
+        "from lib import helper\nfrom lib import user\n",
+    ) + _read_function(
+        "Bytes[1]",
+        "    supply: uint256 = staticcall IERC20(other).totalSupply() + helper.X + user.Y\n"
+        "    return staticcall Narrow(other).data(large)",
+    )
+    entry.write_text(source)
+    config = Config(paths=(entry,), target_version="0.5.0b2", include_dependencies=True)
+    requests = [engine.bounded_migration_request(entry, source, config)]
+    for path, text in dependencies.items():
+        path.write_text(text)
+        requests.append(engine.bounded_migration_request(
+            path, text, config, role="dependency", consumer_roots=(entry,),
+        ))
+    batch = engine.prepare_migrations(requests, config)
+    assert batch.files[0].source_compile.status == "passed", batch.files[0].source_compile.stderr
+    declaration = batch.files[-1].rewrite
+    assert [fix.after for fix in declaration.fixes if fix.rule == "VY125"] == ["Bytes[...]"], batch.reports
+    assert engine.validate_migrations(batch, config).status == "passed", batch.reports
