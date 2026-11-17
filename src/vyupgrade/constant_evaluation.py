@@ -85,19 +85,26 @@ def _eval_integer_ast(node: ast.AST, values: dict[str, int]) -> int | None:
     right = _eval_integer_ast(node.right, values)
     if left is None or right is None:
         return None
-    if isinstance(node.op, ast.Add):
+    return eval_integer_binary(type(node.op).__name__, left, right)
+
+
+def eval_integer_binary(operator: str, left: int, right: int) -> int | None:
+    """Evaluate an integer operator shared by Python and Vyper ASTs."""
+    if _bounded(left) is None or _bounded(right) is None:
+        return None
+    if operator == "Add":
         return _bounded(left + right)
-    if isinstance(node.op, ast.Sub):
+    if operator == "Sub":
         return _bounded(left - right)
-    if isinstance(node.op, ast.Mult):
+    if operator == "Mult":
         return _bounded(left * right)
-    if isinstance(node.op, ast.FloorDiv) and right != 0:
+    if operator == "FloorDiv" and right != 0:
         quotient = abs(left) // abs(right)
         return -quotient if (left < 0) != (right < 0) else quotient
-    if isinstance(node.op, ast.Mod) and right != 0:
+    if operator == "Mod" and right != 0:
         remainder = abs(left) % abs(right)
         return -remainder if left < 0 else remainder
-    if isinstance(node.op, ast.Pow) and 0 <= right <= _MAX_BITS:
+    if operator == "Pow" and 0 <= right <= _MAX_BITS:
         if abs(left) > 1 and left.bit_length() * right > _MAX_BITS:
             return None
         return _bounded(left**right)

@@ -2846,6 +2846,41 @@ def test_compare_artifacts_normalizes_storage_layout_shapes() -> None:
         },
     )
 
+    ast = {
+        "ast_type": "Module",
+        "body": [
+            {
+                "ast_type": "StructDef",
+                "name": "Loan",
+                "body": [
+                    {
+                        "ast_type": "AnnAssign",
+                        "target": {"ast_type": "Name", "id": "amount"},
+                        "annotation": {"ast_type": "Name", "id": "uint256"},
+                    },
+                ],
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": {"ast_type": "Name", "id": "loan"},
+                "annotation": {
+                    "ast_type": "Subscript",
+                    "value": {"ast_type": "Name", "id": "HashMap"},
+                    "slice": {
+                        "ast_type": "Tuple",
+                        "elements": [
+                            {"ast_type": "Name", "id": "address"},
+                            {"ast_type": "Name", "id": "Loan"},
+                        ],
+                    },
+                },
+            },
+        ],
+    }
+    assert source.artifacts is not None and target.artifacts is not None
+    source.artifacts["ast"] = ast
+    target.artifacts["ast"] = ast
+
     assert compare_artifacts(source, target) == (None, None, True)
 
 
@@ -2930,16 +2965,16 @@ def test_compare_artifacts_normalizes_relative_and_absolute_storage_type_paths(
 
 
 @pytest.mark.parametrize(
-    "type_name",
+    ("type_name", "equal"),
     [
-        "/tmp/modules/Pool",
-        "/tmp/modules/Pool.vy",
-        r"C:\modules\Pool.vy",
-        "DynArray[/tmp/modules/Pool.vy, 8]",
+        ("/tmp/modules/Pool", True),
+        ("/tmp/modules/Pool.vy", True),
+        (r"C:\modules\Pool.vy", True),
+        ("DynArray[/tmp/modules/Pool.vy, 8]", False),
     ],
 )
-def test_compare_artifacts_preserves_matching_non_interface_paths_as_unknown(
-    type_name: str,
+def test_compare_artifacts_requires_evidence_for_nested_non_interface_paths(
+    type_name: str, equal: bool,
 ) -> None:
     source = CompileResult(
         "passed",
@@ -2952,7 +2987,7 @@ def test_compare_artifacts_preserves_matching_non_interface_paths_as_unknown(
 
     assert unavailable_validation_artifacts(source) == ["abi", "method_identifiers"]
     assert unavailable_validation_artifacts(target) == ["abi", "method_identifiers"]
-    assert compare_artifacts(source, target) == (None, None, True)
+    assert compare_artifacts(source, target) == (None, None, equal)
 
 
 @pytest.mark.parametrize(
@@ -4390,6 +4425,45 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
             }
         },
     )
+
+    def name(value: str) -> dict[str, object]:
+        return {"ast_type": "Name", "id": value}
+
+
+    def mapping(key: str, value: str) -> dict[str, object]:
+        return {
+            "ast_type": "Subscript",
+            "value": name("HashMap"),
+            "slice": {"ast_type": "Tuple", "elements": [name(key), name(value)]},
+        }
+
+
+    ast = {
+        "ast_type": "Module",
+        "body": [
+            {"ast_type": "InterfaceDef", "name": "ERC20"},
+            {"ast_type": "EnumDef", "name": "Epoch"},
+            {"ast_type": "FlagDef", "name": "Permission"},
+            {
+                "ast_type": "VariableDecl",
+                "target": name("is_killed"),
+                "annotation": mapping("ERC20", "Epoch"),
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": name("permission"),
+                "annotation": name("Permission"),
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": name("permissions"),
+                "annotation": mapping("address", "Permission"),
+            },
+        ],
+    }
+    assert source.artifacts is not None and target.artifacts is not None
+    source.artifacts["ast"] = ast
+    target.artifacts["ast"] = ast
 
     assert compare_artifacts(source, target) == (None, None, True)
     assert compare_artifact_details(source, target)[2] == []

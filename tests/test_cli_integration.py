@@ -202,6 +202,73 @@ pools: HashMap[address, uint256]
     }
 
 
+def test_real_mapped_struct_bound_change_blocks_write(tmp_path: Path) -> None:
+    contract = tmp_path / "mapped_struct.vy"
+    source = """# @version 0.3.10
+
+struct Record:
+    items: DynArray[uint256, max_value(int128)]
+    tail: uint256
+
+records: HashMap[address, Record]
+
+@external
+@view
+def tail_of(owner: address) -> uint256:
+    return self.records[owner].tail
+
+@external
+def set_tail(owner: address, v: uint256):
+    self.records[owner].tail = v
+"""
+    contract.write_text(source, encoding="utf-8")
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(contract),
+            "--source-version",
+            "0.3.10",
+            "--target-version",
+            "0.4.3",
+            "--write",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    data = json.loads(report.read_text(encoding="utf-8"))
+    file = data["files"][0]
+    validation = file["validation"]
+    assert validation["source_compile"] == validation["target_compile"] == "passed"
+    assert "VY094" in {fix["rule"] for fix in file["fixes"]}
+    assert validation["storage_layout_equal"] is False
+    assert validation["decision"]["status"] == "blocked"
+    assert code == 7
+    assert data["wrote_changes"] is False
+    assert contract.read_text(encoding="utf-8") == source
+
+
+def test_real_mapped_struct_constant_arithmetic_bound_can_migrate(tmp_path: Path) -> None:
+    contract = tmp_path / "constant_bound.vy"
+    source = """# @version 0.3.10
+
+BASE: constant(uint256) = 2
+BOUND: constant(uint256) = BASE + 3
+
+struct Record:
+    items: DynArray[uint256, BOUND]
+
+records: HashMap[address, Record]
+"""
+    contract.write_text(source, encoding="utf-8")
+
+    assert main([str(contract), "--target-version", "0.4.3", "--write"]) == 0
+    assert contract.read_text(encoding="utf-8") == source.replace(
+        "# @version 0.3.10", "#pragma version 0.4.3", 1
+    )
+
+
 def test_real_compiler_nested_array_layouts_are_comparable(tmp_path: Path) -> None:
     contract = tmp_path / "nested_storage_widths.vy"
     source = """#pragma version 0.4.3
