@@ -70,8 +70,13 @@ modern Python interpreter.
 
 - Docstring-only function bodies rejected: `VY131` inserts an explicit `pass`
   after the docstring.
-- Wildcard interface lengths and unbounded length spellings added: no-op. This
-  is newly accepted source syntax.
+- Wildcard interface lengths and unbounded length spellings are newly accepted.
+  `VY125` uses the managed `0.4.3` annotated AST to identify exceeded
+  `String`, `Bytes`, and `DynArray` interface return lengths and replace them
+  with `...`. The plan uses exact compiler declaration identities across the
+  captured closure. It verifies every affected call is a direct return or typed
+  initialization expecting the old type. `VYD022` reports missing caller
+  evidence and `VYD023` reports unresolved types or declaration spans.
 - Interface return-type bounds checked covariantly: `VYD019` diagnoses bounds
   that need manual review. With `--aggressive`, `VY124` raises each
   `String`, `Bytes`, and `DynArray` return bound declared by a `.vyi` module or

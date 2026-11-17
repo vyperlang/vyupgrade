@@ -29,6 +29,7 @@ from uv import find_uv_bin
 
 from .ast_facts import compiler_source_sha256, iter_nodes
 from .compiler_runner import (
+    INTERFACE_AST_FORMAT,
     SOURCE_EVIDENCE_FORMATS,
     SOURCE_VALIDATION_ARGUMENT,
     source_validation_command,
@@ -50,6 +51,7 @@ from .models import (
 from .source import code_mask
 from .storage_layout import compare_storage_layouts, parse_storage_layout
 from .versions import (
+    MigrationContext,
     VyperVersion,
     compiler_version_for_spec,
     infer_pragma,
@@ -353,7 +355,7 @@ def _source_compile_path(
     path: Path, config: Config
 ) -> Iterator[tuple[Path, Config, Mapping[Path, Path]]]:
     if config.source_snapshot is None:
-        yield path, config, {}
+        yield path, config, {path.resolve(): path}
         return
     snapshot = config.source_snapshot
     entry = snapshot.captured_path(path) or path.resolve()
@@ -426,9 +428,12 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
             project_compiler=True, allow_format_retries=False, environment_path=path,
         )
         if config.source_vyper and _needs_public_error_evidence(result, config):
-            return _add_explicit_error_evidence(
+            result = _add_explicit_error_evidence(
                 result, command, staged, path, compile_config, suppress_warnings
             )
+        evidence = (result.artifacts or {}).get(INTERFACE_AST_FORMAT)
+        if isinstance(evidence, dict):
+            result = _with_interface_ast_paths(result, evidence, paths)
         return _restore_compile_error_paths(result, paths, path)
 
 
@@ -1250,6 +1255,14 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
                 facts = {**(result.artifacts or {}), "ast": artifact}
                 if output_format == "annotated_ast":
                     facts.pop("annotated_ast")
+                    if (
+                        _wants_interface_ast(config)
+                        and result.resolved_compiler == "0.4.3"
+                        and _matches_source(result, staged, artifact.get("ast"))
+                    ):
+                        return _with_interface_ast_paths(
+                            replace(result, artifacts=facts), artifact, paths
+                        )
                     if _needs_public_error_evidence(
                         result, config, ast=artifact
                     ) and _matches_source(result, staged, artifact.get("ast")):
@@ -1268,6 +1281,8 @@ def _source_evidence_formats(config: Config) -> tuple[str, ...]:
     selected = (call_codes & config.select) if config.select else call_codes
     if target >= Version("0.4.0") and selected - config.ignore:
         formats.append("external_calls_v1")
+    if _wants_interface_ast(config):
+        formats.append(INTERFACE_AST_FORMAT)
     if (
         target >= Version("0.5.0b2")
         and "VY127" not in config.ignore
@@ -1275,6 +1290,43 @@ def _source_evidence_formats(config: Config) -> tuple[str, ...]:
     ):
         formats.append("annotated_ast")
     return tuple(formats)
+
+
+def _wants_interface_ast(config: Config) -> bool:
+    if config.source_vyper:
+        return False
+    codes = {"VY125", "VYD022", "VYD023"}
+    selected = codes & config.select if config.select else codes
+    context = MigrationContext.from_specs(config.source_version, config.target_version)
+    return bool(selected - config.ignore) and context.crosses("0.5.0a2")
+
+
+def _with_interface_ast_paths(
+    result: CompileResult, evidence: dict, original_paths: Mapping[Path, Path],
+) -> CompileResult:
+    # Resolve the overlay's absolute paths while they are still available. An
+    # imported module outside this map is not part of the captured snapshot.
+    staged_paths: dict[str, str | None] = {}
+    for original, staged in original_paths.items():
+        resolved = str(staged.resolve())
+        # Two same-content sources can share one staged destination. The
+        # compiler path cannot attest which original declaration was used.
+        staged_paths[resolved] = None if resolved in staged_paths else str(original)
+    imports = evidence.get("imports")
+    modules = [evidence.get("ast"), *(imports if isinstance(imports, list) else [])]
+    source_paths = {}
+    for module in modules:
+        if (
+            isinstance(module, dict)
+            and isinstance(resolved := module.get("resolved_path"), str)
+            and (original_path := staged_paths.get(resolved)) is not None
+        ):
+            source_paths[resolved] = original_path
+    artifacts = dict(result.artifacts or {})
+    artifacts.pop(INTERFACE_AST_FORMAT, None)
+    artifacts["annotated_ast"] = evidence
+    artifacts["annotated_ast_source_paths"] = source_paths
+    return replace(result, artifacts=artifacts)
 
 
 def _needs_public_error_evidence(result: CompileResult, config: Config, *, ast=None) -> bool:
@@ -1959,7 +2011,9 @@ def _run_compile_with_formats(
             evidence = process.rewrite_evidence.get(name)
             if not isinstance(evidence, dict):
                 continue
-            identity = evidence.get("ast") if name == "annotated_ast" else evidence
+            identity = (
+                evidence.get("ast") if name in {"annotated_ast", INTERFACE_AST_FORMAT} else evidence
+            )
             if _matches_source(result, path, identity):
                 artifacts[name] = evidence
     return result

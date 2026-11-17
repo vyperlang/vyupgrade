@@ -20,8 +20,10 @@ from pathlib import Path
 _VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[A-Za-z0-9.+-]*)?\b")
 _MANAGED_WORKER_ARGUMENT = "--managed-compiler-worker"
 SOURCE_VALIDATION_ARGUMENT = "--source-validation"
+INTERFACE_AST_FORMAT = "interface_ast_v1"
 SOURCE_EVIDENCE_FORMATS = {
     "0.3.10": "external_calls_v1",
+    "0.4.3": INTERFACE_AST_FORMAT,
     "0.5.0a3": "annotated_ast",
     "0.5.0b1": "annotated_ast",
 }
@@ -322,10 +324,15 @@ def _collect_source_evidence(data, evidence_format):
 
         with anchor_evm_version(data.settings.evm_version):
             return _external_calls_0310(data)
-    if evidence_format == "annotated_ast":
-        from vyper import ast as vy_ast
+    if evidence_format in {"annotated_ast", INTERFACE_AST_FORMAT}:
         from vyper.compiler.output import build_annotated_ast_dict
         from vyper.compiler.settings import anchor_settings
+
+        if evidence_format == INTERFACE_AST_FORMAT:
+            with anchor_settings(data.settings):
+                return build_annotated_ast_dict(data)
+
+        from vyper import ast as vy_ast
 
         for node in data.vyper_module.get_descendants((vy_ast.Raise, vy_ast.Assert)):
             reason = node.exc if isinstance(node, vy_ast.Raise) else node.msg

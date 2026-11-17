@@ -223,6 +223,12 @@ diagnostic instead of being applied.
   abstract modules, unresolved imports and ambiguous imports with any stateful
   candidate retain their declarations. Use
   `--include-dependencies` to migrate redundant nested initializations too.
+- For upgrades crossing `0.5.0a2`, `VY125` uses managed Vyper `0.4.3` annotations
+  to replace exceeded interface return bounds with `...`. Each affected call
+  in the captured closure must return directly from a function or initialize
+  a variable whose annotation specifies the original type. `VYD022` and
+  `VYD023` report incomplete caller evidence or unresolved bounds. Use
+  `--aggressive --ignore VY125` to select the existing `VY124` widening instead.
 - For upgrades crossing `0.4.0`, `VY080` preserves the legacy blueprint
   offset, and `VY224` preserves non-ASCII return and revert bytes for
   compiler-confirmed literal contexts. `VYD024` identifies other literals

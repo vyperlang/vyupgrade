@@ -14,6 +14,7 @@ from .rule_groups.data_lifecycle import (
 from .rule_groups.diagnostics import RULES as DIAGNOSTIC_RULES
 from .rule_groups.external_calls import RULES as EXTERNAL_CALL_RULES
 from .rule_groups.interface_return_bounds import RULES as INTERFACE_RETURN_BOUND_RULES
+from .rule_groups.interface_wildcards import RULES as INTERFACE_WILDCARD_RULES
 from .rule_groups.interfaces import RULES as INTERFACE_RULES
 from .rule_groups.legacy import (
     EARLY_RULES as LEGACY_EARLY_RULES,
@@ -54,6 +55,7 @@ from .versions import MigrationContext, infer_pragma
 def apply_rules(
     source: str, config: Config, path: Path | None = None, *,
     compiler_facts: CompilerFacts | None = None,
+    interface_wildcards: RewriteResult | None = None,
 ) -> RewriteResult:
     fixes: list[Fix] = []
     diagnostics: list[Diagnostic] = []
@@ -80,6 +82,12 @@ def apply_rules(
         )
 
     current = source
+    if interface_wildcards is not None:
+        diagnostics.extend(interface_wildcards.diagnostics)
+        if rule_context.is_enabled("VY125"):
+            current = interface_wildcards.source
+            fixes.extend(interface_wildcards.fixes)
+            rule_context = rule_context.with_source(current, tuple(interface_wildcards.fixes))
     for rule in _runnable_rules():
         current, rule_fixes, rule_diagnostics = rule(rule_context)
         rule_context = rule_context.with_source(current, tuple(rule_fixes))
@@ -114,6 +122,7 @@ METADATA_RULES = (
 )
 
 RULES = (
+    *INTERFACE_WILDCARD_RULES,
     *CUSTOM_ERROR_RULES,
     *LEGACY_EARLY_RULES,
     *LEGACY_INTERFACE_RULES,

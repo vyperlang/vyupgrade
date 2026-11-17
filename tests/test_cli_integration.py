@@ -804,6 +804,7 @@ def version() -> String[{len(version)}]:
     originals = {path: path.read_bytes() for path in tmp_path.iterdir()}
     code = main(
         [str(tmp_path), "--write", "--target-version", "0.5.0a3", "--report-json", str(report),
+         "--ignore", "VY125",
          *(["--aggressive"] if aggressive else [])]
     )
 
@@ -860,6 +861,7 @@ def read_symbol() -> String[{read_bound}]:
     code = main([
         str(consumer), "--write", "--target-version", "0.5.0a3", "--aggressive",
         "--include-dependencies", "--closure-output", str(destination), "--report-json", str(report),
+        "--ignore", "VY125",
     ])
 
     reports = {Path(file["path"]).name: file for file in json.loads(report.read_text())["files"]}

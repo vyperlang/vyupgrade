@@ -87,6 +87,7 @@ shift, and numeric conversion rules use the same lookup. A rule can consult
 | Source compiler | Evidence | Use |
 | --- | --- | --- |
 | Managed Vyper 0.3.10 | Folded, type-checked call sites joined to the original syntax tree by node ID, span and method | Call mode, discarded return type, and the distinction between native array members and external methods |
+| Managed Vyper 0.4.3 | Annotated syntax trees for the compiled roots and imported modules, matched to the captured files by overlay path and source digest | Exceeded interface return bounds and call sites in the captured closure |
 | Vyper 0.5.0a3 and 0.5.0b1 | Public annotated syntax tree, including imported Vyper declarations | Ordered field names for a positional custom error when targeting 0.5.0b2 or later |
 | Other source versions, explicit 0.3.10 executables, or missing optional evidence | Current-source bindings and existing migration rules | Local rewrites and diagnostics for unresolved cases |
 
@@ -108,6 +109,17 @@ use the original byte hash, including its line endings.
 A custom error call refers to its declaration by source ID and node ID. The
 rule checks the callee, arity and argument boundaries before inserting each
 field name. Comments, parentheses and argument evaluation order are preserved.
+
+`VY125` builds one plan from the original managed 0.4.3 compiler annotations
+before the per-file rules start. It joins each external call to its interface
+method by the compiler's source ID and declaration node ID, then maps that
+identity to the captured file. The annotation of a direct return or typed
+initialization must match the original declared type, including each bound.
+The call's own type metadata can reflect a wider context in 0.4.3, so that
+metadata alone cannot prove its old runtime decode limit. Wider and untyped
+calls, unresolved static or dynamic call targets, and unavailable caller
+evidence retain the original bound. Bounds can use same-file integer
+constants that the compiler evidence or bounded evaluator resolves.
 
 For an external call, the planner aligns the original and current logical
 statements in the enclosing function. It checks statement order, indentation,
