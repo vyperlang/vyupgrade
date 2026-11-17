@@ -76,6 +76,38 @@ def test_vyi_return_bound_widens_to_implementation(
     assert _widenings(result) == [(declared, implemented)]
 
 
+def test_dependency_bound_resolves_constants_in_each_declaring_file(tmp_path: Path, config) -> None:
+    interface = """#pragma version 0.4.3
+WIDTH: constant(uint256) = 1
+COUNT: constant(uint256) = 2
+@view
+def version() -> DynArray[String[WIDTH], COUNT]: ...
+"""
+    implementation = """#pragma version 0.4.3
+from . import IFoo
+
+implements: IFoo
+
+WIDTH: constant(uint256) = 2 + 3
+COUNT: constant(uint256) = 2
+
+@external
+@view
+def version() -> DynArray[String[WIDTH], COUNT]:
+    return []
+"""
+    files = {"IFoo.vyi": interface, "Foo.vy": implementation}
+
+    result = _migrate(tmp_path, config, files, "IFoo.vyi")
+
+    assert "WIDTH: constant(uint256) = 1" in result.source
+    assert _widenings(result) == [
+        ("DynArray[String[WIDTH], COUNT]", "DynArray[String[5], COUNT]")
+    ]
+    repeated = _migrate(tmp_path, config, {**files, "IFoo.vyi": result.source}, "IFoo.vyi")
+    assert repeated.source == result.source
+
+
 def test_vyi_return_bound_widens_to_widest_implementation(tmp_path: Path, config) -> None:
     result = _migrate(
         tmp_path,
@@ -199,12 +231,14 @@ def test_unprovable_implementation_bound_is_left_for_validation(
         config,
         {
             "IFoo.vyi": INTERFACE.format(return_type="String[1]"),
+            "limits.vy": "WIDTH: constant(uint256) = 5\n",
             "Foo.vy": """#pragma version 0.4.3
 from . import IFoo
+import limits
 
 implements: IFoo
 
-VERSION_LENGTH: constant(uint256) = 5
+VERSION_LENGTH: constant(uint256) = limits.WIDTH
 
 @external
 @view

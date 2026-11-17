@@ -46,6 +46,8 @@
   storage layout output, so available ABI and method identifiers can be compared.
   `--allow-storage-layout-change` can waive the unchecked layout when both
   other comparisons ran.
+- Resolve same-file integer constants in interface return bounds and their
+  implementations when comparing bounds for `VY124`.
 
 ## 0.10.0 - 2026-11-07
 
