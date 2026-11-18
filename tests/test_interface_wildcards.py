@@ -618,3 +618,10 @@ def test_wildcard_keeps_bound_when_a_same_project_root_fails_to_compile(tmp_path
 def test_only_a_full_pre_04_compile_is_exempt(compiler, artifacts, exempt) -> None:
     result = CompileResult("passed", artifacts=artifacts, resolved_compiler=compiler)
     assert _compiled_before_interfaces(result) is exempt
+
+
+@pytest.mark.parametrize(("status", "exempt"), [("passed", True), ("degraded", True), ("failed", False)])
+def test_a_pre_04_compile_missing_only_other_outputs_is_exempt(status: str, exempt: bool) -> None:
+    artifacts = {"bytecode": "0x00", "ast": {}}
+    result = CompileResult(status, artifacts=artifacts, resolved_compiler="0.2.15")
+    assert _compiled_before_interfaces(result) is exempt

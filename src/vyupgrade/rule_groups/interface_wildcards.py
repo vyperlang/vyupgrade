@@ -425,7 +425,8 @@ def _check_consumers(
 
 def _compiled_before_interfaces(result: CompileResult | None) -> bool:
     """Whether a full pre-0.4 compile had no imports outside the old builtin namespace."""
-    if result is None or result.status != "passed":
+    # A degraded compile (0.2.x emits no storage layout) still has the bytecode and AST read here.
+    if result is None or result.status not in {"passed", "degraded"}:
         return False
     artifacts = result.artifacts or {}
     if (
