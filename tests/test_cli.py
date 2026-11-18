@@ -1983,7 +1983,7 @@ def test_report_json_schema_v6(tmp_path: Path, passing_compiler) -> None:
     assert closure_code == 0
     project_data = json.loads(project_report.read_text())
     closure_data = json.loads(closure_report.read_text())
-    assert project_data["schema_version"] == 6
+    assert project_data["schema_version"] == 7
     assert project_data["producer"]["name"] == "vyupgrade"
     assert project_data["producer"]["version"]
     assert project_data["closure"] is None
@@ -2004,7 +2004,7 @@ def test_report_json_schema_v6(tmp_path: Path, passing_compiler) -> None:
         "failure_origin",
         "compiler_output",
     } == source_attestation.keys()
-    assert closure_data["schema_version"] == 6
+    assert closure_data["schema_version"] == 7
     assert closure_data["closure"] == {
         "requested": True,
         "dependencies": sorted([str(dependency.resolve()), str(json_dependency.resolve())]),

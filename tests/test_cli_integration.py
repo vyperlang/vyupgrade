@@ -23,7 +23,7 @@ from vyupgrade.compiler import (
     compile_target_source,
     unavailable_validation_artifacts,
 )
-from vyupgrade.models import Config
+from vyupgrade.models import Config, package_set_sha256
 
 
 def _tree_sha256(root: Path) -> str:
@@ -107,12 +107,12 @@ def test_beta_wrapper_attests_vyper_distribution(tmp_path: Path) -> None:
     report_path = tmp_path / "report.json"
     # Legacy output formats can be unavailable, but the compiler identity is known.
     assert main([str(path), "--allow-unvalidated-source", "--report-json", str(report_path)]) == 0
-    validation = json.loads(report_path.read_text())["files"][0]["validation"]
-    attestation = validation["source_attestation"]
+    report = json.loads(report_path.read_text())
+    attestation = report["files"][0]["validation"]["source_attestation"]
     identity = attestation["resolved_compiler"]
     assert identity["version"] == "0.1.0b8"
     assert identity["executable"]["path"] == "vyper"
-    packages = attestation["dependency_context"]["resolved_packages"]
+    packages = report["package_sets"][attestation["dependency_context"]["resolved_packages_sha256"]]
     vyper = next(package for package in packages if package["name"] == "vyper")
     assert identity["artifact"]["sha256"] == vyper["artifact_sha256"]
 
@@ -1545,7 +1545,7 @@ def decimals() -> uint8:
     )
 
     report_data = json.loads(report.read_text(encoding="utf-8"))
-    assert report_data["schema_version"] == 6
+    assert report_data["schema_version"] == 7
     assert report_data["producer"] == {"name": "vyupgrade", "version": __version__}
     validation = report_data["files"][0]["validation"]
     attestation = validation["source_attestation"]
@@ -1565,7 +1565,9 @@ def decimals() -> uint8:
     lock_identity = attestation["dependency_context"]["lockfile"]
     assert lock_identity["path"] == str((project / "uv.lock").resolve())
     assert lock_identity["sha256"] == hashlib.sha256((project / "uv.lock").read_bytes()).hexdigest()
-    resolved_packages = attestation["dependency_context"]["resolved_packages"]
+    packages_sha256 = attestation["dependency_context"]["resolved_packages_sha256"]
+    resolved_packages = report_data["package_sets"][packages_sha256]
+    assert package_set_sha256(resolved_packages) == packages_sha256
     assert {"vyper", "snekmate"} <= {package["name"].lower() for package in resolved_packages}
     compiler_identity = attestation["resolved_compiler"]
     assert compiler_identity["executable"]["path"] == "vyper"
@@ -1575,8 +1577,11 @@ def decimals() -> uint8:
         "path": str(contract.resolve()),
         "sha256": hashlib.sha256(contract.read_bytes()).hexdigest(),
     }
-    assert attestation["declared_spec"]["sources"] == [source_identity]
-    assert len(attestation["declared_spec"]["snapshot"]["sha256"]) == 64
+    snapshot_sha256 = attestation["declared_spec"]["snapshot"]["sha256"]
+    assert report_data["source_sets"][snapshot_sha256] == [source_identity]
+    assert snapshot_sha256 == hashlib.sha256(
+        f"{source_identity['path']}\0{source_identity['sha256']}\0".encode()
+    ).hexdigest()
     assert attestation["validated_source_set"] == [source_identity]
     assert attestation["attempt_sequence"] == [
         {
@@ -1783,7 +1788,8 @@ unbuildable = { path = "unbuildable" }
 
     assert main(["--target-version", "0.4.3", "--report-json", str(report), str(contract)]) == 0
 
-    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
+    report_data = json.loads(report.read_text(encoding="utf-8"))
+    validation = report_data["files"][0]["validation"]
     assert validation["source_compile"] == "passed"
     assert validation["target_compile"] == "passed"
     assert validation["decision"]["status"] == "passed"
@@ -1791,9 +1797,9 @@ unbuildable = { path = "unbuildable" }
     assert source["authority_rule"] == ("project-lock" if locked else "project-manifest")
     assert source["resolved_compiler"]["version"] == "0.4.1"
     for attestation in (source, validation["target_attestation"]):
+        packages_sha256 = attestation["dependency_context"]["resolved_packages_sha256"]
         packages = {
-            package["name"].lower()
-            for package in attestation["dependency_context"]["resolved_packages"]
+            package["name"].lower() for package in report_data["package_sets"][packages_sha256]
         }
         assert "vyper" in packages
         assert "unbuildable" not in packages
@@ -1835,16 +1841,17 @@ unbuildable = {{ path = "unbuildable" }}
 
     assert main(["--target-version", "0.4.3", "--report-json", str(report), str(contract)]) == 0
 
-    validation = json.loads(report.read_text(encoding="utf-8"))["files"][0]["validation"]
+    report_data = json.loads(report.read_text(encoding="utf-8"))
+    validation = report_data["files"][0]["validation"]
     attestation = validation["source_attestation"]
     # The range alone would select 0.4.3; 0.4.1 can only come from the declaring table.
     assert attestation["authority_rule"] == "project-manifest"
     assert attestation["resolved_compiler"]["version"] == "0.4.1"
     assert validation["source_compile"] == "passed"
     assert validation["target_compile"] == "passed"
+    packages_sha256 = attestation["dependency_context"]["resolved_packages_sha256"]
     packages = {
-        package["name"].lower()
-        for package in attestation["dependency_context"]["resolved_packages"]
+        package["name"].lower() for package in report_data["package_sets"][packages_sha256]
     }
     assert "unbuildable" not in packages
 

@@ -156,7 +156,18 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--allow-storage-layout-change` — accept a storage-layout comparison mismatch, or an unavailable source layout on Vyper before 0.2.16 when ABI and method identifiers were compared.
 - `--config PATH` — read configuration from a specific `pyproject.toml`.
 
-JSON reports include a top-level `schema_version`. Version `6` adds per-file
+JSON reports include a top-level `schema_version`. Version `7` states each
+source and package inventory once, so reports grow linearly with the number of
+files. The top-level `source_sets` object maps a declared snapshot digest to its
+source identities; each attestation's `declared_spec` keeps
+`snapshot.sha256` and no longer lists `sources`. The digest is SHA-256 over each
+source's path, a NUL byte, its SHA-256 and a NUL byte, in path order. The
+top-level `package_sets` object maps a package-set digest to its resolved
+packages; each attestation's `dependency_context` replaces `resolved_packages`
+with that digest in `resolved_packages_sha256`, which is SHA-256 of the list's
+JSON encoding with sorted keys, no whitespace and non-ASCII characters escaped
+(Python's `json.dumps(packages, sort_keys=True, separators=(",", ":"))`).
+Consumers can recompute both digests from the referenced entries. Version `6` adds per-file
 `source_error_type` and `target_error_type` fields containing the Vyper
 exception class name when the managed compiler exposes one. Compiler process
 return codes remain available in each source or target attestation's
@@ -170,7 +181,7 @@ identity, dependency context, process completion and exit status, validated
 sources, the exact compile attempt, typed failure origin, and compiler output
 when validation fails. Version `2` added a per-file `role` and a top-level
 `closure` object; version `3` first introduced source-validation evidence and is
-superseded by versions `4`, `5`, and `6`. Consumers should treat a missing
+superseded by versions `4` through `7`. Consumers should treat a missing
 version as the legacy unversioned format and require a new schema version before
 relying on renamed, removed, or type-changed fields.
 
