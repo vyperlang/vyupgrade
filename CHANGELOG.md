@@ -1,15 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - 2026-11-18
 
-- JSON report schema `7` states each source and package inventory once, under
-  top-level `source_sets` and `package_sets` keyed by digest, instead of
-  repeating both in every file's source and target attestation. Reports no
-  longer grow with the square of the file count.
+- JSON report schema `7` moves declared sources and resolved packages into
+  top-level `source_sets` and `package_sets` tables keyed by digest. Consumers
+  now resolve the inventory references in each attestation through those
+  tables.
 - Ignore comments, string literals, and docstrings when reporting decimal usage
   (`VYD001`) and `block.prevrandao` usage (`VYD010`).
 - Preserve expression grouping and multiline comments when removing
   `as_unitless_number()` (`VY208`).
+- Preserve blank lines inside strings when splitting interfaces into `.vyi` files.
 - Compare struct member definitions inside storage mappings and arrays. Changed
   members or bounds now block writes unless `--allow-storage-layout-change` is
   supplied; unresolved container types require the same waiver.
