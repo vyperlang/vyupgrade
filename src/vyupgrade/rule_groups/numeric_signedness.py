@@ -453,6 +453,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or inside_convert_call(source, start)
                     or _inside_type_subscript(source, start)
                     or not _inside_array_subscript(source, start, vars_for_line)
+                    or _literal_comparison_operand(source, start, name, vars_for_line)
                 ):
                     continue
                 replacement = f"convert({name}, uint256)"
@@ -1256,17 +1257,22 @@ def _ends_operand(texts: list[str], last: int) -> bool:
     return last == len(texts) - 1 or texts[last + 1] in _OPERAND_CLOSERS
 
 
-# Decimal, octal and binary integer literals. Vyper types hex literals as bytes.
-# The length bound keeps int() far from Python's digit limit; no 256-bit
-# literal needs more.
-_INTEGER_LITERAL = re.compile(r"\d(?:_?\d)*|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+")
-_MAX_INTEGER_LITERAL_LENGTH = 600
+# Decimal and octal integer literals; Vyper types hex and binary literals as bytes.
+_INTEGER_LITERAL = re.compile(r"\d(?:_?\d)*|0[oO](?:_?[0-7])+")
+# More significant digits than any 256-bit value has, which also keeps int()
+# clear of Python's digit limit.
+_MAX_LITERAL_DIGITS = 100
 
 
 def _integer_literal_value(text: str | None) -> int | None:
-    if text is None or len(text) > _MAX_INTEGER_LITERAL_LENGTH or not _INTEGER_LITERAL.fullmatch(text):
+    if text is None or not _INTEGER_LITERAL.fullmatch(text):
         return None
-    return int(text.replace("_", ""), 0)
+    digits = text.replace("_", "")
+    base = 8 if digits[1:2] in ("o", "O") else 10
+    significant = (digits[2:] if base == 8 else digits).lstrip("0")
+    if len(significant) > _MAX_LITERAL_DIGITS:
+        return None
+    return int(significant or "0", base)
 
 
 def _literal_starting_at(texts: list[str], first: int) -> int | None:

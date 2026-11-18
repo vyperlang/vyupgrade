@@ -180,6 +180,23 @@ def f(x: uint256) -> uint256:
             assert _outcome(deployment, "f(uint256)", x) == expected
 
 
+def test_signed_literal_comparison_inside_array_index_keeps_negative_values(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+a: uint256[2]
+
+@external
+def f() -> uint256:
+    self.a[0] = 5
+    self.a[1] = 10
+    total: uint256 = 0
+    for i in range(-1, 3):
+        total += self.a[0 if i == 2 else 1]
+    return total
+""")
+    for deployment in deployments:
+        assert _outcome(deployment, "f()") == 35
+
+
 @pytest.mark.parametrize("index", ["1", "BOOL_MEMBER"])
 def test_tuple_assignment_preserves_signed_membership(tmp_path, index):
     deployments = _migration_pair(tmp_path, f"""# @version 0.3.10
