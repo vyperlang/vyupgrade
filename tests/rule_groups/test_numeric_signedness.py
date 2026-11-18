@@ -25,6 +25,133 @@ def f():
     assert second.source == first.source
 
 
+def test_signed_loop_index_compared_with_literal_is_not_converted(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def f(x: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(-1, 3):
+        if i == 2 and x > 0:
+            break
+        if 0 <= i:
+            total += x
+    return total
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "if i == 2 and x > 0:" in result.source
+    assert "if 0 <= i:" in result.source
+    assert "convert(i, uint256)" not in result.source
+
+
+def test_literal_comparison_exemption_is_per_occurrence(config) -> None:
+    source = """# @version 0.3.10
+C: constant(int128) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    if C == 2 and x > (C + 1):
+        return True
+    if (C) != 3 and x > 0:
+        return True
+    return False
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "if C == 2 and x > (convert(C, uint256) + 1):" in result.source
+    assert "if (C) != 3 and x > 0:" in result.source
+
+
+def test_parenthesized_and_negative_literal_comparisons_are_not_converted(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def f(x: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(-1, 3):
+        if i == (2) and x > 0:
+            break
+        if (-1) < i and x > 0:
+            total += x
+        if i != 0o2 and 0o0 != i and x > 0:
+            total += x
+    return total
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "if i == (2) and x > 0:" in result.source
+    assert "if (-1) < i and x > 0:" in result.source
+    assert "if i != 0o2 and 0o0 != i and x > 0:" in result.source
+    assert "convert(i, uint256)" not in result.source
+
+
+def test_literal_continued_on_the_next_line_keeps_the_cast(config) -> None:
+    source = """# @version 0.3.10
+C: constant(int8) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    return (C == 2
+        + 126) and x > 0
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "return (convert(C, uint256) == 2" in result.source
+
+
+def test_overlong_literal_comparison_does_not_abort_the_rule(config) -> None:
+    source = f"""# @version 0.3.10
+C: constant(int8) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    return C == {"9" * 5000} and x > 0
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "return convert(C, uint256) == 999" in result.source
+
+
+def test_zero_padded_literal_comparison_is_not_converted(config) -> None:
+    source = f"""# @version 0.3.10
+@external
+@pure
+def f(x: uint256) -> bool:
+    for i in range(-1, 3):
+        if i == {"0" * 5000} and x > 0:
+            return True
+    return False
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "convert(i, uint256)" not in result.source
+
+
+def test_literal_outside_signed_type_keeps_the_cast(config) -> None:
+    source = """# @version 0.3.10
+C: constant(int8) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    return C < 128 and x > 0
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "return convert(C, uint256) < 128 and x > 0" in result.source
+
+
 def test_signed_constant_converted_in_uint_arithmetic(config) -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 3
