@@ -5,16 +5,17 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..ast_facts import CompilerSource, SourceSpan, iter_nodes
 from ..constant_evaluation import eval_integer_constant_expr, integer_constant_values
-from ..models import Config, Diagnostic, Fix, RewriteResult
+from ..interfaces import split_interfaces_to_vyi
+from ..models import CompilerFacts, Config, Diagnostic, Fix, RewriteResult
 from ..rule_registry import Rule, crossing, is_enabled, rule_changes
-from ..source import TextEdit, apply_edits, line_number
-from ..versions import MigrationContext, infer_pragma
+from ..source import TextEdit, apply_edits, code_mask, line_number, lone_cr_as_lf
+from ..versions import MigrationContext, infer_pragma, parse_version
 
 if TYPE_CHECKING:
     from ..compiler import CompileResult, ImportClosure
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
 _BOUND_TYPES = frozenset({"String", "Bytes", "DynArray"})
 _SCALAR_TYPE_RE = re.compile(r"(?:bool|address|decimal|u?int\d+|bytes\d+)")
 _EXTERNAL_CALLS = frozenset({"StaticCall", "ExtCall"})
+# vyper.compiler.input_bundle.BUILTIN: the source id of every module Vyper itself ships.
+_BUILTIN_SOURCE_ID = -2
 
 RULES = (
     Rule(
@@ -63,6 +66,8 @@ class _Module:
 class _Document:
     modules: dict[int, _Module]
     missing_caller: bool
+    # Captured files this compilation may have loaded, mapped or not.
+    scope: frozenset[Path]
 
 
 @dataclass(frozen=True)
@@ -130,14 +135,23 @@ def _compiler_modules(
     ):
         return None
     modules: dict[int, _Module] = {}
-    seen_ids: set[int] = set()
+    seen_paths: dict[int, object] = {}
     missing_caller = False
+    scope: set[Path] = set()
     for module in [root, *imports]:
         resolved = module.get("resolved_path")
         source_id = module.get("source_id")
-        if type(source_id) is not int or source_id < 0 or source_id in seen_ids:
+        if source_id == _BUILTIN_SOURCE_ID and module.get("is_interface") is True:
+            # Vyper's own interfaces share one id and are never captured candidates.
+            continue
+        if type(source_id) is not int or source_id < 0:
             return None
-        seen_ids.add(source_id)
+        if source_id in seen_paths:
+            # The compiler lists a module once per import request that reached it.
+            if not isinstance(resolved, str) or seen_paths[source_id] != resolved:
+                return None
+            continue
+        seen_paths[source_id] = resolved
         actual_path = paths.get(resolved) if isinstance(resolved, str) else None
         module_path = Path(actual_path) if isinstance(actual_path, str) else None
         source = sources.get(module_path) if module_path is not None else None
@@ -149,13 +163,23 @@ def _compiler_modules(
         ):
             if module.get("is_interface") is not True:
                 missing_caller = True
+            digest = module.get("source_sha256sum")
+            # A module matching no captured digest is not a captured file, and any
+            # captured file it imports is listed here on its own.
+            scope.update(
+                (path for path, captured in sources.items() if captured.matches_digest(digest))
+                if isinstance(digest, str) else sources
+            )
+            if module_path in sources:
+                scope.add(module_path)
             continue
+        scope.add(module_path)
         if module_path not in constants:
             constants[module_path] = integer_constant_values(source.normalized, module)
         modules[source_id] = _Module(module_path, module, source, constants[module_path])
     root_module = modules.get(root["source_id"])
     return (
-        _Document(modules, missing_caller)
+        _Document(modules, missing_caller, frozenset(scope))
         if root_module is not None and root_module.path == path else None
     )
 
@@ -368,6 +392,7 @@ def _check_consumers(
     candidates: dict[_Origin, _Candidate],
 ) -> tuple[Path, int] | None:
     origins = _declared_function_origins(modules)
+    unknown = None
     for module in modules.values():
         expected = _expected_return_types(module)
         for call in iter_nodes(module.node):
@@ -377,6 +402,8 @@ def _check_consumers(
             identity = _node(_node(function.get("type")).get("type_decl_node"))
             source_id = identity.get("source_id")
             node_id = identity.get("node_id")
+            if source_id == _BUILTIN_SOURCE_ID and type(node_id) is int:
+                continue
             span = module.span(call)
             line = line_number(module.source.original, span.start) if span is not None else 1
             if (
@@ -384,15 +411,61 @@ def _check_consumers(
                 or type(node_id) is not int
                 or (origin := origins.get((source_id, node_id))) is None
             ):
-                # The unknown declaration could be any candidate.
-                return module.path, line
+                # The unknown declaration could be any candidate in this compilation.
+                unknown = unknown or (module.path, line)
+                continue
             candidate = candidates.get(origin)
             if candidate is not None and (span is None or expected.get(id(call)) != candidate.old_type):
                 candidate.blocker = (
                     f"a call in {module.path.name} on line {line} does not have "
                     "an assignment or return with the original type"
                 )
-    return None
+    return unknown
+
+
+def _compiled_before_interfaces(result: CompileResult | None) -> bool:
+    """Whether a full pre-0.4 compile had no imports outside the old builtin namespace."""
+    if result is None or result.status != "passed":
+        return False
+    artifacts = result.artifacts or {}
+    if (
+        not isinstance(artifacts.get("bytecode"), str)
+        or not isinstance(ast := artifacts.get("ast"), dict)
+    ):
+        return False
+    version = parse_version(result.resolved_compiler)
+    # 0.4.0 prereleases already resolve .vyi imports, so compare the release only.
+    if version is None or version.release >= (0, 4, 0):
+        return False
+    return all(
+        (node.get("ast_type") == "ImportFrom" and node.get("module") == "vyper.interfaces"
+         and node.get("level") == 0)
+        for node in iter_nodes(ast)
+        if node.get("ast_type") in {"Import", "ImportFrom"}
+    )
+
+
+def _legacy_migration_is_unrelated(
+    path: Path, source: str, spec: str | None, result: CompileResult, config: Config,
+) -> bool:
+    if not _compiled_before_interfaces(result):
+        return False
+
+    # Imported builtin names have a reserved namespace after VY020 runs. If
+    # the old import survives, the target can instead resolve it to a local file.
+    from ..rules import RULE_CHANGES, apply_rules
+
+    file_config = replace(config, source_version=spec, source_ast=None)
+    candidate = apply_rules(
+        source, file_config, path, compiler_facts=CompilerFacts.from_artifacts(result.artifacts),
+    ).source
+    context = MigrationContext.from_specs(spec or infer_pragma(source), config.target_version)
+    if config.split_interfaces and is_enabled("VY120", config, context, RULE_CHANGES):
+        candidate = split_interfaces_to_vyi(candidate, path).source
+    candidate = lone_cr_as_lf(candidate)
+    code = "".join(char if live else " " for char, live in zip(candidate, code_mask(candidate), strict=True))
+    remaining = re.sub(r"^[ \t]*from[ \t]+ethereum\.ercs[ \t]+import\b", "", code, flags=re.MULTILINE)
+    return re.search(r"\bimport\b", remaining) is None
 
 
 def plan_interface_wildcards(
@@ -432,12 +505,21 @@ def plan_interface_wildcards(
         path for path in (sources.keys() - verified) | (set(snapshot.roots) - documents.keys())
         if path.suffix == ".vy"
     )
-    unverifiable_imports = sorted(path for path, document in documents.items() if document.missing_caller)
-    unknown = None
-    if candidates and not missing and not unverifiable_imports:
-        for document in documents.values():
-            if (unknown := _check_consumers(document.modules, candidates)) is not None:
-                break
+    input_by_path = {path.resolve(): (source, spec, result) for path, source, spec, result in inputs}
+    declaration_paths = {path for path, _ in candidates}
+    unproven_file = next(
+        (path for path in missing if path in declaration_paths or path not in specs
+         or not _legacy_migration_is_unrelated(path, *input_by_path[path], config)),
+        None,
+    )
+    # Each compilation's own blockers reach only the captured files it loaded.
+    unverifiable_imports = [
+        (path, document.scope) for path, document in sorted(documents.items()) if document.missing_caller
+    ]
+    unknown_calls = [
+        (call, document.scope) for _, document in sorted(documents.items())
+        if (call := _check_consumers(document.modules, candidates)) is not None
+    ]
     edits: dict[Path, list[TextEdit]] = defaultdict(list)
     fixes: dict[Path, list[Fix]] = defaultdict(list)
     diagnostics: dict[Path, list[Diagnostic]] = defaultdict(list)
@@ -450,10 +532,12 @@ def plan_interface_wildcards(
         if origin in unproven or path in unmapped:
             continue
         blocker = candidate.blocker
-        if missing:
-            blocker = f"no matching compiler evidence is available for {missing[0].name}"
-        elif unverifiable_imports:
-            blocker = f"a module imported by {unverifiable_imports[0].name} lacks verified caller evidence"
+        importer = next((file for file, scope in unverifiable_imports if path in scope), None)
+        unknown = next((call for call, scope in unknown_calls if path in scope), None)
+        if unproven_file is not None:
+            blocker = f"no matching compiler evidence is available for {unproven_file.name}"
+        elif importer is not None:
+            blocker = f"a module imported by {importer.name} lacks verified caller evidence"
         elif unknown is not None:
             caller, line = unknown
             blocker = f"the compiler declaration of a call in {caller.name} on line {line} is unresolved"
