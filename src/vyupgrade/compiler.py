@@ -2965,14 +2965,40 @@ def _project_environment_command(
     )
 
     command_index = _uv_run_command_index(command)
-    options = _project_uv_options(
-        command[2:command_index],
-        remove_vyper=project_vyper,
-        remove_python=_use_project_interpreter(
-            command, pyproject, python_pin=python_pin, pragma_vyper=pragma_vyper
-        ),
+    remove_python = _use_project_interpreter(
+        command, pyproject, python_pin=python_pin, pragma_vyper=pragma_vyper
     )
+    options = _project_uv_options(
+        command[2:command_index], remove_vyper=project_vyper, remove_python=remove_python
+    )
+    if pragma_vyper and remove_python and (python := _nearest_allowed_python(command, pyproject)):
+        options = ["--python", python, *options]
     return [*environment, *options, *command[command_index:]]
+
+
+# Legacy Vyper releases crash on Python 3.14 (removed `ast.Str` and `Constant.n`).
+_NEWEST_LEGACY_COMPILER_PYTHON_MINOR = 13
+
+
+def _nearest_allowed_python(command: Sequence[str], pyproject: Path) -> str | None:
+    """The oldest Python the project allows that is not older than the compiler's own."""
+    constraint = _project_data(pyproject).get("project")
+    constraint = constraint.get("requires-python") if isinstance(constraint, dict) else None
+    try:
+        requested = Version(_uv_option_value(command, "--python") or "")
+        allowed = SpecifierSet(constraint) if isinstance(constraint, str) else None
+    except (InvalidSpecifier, InvalidVersion):
+        return None
+    if allowed is None or requested.major != 3:
+        return None
+    return next(
+        (
+            f"3.{minor}"
+            for minor in range(requested.minor, _NEWEST_LEGACY_COMPILER_PYTHON_MINOR + 1)
+            if allowed.contains(Version(f"3.{minor}"), prereleases=True)
+        ),
+        None,
+    )
 
 
 def _use_project_interpreter(

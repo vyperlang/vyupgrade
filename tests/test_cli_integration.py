@@ -2398,6 +2398,38 @@ dependencies = ["vyper==0.4.3"]
     assert attestation["failure_origin"] is None
 
 
+def test_real_pre_031_pragma_runs_on_the_oldest_python_the_project_allows(
+    tmp_path: Path,
+) -> None:
+    # 0.2.x prefers Python 3.8, which this project excludes; the newest Python
+    # it allows (3.14 and later) would crash the compiler.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "legacy"
+version = "0.1.0"
+requires-python = ">=3.10,<4"
+dependencies = ["vyper==0.4.3"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# @version 0.2.15\nvalue: public(uint256)\n", encoding="utf-8")
+    report = tmp_path / "legacy-report.json"
+
+    # 0.2.15 emits no storage layout to compare.
+    arguments = [str(contract), "--target-version", "0.4.3", "--allow-storage-layout-change"]
+    assert main([*arguments, "--report-json", str(report)]) == 0
+
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    attestation = validation["source_attestation"]
+    assert validation["source_compile"] == "degraded"  # compiled, without a layout
+    assert attestation["authority_rule"] == "source-exact"
+    assert attestation["resolved_compiler"]["version"] == "0.2.15"
+    assert "/python3.10/" in json.dumps(attestation)
+
+
 def test_real_lock_excluding_pragmas_compiles_them_with_their_own_compilers(
     tmp_path: Path,
 ) -> None:

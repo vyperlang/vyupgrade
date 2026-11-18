@@ -740,12 +740,22 @@ def test_compiler_authority_distinguishes_exact_and_ranged_pragmas(
 
 
 @pytest.mark.parametrize(
-    ("requires_python", "python"),
-    [(">=3.10,<4", "3.11"), (">=3.13", None)],
-    ids=["pragma-python-allowed", "pragma-python-outside-project"],
+    ("requires_python", "requested", "python"),
+    [
+        (">=3.10,<4", "3.11", "3.11"),
+        (">=3.10,<4", "3.8", "3.10"),
+        (">=3.13", "3.11", "3.13"),
+        (">=3.14", "3.11", None),
+    ],
+    ids=[
+        "pragma-python-allowed",
+        "oldest-allowed-python",
+        "newest-legacy-python",
+        "no-legacy-python-allowed",
+    ],
 )
 def test_declared_project_environment_layers_pragma_compiler_over_conflicting_project(
-    tmp_path, requires_python: str, python: str | None
+    tmp_path, requires_python: str, requested: str, python: str | None
 ) -> None:
     project = tmp_path / "project"
     contract = project / "contract.vy"
@@ -766,7 +776,7 @@ dependencies = ["vyper==0.4.3", "snekmate==0.1.1"]
         "run",
         "--no-project",
         "--python",
-        "3.11",
+        requested,
         "--with",
         "vyper==0.3.10",
         "vyper",

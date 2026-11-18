@@ -68,7 +68,8 @@ compiled with its pragma's compiler layered over the project environment, so the
 project's other dependencies stay importable. Its report records the pragma as
 the authority (`source-exact` or `source-range`). That compiler keeps its own
 Python (3.11, or 3.8 before 0.3.1) when the project's `requires-python` allows
-it. A pragma that names no known release, or an explicit `--source-vyper`, still
+it, else the oldest Python from there up to 3.13 that it allows, since legacy
+releases crash on Python 3.14. A pragma that names no known release, or an explicit `--source-vyper`, still
 fails when the resolved compiler doesn't satisfy the pragma.
 
 ### How it validates
