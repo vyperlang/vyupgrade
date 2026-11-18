@@ -66,6 +66,43 @@ def f(x: uint256) -> bool:
     assert "if (C) != 3 and x > 0:" in result.source
 
 
+def test_parenthesized_and_negative_literal_comparisons_are_not_converted(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def f(x: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(-1, 3):
+        if i == (2) and x > 0:
+            break
+        if (-1) < i and x > 0:
+            total += x
+    return total
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "if i == (2) and x > 0:" in result.source
+    assert "if (-1) < i and x > 0:" in result.source
+    assert "convert(i, uint256)" not in result.source
+
+
+def test_literal_continued_on_the_next_line_keeps_the_cast(config) -> None:
+    source = """# @version 0.3.10
+C: constant(int8) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    return (C == 2
+        + 126) and x > 0
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "return (convert(C, uint256) == 2" in result.source
+
+
 def test_literal_outside_signed_type_keeps_the_cast(config) -> None:
     source = """# @version 0.3.10
 C: constant(int8) = 2

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import tokenize
+from functools import lru_cache
 
 from ..analysis import (
     SourceFacts,
@@ -25,6 +27,8 @@ from ..source import (
     find_matching,
     line_number,
     line_starts_in_code,
+    logical_statement_tokens,
+    lone_cr_as_lf,
     split_top_level_arg_spans,
     split_top_level_args,
     span_is_code,
@@ -148,7 +152,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_type_subscript(source, start)
                     # A literal takes the signed operand's type, so the comparison
                     # needs no cast; casting would revert on negative values.
-                    or _literal_comparison_operand(source, start, end, name, vars_for_line)
+                    or _literal_comparison_operand(source, start, name, vars_for_line)
                     or (
                         name in constant_values
                         and comparison_target is not None
@@ -1192,40 +1196,109 @@ def _unsigned_comparison_target_type_at(
     return normalize_type(other_type) if _is_unsigned_integer_type(other_type) else None
 
 
-_INTEGER_LITERAL = r"-?\s*\d(?:_?\d)*"
-_COMPARISON_OPERATOR = r"(?:==|!=|<=|>=|<|>)"
-# Text that may precede or follow a whole comparison operand: anything that
-# binds less tightly than a comparison.
-_OPERAND_OPENER = r"(?:^|[(\[,:=]|\b(?:not|and|or|if|elif|else|assert|return))\s*"
-_OPERAND_CLOSER = r"\s*(?:$|[)\],:#]|(?:and|or|if|else)\b)"
+_COMPARISON_OPERATORS = frozenset({"==", "!=", "<=", ">=", "<", ">"})
+# Tokens that bind less tightly than a comparison, so a comparison operand
+# starts right after one or ends right before one.
+_OPERAND_OPENERS = frozenset(
+    {"(", "[", ",", ":", "=", "not", "and", "or", "if", "elif", "else", "assert", "return"}
+)
+_OPERAND_CLOSERS = frozenset({")", "]", ",", ":", "and", "or", "if", "else"})
+
+
+@lru_cache(maxsize=4)
+def _statement_name_tokens(source: str) -> dict[int, tuple[list[tokenize.TokenInfo], int]]:
+    """Map the offset of each name token to its logical statement and position in it."""
+    line_offsets = [0, *(match.end() for match in re.finditer("\n", lone_cr_as_lf(source)))]
+    names: dict[int, tuple[list[tokenize.TokenInfo], int]] = {}
+    for statement in logical_statement_tokens(source):
+        for position, token in enumerate(statement):
+            if token.type == tokenize.NAME:
+                row, column = token.start
+                names[line_offsets[row - 1] + column] = (statement, position)
+    return names
 
 
 def _literal_comparison_operand(
-    source: str, start: int, end: int, name: str, vars_for_line: dict[str, str]
+    source: str, start: int, name: str, vars_for_line: dict[str, str]
 ) -> bool:
-    """Whether the name at ``start`` is a whole operand compared with an integer
-    literal that fits the name's own type."""
-    line_start = source.rfind("\n", 0, start) + 1
-    line_end = source.find("\n", end)
-    if line_end == -1:
-        line_end = len(source)
-    before, after = source[line_start:start], source[end:line_end]
-    while before.rstrip().endswith("(") and after.lstrip().startswith(")"):
-        before, after = before.rstrip()[:-1], after.lstrip()[1:]
-    literal_after = re.match(
-        rf"\s*{_COMPARISON_OPERATOR}\s*({_INTEGER_LITERAL})(?={_OPERAND_CLOSER})", after
-    )
-    literal_before = re.search(
-        rf"{_OPERAND_OPENER}({_INTEGER_LITERAL})\s*{_COMPARISON_OPERATOR}\s*\Z", before
-    )
-    if literal_after is not None and re.search(rf"{_OPERAND_OPENER}\Z", before):
-        literal = literal_after.group(1)
-    elif literal_before is not None and re.match(_OPERAND_CLOSER, after):
-        literal = literal_before.group(1)
+    """Whether the name at ``start`` is a whole comparison operand whose other
+    operand is an integer literal that fits the name's own type."""
+    found = _statement_name_tokens(source).get(start)
+    if found is None:
+        return False
+    tokens, position = found
+    texts = [token.string for token in tokens]
+    first, last = _unwrap_operand(texts, position, position)
+    if _starts_operand(texts, first) and _token_at(texts, last + 1) in _COMPARISON_OPERATORS:
+        literal = _literal_starting_at(texts, last + 2)
+    elif _ends_operand(texts, last) and _token_at(texts, first - 1) in _COMPARISON_OPERATORS:
+        literal = _literal_ending_at(texts, first - 2)
     else:
         return False
-    value = int(re.sub(r"[\s_]", "", literal))
-    return _integer_value_fits_type(value, vars_for_line.get(name) or "")
+    return literal is not None and _integer_value_fits_type(literal, vars_for_line.get(name) or "")
+
+
+def _token_at(texts: list[str], position: int) -> str | None:
+    return texts[position] if 0 <= position < len(texts) else None
+
+
+def _unwrap_operand(texts: list[str], first: int, last: int) -> tuple[int, int]:
+    while _token_at(texts, first - 1) == "(" and _token_at(texts, last + 1) == ")":
+        first, last = first - 1, last + 1
+    return first, last
+
+
+def _starts_operand(texts: list[str], first: int) -> bool:
+    return first == 0 or texts[first - 1] in _OPERAND_OPENERS
+
+
+def _ends_operand(texts: list[str], last: int) -> bool:
+    return last == len(texts) - 1 or texts[last + 1] in _OPERAND_CLOSERS
+
+
+def _is_decimal_literal(text: str | None) -> bool:
+    return text is not None and re.fullmatch(r"\d(?:_?\d)*", text) is not None
+
+
+def _literal_starting_at(texts: list[str], first: int) -> int | None:
+    """The value of an integer literal operand, optionally negated and
+    parenthesized, that starts at ``first`` and ends a comparison operand."""
+    depth = 0
+    while _token_at(texts, first + depth) == "(":
+        depth += 1
+    number = first + depth
+    negative = _token_at(texts, number) == "-"
+    number += negative
+    last = number + depth
+    if not (
+        _is_decimal_literal(_token_at(texts, number))
+        and texts[number + 1 : last + 1] == [")"] * depth
+        and _ends_operand(texts, last)
+    ):
+        return None
+    value = int(texts[number].replace("_", ""))
+    return -value if negative else value
+
+
+def _literal_ending_at(texts: list[str], last: int) -> int | None:
+    """The value of an integer literal operand, optionally negated and
+    parenthesized, that ends at ``last`` and starts a comparison operand."""
+    depth = 0
+    while _token_at(texts, last - depth) == ")":
+        depth += 1
+    number = last - depth
+    if not _is_decimal_literal(_token_at(texts, number)):
+        return None
+    first = number - depth
+    negative = _token_at(texts, number - 1) == "-" and (
+        number == 1 or texts[number - 2] in _OPERAND_OPENERS
+    )
+    if negative:
+        first -= 1
+    if first < 0 or texts[first : first + depth] != ["("] * depth or not _starts_operand(texts, first):
+        return None
+    value = int(texts[number].replace("_", ""))
+    return -value if negative else value
 
 
 def _comparison_peer(expr: str, name: str) -> str | None:

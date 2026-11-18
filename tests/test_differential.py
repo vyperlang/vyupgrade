@@ -171,9 +171,11 @@ def f(x: uint256) -> uint256:
     for i in range(-1, 3):
         if not i == 2 and x > 0:
             count += 1
+        if (2) != i and x > 1:
+            count += 1
     return count
 """)
-    for x, expected in ((0, 0), (1, 3)):
+    for x, expected in ((0, 0), (1, 3), (2, 6)):
         for deployment in deployments:
             assert _outcome(deployment, "f(uint256)", x) == expected
 
