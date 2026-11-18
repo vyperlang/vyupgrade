@@ -150,9 +150,6 @@ def _mixed_signed_unsigned_arithmetic(
                     # checked arithmetic and conversions, before choosing direction.
                     or _inside_shift_amount(source, start)
                     or _inside_type_subscript(source, start)
-                    # A literal takes the signed operand's type, so the comparison
-                    # needs no cast; casting would revert on negative values.
-                    or _literal_comparison_operand(source, start, name, vars_for_line)
                     or (
                         name in constant_values
                         and comparison_target is not None
@@ -453,7 +450,6 @@ def _mixed_signed_unsigned_arithmetic(
                     or inside_convert_call(source, start)
                     or _inside_type_subscript(source, start)
                     or not _inside_array_subscript(source, start, vars_for_line)
-                    or _literal_comparison_operand(source, start, name, vars_for_line)
                 ):
                     continue
                 replacement = f"convert({name}, uint256)"
@@ -467,6 +463,7 @@ def _mixed_signed_unsigned_arithmetic(
                         replacement,
                     )
                 )
+    edits, fixes = _drop_literal_comparison_casts(source, facts, edits, fixes)
     selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
     current = apply_edits(source, selected_edits)
     cleanup_edits, cleanup_fixes = _signed_loop_comparison_convert_cleanup(
@@ -1276,14 +1273,17 @@ def _integer_literal_value(text: str | None) -> int | None:
 
 
 def _literal_starting_at(texts: list[str], first: int) -> int | None:
-    """The value of an integer literal operand, optionally negated and
-    parenthesized, that starts at ``first`` and ends a comparison operand."""
-    depth = 0
-    while _token_at(texts, first + depth) == "(":
-        depth += 1
-    number = first + depth
+    """The value of an integer literal operand, optionally parenthesized and
+    negated (``(-(2))``), that starts at ``first`` and ends a comparison operand."""
+    number = first
+    while _token_at(texts, number) == "(":
+        number += 1
     negative = _token_at(texts, number) == "-"
-    number += negative
+    if negative:
+        number += 1
+        while _token_at(texts, number) == "(":
+            number += 1
+    depth = number - first - negative
     last = number + depth
     value = _integer_literal_value(_token_at(texts, number))
     if value is None or texts[number + 1 : last + 1] != [")"] * depth or not _ends_operand(texts, last):
@@ -1292,8 +1292,8 @@ def _literal_starting_at(texts: list[str], first: int) -> int | None:
 
 
 def _literal_ending_at(texts: list[str], last: int) -> int | None:
-    """The value of an integer literal operand, optionally negated and
-    parenthesized, that ends at ``last`` and starts a comparison operand."""
+    """The value of an integer literal operand, optionally parenthesized and
+    negated (``(-(2))``), that ends at ``last`` and starts a comparison operand."""
     depth = 0
     while _token_at(texts, last - depth) == ")":
         depth += 1
@@ -1301,15 +1301,44 @@ def _literal_ending_at(texts: list[str], last: int) -> int | None:
     value = _integer_literal_value(_token_at(texts, number))
     if value is None:
         return None
-    first = number - depth
-    negative = _token_at(texts, number - 1) == "-" and (
-        number == 1 or texts[number - 2] in _OPERAND_OPENERS
+    first = number
+    while first > number - depth and _token_at(texts, first - 1) == "(":
+        first -= 1
+    negative = _token_at(texts, first - 1) == "-" and (
+        first == 1 or texts[first - 2] in _OPERAND_OPENERS
     )
     if negative:
         first -= 1
-    if first < 0 or texts[first : first + depth] != ["("] * depth or not _starts_operand(texts, first):
+    outer = depth - (number - first - negative)
+    first -= outer
+    if first < 0 or texts[first : first + outer] != ["("] * outer or not _starts_operand(texts, first):
         return None
     return -value if negative else value
+
+
+def _drop_literal_comparison_casts(
+    source: str, facts: SourceFacts, edits: list[TextEdit], fixes: list[Fix]
+) -> tuple[list[TextEdit], list[Fix]]:
+    """Drop the casts of signed names that are a whole comparison operand
+    against an integer literal fitting their type. The literal takes the
+    name's type, so the comparison compiles as is, and a cast to an unsigned
+    type would revert on negative values."""
+    kept = [
+        (edit, fix)
+        for edit, fix in zip(edits, fixes, strict=True)
+        if not _is_literal_comparison_cast(source, facts, edit)
+    ]
+    return [edit for edit, _fix in kept], [fix for _edit, fix in kept]
+
+
+def _is_literal_comparison_cast(source: str, facts: SourceFacts, edit: TextEdit) -> bool:
+    name = source[edit.start : edit.end]
+    if not re.fullmatch(rf"convert\(\s*{re.escape(name)}\s*,\s*uint\d*\s*\)", edit.replacement):
+        return False
+    vars_for_line = facts.vars_at_line(line_number(source, edit.start))
+    return _is_signed_integer_type(vars_for_line.get(name)) and _literal_comparison_operand(
+        source, edit.start, name, vars_for_line
+    )
 
 
 def _comparison_peer(expr: str, name: str) -> str | None:

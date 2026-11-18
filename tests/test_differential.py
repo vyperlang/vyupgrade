@@ -197,6 +197,38 @@ def f() -> uint256:
         assert _outcome(deployment, "f()") == 35
 
 
+def test_signed_literal_comparison_inside_signed_conversion_keeps_its_meaning(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+C: constant(int128) = -1
+
+@external
+@pure
+def f(x: uint256) -> int256:
+    return convert(x if C == 2 else 1, int256)
+""")
+    for deployment in deployments:
+        assert _outcome(deployment, "f(uint256)", 7) == 1
+
+
+def test_negated_parenthesized_literal_comparison_keeps_negative_values(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+a: uint256[2]
+
+@external
+def f(x: uint256) -> uint256:
+    self.a[0] = 5
+    self.a[1] = 10
+    total: uint256 = 0
+    for i in range(-1, 3):
+        total += self.a[0 if i == -(0) else 1]
+        if (-(0)) == i and x > 0:
+            total += x
+    return total
+""")
+    for deployment in deployments:
+        assert _outcome(deployment, "f(uint256)", 3) == 38
+
+
 @pytest.mark.parametrize("index", ["1", "BOOL_MEMBER"])
 def test_tuple_assignment_preserves_signed_membership(tmp_path, index):
     deployments = _migration_pair(tmp_path, f"""# @version 0.3.10
