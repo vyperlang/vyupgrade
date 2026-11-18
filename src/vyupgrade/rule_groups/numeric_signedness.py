@@ -1200,7 +1200,7 @@ _COMPARISON_OPERATORS = frozenset({"==", "!=", "<=", ">=", "<", ">"})
 _OPERAND_OPENERS = frozenset(
     {"(", "[", ",", ":", "=", "not", "and", "or", "if", "elif", "else", "assert", "return"}
 )
-_OPERAND_CLOSERS = frozenset({")", "]", ",", ":", "and", "or", "if", "else"})
+_OPERAND_CLOSERS = frozenset({")", "]", "}", ",", ":", "and", "or", "if", "else"})
 
 
 @lru_cache(maxsize=4)

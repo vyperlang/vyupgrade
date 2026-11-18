@@ -224,6 +224,28 @@ def f(x: uint256, y: int256) -> int256:
             assert _outcome(deployment, "f(uint256,int256)", *args) == expected
 
 
+def test_literal_comparison_in_last_struct_field_keeps_negative_values(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+struct S:
+    n: int256
+    yes: bool
+
+@external
+@pure
+def f(x: uint256) -> int256:
+    total: int256 = 0
+    for i in range(-1, 3):
+        s: S = S({n: 0, yes: (x > 0) and i == 2})
+        if s.yes:
+            break
+        total += 1
+    return total
+""")
+    for x, expected in ((0, 4), (5, 3)):
+        for deployment in deployments:
+            assert _outcome(deployment, "f(uint256)", x) == expected
+
+
 def test_negated_parenthesized_literal_comparison_keeps_negative_values(tmp_path):
     deployments = _migration_pair(tmp_path, """# @version 0.3.10
 a: uint256[2]
