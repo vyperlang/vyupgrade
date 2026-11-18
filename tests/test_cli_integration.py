@@ -2354,7 +2354,7 @@ value: public(uint256)
     assert attestation["failure_origin"] is None
 
 
-def test_real_conflicting_project_and_source_declarations_are_environment_origin(
+def test_real_conflicting_project_compiles_with_pragma_compiler(
     tmp_path: Path,
 ) -> None:
     project = tmp_path / "project"
@@ -2382,20 +2382,125 @@ dependencies = ["vyper==0.4.3"]
                 str(report),
             ]
         )
-        != 0
+        == 0
     )
 
     validation = json.loads(report.read_text())["files"][0]["validation"]
     attestation = validation["source_attestation"]
-    assert validation["source_compile"] == "failed"
-    assert attestation["authority_rule"] == "project-manifest"
-    assert attestation["resolved_compiler"]["version"] == "0.4.3"
-    assert attestation["compiler_started"] is False
-    assert attestation["completion_status"] == "not-started"
-    assert attestation["exit_status"] == {"code": None, "signal": None}
-    assert attestation["validated_source_set"] == []
-    assert attestation["failure_origin"] == "environment"
-    assert attestation["compiler_output"] is None
+    assert validation["source_compile"] == "passed"
+    assert attestation["authority_rule"] == "source-exact"
+    assert attestation["resolved_compiler"]["version"] == "0.4.1"
+    assert attestation["dependency_context"]["mode"] == "project"
+    assert {
+        (declaration["kind"], declaration["value"])
+        for declaration in attestation["declared_spec"]["compiler_declarations"]
+    } == {("project", "vyper==0.4.3"), ("source-pragma", "0.4.1")}
+    assert attestation["failure_origin"] is None
+
+
+def test_real_locked_project_keeps_dependencies_for_conflicting_pragma(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "mixed-pragmas"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper>=0.4.2", "snekmate==0.1.1"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text(
+        """# pragma version 0.4.1
+from snekmate.auth import ownable
+initializes: ownable
+exports: ownable.owner
+
+@deploy
+def __init__():
+    ownable.__init__()
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [find_uv_bin(), "lock", "--project", str(project)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.4.1",
+    )
+
+    assert result.status == "passed", result.stderr
+    assert result.resolved_compiler == "0.4.1"
+    assert result.compiler_authority == "source-exact"
+    assert result.dependency_context is not None
+    assert result.dependency_context.lockfile is not None
+    assert {"vyper", "snekmate"} <= {
+        package.name.lower() for package in result.dependency_context.resolved_packages
+    }
+
+
+def test_real_legacy_pragma_keeps_its_python_in_newer_vyper_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "legacy-beside-modern"
+version = "0.1.0"
+requires-python = ">=3.10,<4"
+dependencies = ["vyper==0.4.3"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# @version 0.3.10\nvalue: public(uint256)\n", encoding="utf-8")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3"),
+        "0.3.10",
+    )
+
+    assert result.status == "passed", result.stderr
+    assert result.resolved_compiler == "0.3.10"
+    assert result.compiler_authority == "source-exact"
+    assert result.command is not None
+    assert result.command[result.command.index("--python") + 1] == "3.11"
+
+
+def test_real_explicit_project_compiler_conflict_is_environment_origin(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        """[project]
+name = "explicit-conflict"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["vyper==0.4.3"]
+""",
+        encoding="utf-8",
+    )
+    contract = project / "contract.vy"
+    contract.write_text("# pragma version 0.4.1\n", encoding="utf-8")
+    executable = _write_test_compiler(tmp_path, 'print("[]")\n', version="0.4.3")
+
+    result = compile_source_file(
+        contract,
+        Config(paths=(contract,), target_version="0.4.3", source_vyper=str(executable)),
+        "0.4.1",
+    )
+
+    assert result.status == "failed"
+    assert result.compiler_started is False
+    assert result.failure_origin == "environment"
+    assert result.compiler_authority == "explicit-executable"
+    assert "conflicts with source declaration 0.4.1" in (result.stderr or "")
 
 
 def test_real_declared_dependency_rejection_is_compiler_origin(tmp_path: Path) -> None:

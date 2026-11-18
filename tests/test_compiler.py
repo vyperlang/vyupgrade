@@ -16,11 +16,13 @@ from vyupgrade.compiler import (
     ProjectEnvironmentError,
     _CompilerProcess,
     _declared_project_environment,
+    _compiler_authority,
     _compiler_environment_key,
     _compiler_coherence,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
+    _project_supplies_compiler,
     _provision_environment,
     _run_compiler_process,
     _supports_warning_policy,
@@ -634,6 +636,120 @@ dependencies = ["requests==2.32.4"]
             "--with",
             "vyper==0.3.10",
         ]
+
+
+_LOCKED_VYPER_0_4_3 = """version = 1
+requires-python = ">=3.10"
+
+[[package]]
+name = "vyper"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+"""
+
+
+@pytest.mark.parametrize(
+    ("requirement", "lock", "source_spec", "supplies"),
+    [
+        ("vyper==0.4.3", None, "0.4.3", True),
+        ("vyper==0.4.3", None, "0.3.10", False),
+        ("vyper==0.4.3", None, "^0.4.0", True),
+        ("vyper>=0.4", _LOCKED_VYPER_0_4_3, "0.4.1", False),
+        ("vyper>=0.4", _LOCKED_VYPER_0_4_3, ">=0.4.1", True),
+        ("vyper==0.4.3", None, None, True),
+        ("vyper==0.4.3", None, "0.9.9", True),
+        ("requests==2.32.4", None, "0.3.10", False),
+    ],
+    ids=[
+        "pragma-matches-manifest",
+        "pragma-conflicts-with-manifest",
+        "range-admits-manifest",
+        "pragma-conflicts-with-lock",
+        "range-admits-lock",
+        "no-pragma",
+        "unknown-pragma-release",
+        "no-vyper-requirement",
+    ],
+)
+def test_project_supplies_compiler_only_when_it_admits_the_pragma(
+    tmp_path, requirement: str, lock: str | None, source_spec: str | None, supplies: bool
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f"""[project]
+name = "mixed"
+version = "0.1.0"
+dependencies = ["{requirement}"]
+""",
+        encoding="utf-8",
+    )
+    if lock is not None:
+        (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+
+    assert _project_supplies_compiler(pyproject, source_spec) is supplies
+
+
+@pytest.mark.parametrize(
+    ("requires_python", "python"),
+    [(">=3.10,<4", "3.11"), (">=3.13", None)],
+    ids=["pragma-python-allowed", "pragma-python-outside-project"],
+)
+def test_declared_project_environment_layers_pragma_compiler_over_conflicting_project(
+    tmp_path, requires_python: str, python: str | None
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "contract.vy"
+    project.mkdir()
+    contract.write_text("# @version 0.3.10\n", encoding="utf-8")
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        f"""[project]
+name = "mixed-pragmas"
+version = "0.1.0"
+requires-python = "{requires_python}"
+dependencies = ["vyper==0.4.3", "snekmate==0.1.1"]
+""",
+        encoding="utf-8",
+    )
+    command = [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        "3.11",
+        "--with",
+        "vyper==0.3.10",
+        "vyper",
+    ]
+
+    with _declared_project_environment(
+        command, contract, project_compiler=True, source_spec="0.3.10"
+    ) as (prepared, context):
+        assert context.mode == "project"
+        assert "--no-project" not in prepared
+        assert prepared[prepared.index("--with") : prepared.index("--with") + 2] == [
+            "--with",
+            "vyper==0.3.10",
+        ]
+        if python is None:
+            assert "--python" not in prepared
+        else:
+            assert prepared[prepared.index("--python") + 1] == python
+        assert (
+            _compiler_authority(
+                prepared,
+                contract,
+                project_compiler=True,
+                locked=False,
+                source_spec="0.3.10",
+            )
+            == "source-exact"
+        )
+
+    with _declared_project_environment(
+        command, contract, project_compiler=False, source_spec="0.3.10"
+    ) as (target, _context):
+        assert "--python" not in target
 
 
 def test_declared_project_environment_without_manifest_stays_isolated(tmp_path) -> None:
