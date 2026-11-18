@@ -210,6 +210,20 @@ def f(x: uint256) -> int256:
         assert _outcome(deployment, "f(uint256)", 7) == 1
 
 
+def test_literal_comparison_keeps_the_enclosing_signed_conversion_unchanged(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+C: constant(int128) = 2
+
+@external
+@pure
+def f(x: uint256, y: int256) -> int256:
+    return convert(1 if x > 0 and C == 2 and y == 0 else x, int256)
+""")
+    for args, expected in (((2**255, 0), 1), ((0, 0), 0), ((5, 1), 5)):
+        for deployment in deployments:
+            assert _outcome(deployment, "f(uint256,int256)", *args) == expected
+
+
 def test_negated_parenthesized_literal_comparison_keeps_negative_values(tmp_path):
     deployments = _migration_pair(tmp_path, """# @version 0.3.10
 a: uint256[2]

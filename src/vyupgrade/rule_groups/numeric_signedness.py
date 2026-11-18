@@ -1322,11 +1322,16 @@ def _drop_literal_comparison_casts(
     """Drop the casts of signed names that are a whole comparison operand
     against an integer literal fitting their type. The literal takes the
     name's type, so the comparison compiles as is, and a cast to an unsigned
-    type would revert on negative values."""
+    type would revert on negative values.
+
+    Edits enclosing a dropped cast go too: the cast would have won over them
+    as the innermost edit, so the source keeps the shape it had with the cast,
+    minus the cast."""
+    dropped = [edit for edit in edits if _is_literal_comparison_cast(source, facts, edit)]
     kept = [
         (edit, fix)
         for edit, fix in zip(edits, fixes, strict=True)
-        if not _is_literal_comparison_cast(source, facts, edit)
+        if not any(edit.start <= cast.start and cast.end <= edit.end for cast in dropped)
     ]
     return [edit for edit, _fix in kept], [fix for _edit, fix in kept]
 
