@@ -3247,7 +3247,7 @@ def _project_supplies_compiler(
     locked = _locked_vyper_versions(lockfile) if lockfile is not None else frozenset()
     return any(
         all(Requirement(spec).specifier.contains(version, prereleases=True) for spec in specs)
-        and (not locked or version in locked)
+        and (not locked or version.public in locked)
         for version in pragma_versions
     )
 
@@ -3266,7 +3266,8 @@ def _enforced_lockfile(pyproject: Path | None, *, timeout: float) -> Path | None
     return lockfile
 
 
-def _locked_vyper_versions(lockfile: Path) -> frozenset[Version]:
+def _locked_vyper_versions(lockfile: Path) -> frozenset[str]:
+    """Public versions of the lock's Vyper entries, as compiler coherence compares them."""
     try:
         data = tomllib.loads(lockfile.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
@@ -3274,12 +3275,12 @@ def _locked_vyper_versions(lockfile: Path) -> frozenset[Version]:
     packages = data.get("package")
     if not isinstance(packages, list):
         return frozenset()
-    versions: set[Version] = set()
+    versions: set[str] = set()
     for package in packages:
         if not isinstance(package, dict) or package.get("name") != "vyper":
             continue
         try:
-            versions.add(Version(str(package.get("version"))))
+            versions.add(Version(str(package.get("version"))).public)
         except InvalidVersion:
             continue
     return frozenset(versions)
