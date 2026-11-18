@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- A pre-0.4 root whose migration only adds the builtin `math` import (`VY101`)
+  no longer blocks `VY125` wildcards elsewhere in the batch: the target compiler
+  resolves `math` before any search path, as it does `ethereum.ercs`.
+- A pre-0.4 root whose compile is degraded only because an output such as the
+  storage layout is unavailable (0.2.x) still counts as compiled for the `VY125`
+  exemption: its bytecode and AST are all the exemption reads.
+- A 0.4.0-0.4.2 root that imports nothing but builtin `ethereum.ercs`
+  interfaces no longer blocks `VY125` wildcards: like a pre-0.4 root, it cannot
+  call through a captured interface, though only 0.4.3 compiles give module
+  evidence.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into

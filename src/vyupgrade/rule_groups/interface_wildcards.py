@@ -424,8 +424,9 @@ def _check_consumers(
 
 
 def _compiled_before_interfaces(result: CompileResult | None) -> bool:
-    """Whether a full pre-0.4 compile had no imports outside the old builtin namespace."""
-    if result is None or result.status != "passed":
+    """Whether a full compile without 0.4.3 evidence imported nothing outside the builtin namespace."""
+    # A degraded compile (0.2.x emits no storage layout) still has the bytecode and AST read here.
+    if result is None or result.status not in {"passed", "degraded"}:
         return False
     artifacts = result.artifacts or {}
     if (
@@ -434,11 +435,17 @@ def _compiled_before_interfaces(result: CompileResult | None) -> bool:
     ):
         return False
     version = parse_version(result.resolved_compiler)
-    # 0.4.0 prereleases already resolve .vyi imports, so compare the release only.
-    if version is None or version.release >= (0, 4, 0):
+    # 0.4.3 compiles give module evidence instead. 0.4.0 prereleases already
+    # resolve .vyi imports, so compare the release only.
+    if version is None or version.release >= (0, 4, 3):
         return False
+    modular = version.release >= (0, 4, 0)
+    if modular and not isinstance(_node(ast.get("ast", ast)).get("body"), list):
+        return False
+    # From 0.4.0, `vyper.interfaces` is an ordinary path and `ethereum.ercs` the builtin one.
+    builtin = "ethereum.ercs" if modular else "vyper.interfaces"
     return all(
-        (node.get("ast_type") == "ImportFrom" and node.get("module") == "vyper.interfaces"
+        (node.get("ast_type") == "ImportFrom" and node.get("module") == builtin
          and node.get("level") == 0)
         for node in iter_nodes(ast)
         if node.get("ast_type") in {"Import", "ImportFrom"}
@@ -453,6 +460,8 @@ def _legacy_migration_is_unrelated(
 
     # Imported builtin names have a reserved namespace after VY020 runs. If
     # the old import survives, the target can instead resolve it to a local file.
+    # `math`, which VY101 imports for `isqrt`, is also resolved as a builtin
+    # before any search path, so it can't bind a captured interface either.
     from ..rules import RULE_CHANGES, apply_rules
 
     file_config = replace(config, source_version=spec, source_ast=None)
@@ -465,6 +474,9 @@ def _legacy_migration_is_unrelated(
     candidate = lone_cr_as_lf(candidate)
     code = "".join(char if live else " " for char, live in zip(candidate, code_mask(candidate), strict=True))
     remaining = re.sub(r"^[ \t]*from[ \t]+ethereum\.ercs[ \t]+import\b", "", code, flags=re.MULTILINE)
+    remaining = re.sub(
+        r"^[ \t]*import[ \t]+math(?:[ \t]+as[ \t]+\w+)?[ \t]*$", "", remaining, flags=re.MULTILINE,
+    )
     return re.search(r"\bimport\b", remaining) is None
 
 
