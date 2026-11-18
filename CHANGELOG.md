@@ -53,9 +53,10 @@
   retain their old bounds. `VYD022` and `VYD023` report missing caller proof
   and unresolved declaration or implementation bounds.
 - Keep `VY125` compiler evidence for modules imported along two paths and for
-  builtin `ethereum.ercs` interfaces, and let a root without evidence block only
-  the interfaces its compilation can reach. Roots that compiled on a Vyper
-  release before 0.4 no longer block the wildcard.
+  builtin `ethereum.ercs` interfaces. A compilation with an unmapped module or an
+  unresolved call now blocks only the interfaces it loaded, and a root that
+  compiled on a Vyper release before 0.4 and imports only `vyper.interfaces`
+  no longer blocks the wildcard.
 
 ## 0.10.0 - 2026-11-07
 

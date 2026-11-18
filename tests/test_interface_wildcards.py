@@ -368,19 +368,19 @@ def test_wildcard_keeps_evidence_with_repeated_and_builtin_imports(tmp_path: Pat
     assert engine.validate_migrations(batch, config).status == "passed", batch.reports
 
 
-def _prepare_with_unrelated_root(tmp_path: Path, unrelated: str):
+def _prepare_with_unrelated_root(tmp_path: Path, unrelated: str, *extra_roots: tuple[Path, str]):
     entry, interface, other = tmp_path / "entry.vy", tmp_path / "Narrow.vyi", tmp_path / "other.vy"
     source = IMPLEMENTATION + _read_function("Bytes[1]", "    return staticcall Narrow(other).data(large)")
-    for path, text in ((entry, source), (interface, INTERFACE), (other, unrelated)):
+    roots = ((entry, source), (other, unrelated), *extra_roots)
+    for path, text in (*roots, (interface, INTERFACE)):
         path.write_text(text)
-    config = Config(paths=(entry, other), target_version="0.5.0b2", include_dependencies=True)
-    requests = [
-        engine.bounded_migration_request(entry, source, config),
-        engine.bounded_migration_request(other, unrelated, config),
-        engine.bounded_migration_request(
-            interface, INTERFACE, config, role="dependency", consumer_roots=(entry,),
-        ),
-    ]
+    config = Config(
+        paths=tuple(path for path, _ in roots), target_version="0.5.0b2", include_dependencies=True,
+    )
+    requests = [engine.bounded_migration_request(path, text, config) for path, text in roots]
+    requests.append(engine.bounded_migration_request(
+        interface, INTERFACE, config, role="dependency", consumer_roots=(entry,),
+    ))
     return engine.prepare_migrations(requests, config)
 
 
@@ -388,12 +388,29 @@ def _wildcards(batch) -> list[str]:
     return [fix.after for fix in batch.files[-1].rewrite.fixes if fix.rule == "VY125"]
 
 
-def test_wildcard_ignores_an_unrelated_root_compiled_before_04(tmp_path: Path) -> None:
+LEGACY_ROOT = "# pragma version 0.3.10\n{imports}\n@external\n@view\ndef answer() -> uint256:\n    return 42\n"
+
+
+@pytest.mark.parametrize(
+    ("imports", "wildcards"),
+    [("", ["Bytes[...]"]), ("from vyper.interfaces import ERC20\n", ["Bytes[...]"]), ("import Helper as Helper\n", [])],
+)
+def test_wildcard_ignores_an_unrelated_root_compiled_before_04(
+    tmp_path: Path, imports: str, wildcards: list[str],
+) -> None:
+    # Once migrated, a module import could bind a captured interface, so only a
+    # root importing nothing but Vyper's builtin interfaces stops blocking.
+    helper = tmp_path / "Helper.vy"
     batch = _prepare_with_unrelated_root(
-        tmp_path, "# pragma version 0.3.10\n\n@external\n@view\ndef answer() -> uint256:\n    return 42\n",
+        tmp_path, LEGACY_ROOT.format(imports=imports), (helper, LEGACY_ROOT.format(imports="")),
     )
-    assert batch.files[1].source_compile.resolved_compiler == "0.3.10"
-    assert _wildcards(batch) == ["Bytes[...]"], batch.reports
+    for compiled in batch.files[1:3]:
+        assert compiled.source_compile.resolved_compiler == "0.3.10"
+        assert compiled.source_compile.status == "passed", compiled.source_compile.stderr
+    assert _wildcards(batch) == wildcards, batch.reports
+    if not wildcards:
+        diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
+        assert "no matching compiler evidence is available for other.vy" in diagnostic.message
 
 
 def test_wildcard_ignores_an_unrelated_compile_with_an_uncaptured_import(
@@ -424,10 +441,9 @@ def test_wildcard_ignores_an_unrelated_compile_with_an_uncaptured_import(
     assert _wildcards(batch) == ["Bytes[...]"], batch.reports
 
 
-@pytest.mark.parametrize(("imports", "wildcards"), [("", ["Bytes[...]"]), ("import Narrow\n", [])])
-def test_failed_root_in_another_project_blocks_only_what_it_imports(
-    tmp_path: Path, imports: str, wildcards: list[str],
-) -> None:
+def test_failed_root_in_another_project_still_blocks(tmp_path: Path) -> None:
+    # The compiler can resolve imports the scanner misses, from paths outside
+    # what the root's project captured, so a failed root blocks every candidate.
     project, other_project, library = tmp_path / "project", tmp_path / "other", tmp_path / "lib"
     for directory in (project, other_project, library):
         directory.mkdir()
@@ -437,26 +453,24 @@ def test_failed_root_in_another_project_blocks_only_what_it_imports(
         )
     entry, interface, other = project / "entry.vy", library / "Narrow.vyi", other_project / "other.vy"
     source = IMPLEMENTATION + _read_function("Bytes[1]", "    return staticcall Narrow(other).data(large)")
-    failing = f"#pragma version 0.4.3\n{imports}ANSWER: constant(uint256) = \n"
+    failing = "#pragma version 0.4.3\nANSWER: constant(uint256) = \n"
     for path, text in ((entry, source), (interface, INTERFACE), (other, failing)):
         path.write_text(text)
     config = Config(
         paths=(entry, other), target_version="0.5.0b2", include_dependencies=True,
         compiler_search_paths=(library,),
     )
-    consumers = (entry, other) if imports else (entry,)
     batch = engine.prepare_migrations([
         engine.bounded_migration_request(entry, source, config),
         engine.bounded_migration_request(other, failing, config),
         engine.bounded_migration_request(
-            interface, INTERFACE, config, role="dependency", consumer_roots=consumers,
+            interface, INTERFACE, config, role="dependency", consumer_roots=(entry,),
         ),
     ], config)
     assert batch.files[1].source_compile.status == "failed"
-    assert _wildcards(batch) == wildcards, batch.reports
-    if not wildcards:
-        diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
-        assert "no matching compiler evidence is available for other.vy" in diagnostic.message
+    assert _wildcards(batch) == []
+    diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
+    assert "no matching compiler evidence is available for other.vy" in diagnostic.message
 
 
 def _without_declarations(node):
@@ -521,6 +535,14 @@ def test_wildcard_keeps_bound_when_a_same_project_root_fails_to_compile(tmp_path
     [
         ("0.3.10", {"bytecode": "0x00", "ast": {}}, True),
         ("0.3.10", {"ast": {}}, False),
+        ("0.3.10", {"bytecode": "0x00"}, False),
+        ("0.3.10", {"bytecode": "0x00", "ast": {"body": [
+            {"ast_type": "ImportFrom", "module": "vyper.interfaces", "level": 0, "name": "ERC20"},
+        ]}}, True),
+        ("0.3.10", {"bytecode": "0x00", "ast": {"body": [
+            {"ast_type": "ImportFrom", "module": "Lib", "level": 0, "name": "Narrow"},
+        ]}}, False),
+        ("0.3.10", {"bytecode": "0x00", "ast": {"body": [{"ast_type": "Import", "name": "Lib"}]}}, False),
         ("0.4.0b6", {"bytecode": "0x00", "ast": {}}, False),
         ("0.4.3", {"bytecode": "0x00", "ast": {}}, False),
     ],

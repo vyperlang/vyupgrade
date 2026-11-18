@@ -423,16 +423,29 @@ def _check_consumers(
 
 
 def _compiled_before_interfaces(result: CompileResult | None) -> bool:
-    """Whether a full compile (bytecode, not an AST-only parse) passed on a release before 0.4."""
+    """Whether a full compile passed before 0.4 and imported only Vyper's builtin interfaces.
+
+    Such a module can't bind a captured interface, and nor can its migration. Any
+    other import could resolve to one once migrated, so it keeps blocking.
+    """
+    if result is None or result.status != "passed":
+        return False
+    artifacts = result.artifacts or {}
     if (
-        result is None
-        or result.status != "passed"
-        or not isinstance((result.artifacts or {}).get("bytecode"), str)
+        not isinstance(artifacts.get("bytecode"), str)
+        or not isinstance(ast := artifacts.get("ast"), dict)
     ):
         return False
     version = parse_version(result.resolved_compiler)
     # 0.4.0 prereleases already resolve .vyi imports, so compare the release only.
-    return version is not None and version.release < (0, 4, 0)
+    if version is None or version.release >= (0, 4, 0):
+        return False
+    return all(
+        (node.get("ast_type") == "ImportFrom" and node.get("module") == "vyper.interfaces"
+         and node.get("level") == 0)
+        for node in iter_nodes(ast)
+        if node.get("ast_type") in {"Import", "ImportFrom"}
+    )
 
 
 def plan_interface_wildcards(
@@ -473,12 +486,10 @@ def plan_interface_wildcards(
         if path.suffix == ".vy"
     )
     results = {path.resolve(): result for path, _, _, result in inputs}
-    # Each blocker reaches only the captured files listed beside it. A module
-    # compiled before 0.4 can't bind a .vyi or another module's interface.
-    unproven_files = [
-        (path, snapshot.entry_members(path)) for path in missing
-        if not _compiled_before_interfaces(results.get(path))
-    ]
+    unproven_file = next(
+        (path for path in missing if not _compiled_before_interfaces(results.get(path))), None
+    )
+    # Each compilation's own blockers reach only the captured files it loaded.
     unverifiable_imports = [
         (path, document.scope) for path, document in sorted(documents.items()) if document.missing_caller
     ]
@@ -498,7 +509,6 @@ def plan_interface_wildcards(
         if origin in unproven or path in unmapped:
             continue
         blocker = candidate.blocker
-        unproven_file = next((file for file, reach in unproven_files if path in reach), None)
         importer = next((file for file, scope in unverifiable_imports if path in scope), None)
         unknown = next((call for call, scope in unknown_calls if path in scope), None)
         if unproven_file is not None:
