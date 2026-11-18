@@ -2982,11 +2982,9 @@ _NEWEST_LEGACY_COMPILER_PYTHON_MINOR = 13
 
 def _nearest_allowed_python(command: Sequence[str], pyproject: Path) -> str | None:
     """The oldest Python the project allows that is not older than the compiler's own."""
-    constraint = _project_data(pyproject).get("project")
-    constraint = constraint.get("requires-python") if isinstance(constraint, dict) else None
     try:
         requested = Version(_uv_option_value(command, "--python") or "")
-        allowed = SpecifierSet(constraint) if isinstance(constraint, str) else None
+        allowed = _requires_python(pyproject)
     except (InvalidSpecifier, InvalidVersion):
         return None
     if allowed is None or requested.major != 3:
@@ -3014,15 +3012,31 @@ def _use_project_interpreter(
     # project allows it: legacy releases do not run on the newest Python.
     if _project_has_vyper_requirement(pyproject) and not pragma_vyper:
         return True
-    constraint = _project_data(pyproject).get("project")
-    constraint = constraint.get("requires-python") if isinstance(constraint, dict) else None
     requested = _uv_option_value(command, "--python")
-    if not isinstance(constraint, str) or requested is None:
+    if requested is None:
         return False
     try:
-        return not SpecifierSet(constraint).contains(Version(requested), prereleases=True)
+        allowed = _requires_python(pyproject)
+        return allowed is not None and not allowed.contains(Version(requested), prereleases=True)
     except (InvalidSpecifier, InvalidVersion):
         return True
+
+
+def _requires_python(pyproject: Path) -> SpecifierSet | None:
+    """The Pythons uv allows for the project: every `requires-python` in its workspace."""
+    workspace_manifest = _owning_uv_workspace(pyproject)
+    manifests = {pyproject.resolve(), workspace_manifest.resolve()}
+    workspace = _uv_workspace(_project_data(workspace_manifest))
+    if workspace is not None:
+        members = _uv_workspace_member_roots(workspace_manifest.parent.resolve(), workspace)
+        manifests.update(member / "pyproject.toml" for member in members)
+    constraints = sorted(
+        constraint
+        for manifest in manifests
+        if isinstance(project := _project_data(manifest).get("project"), dict)
+        and isinstance(constraint := project.get("requires-python"), str)
+    )
+    return SpecifierSet(",".join(constraints)) if constraints else None
 
 
 def _uv_option_value(command: Sequence[str], option: str) -> str | None:
@@ -3272,9 +3286,25 @@ def _project_supplies_compiler(
         return True
     locked = _locked_vyper_versions(lockfile) if lockfile is not None else frozenset()
     return any(
-        all(Requirement(spec).specifier.contains(version, prereleases=True) for spec in specs)
+        all(_admits_release(spec, version) for spec in specs)
         and (not locked or version.public in locked)
         for version in pragma_versions
+    )
+
+
+def _admits_release(requirement: str, version: Version) -> bool:
+    """Whether the requirement admits a build of the release, as coherence compares them.
+
+    A local `==` pin such as `vyper==0.4.3+vendor.1` names a build of 0.4.3.
+    """
+    return all(
+        specifier.contains(version, prereleases=True)
+        or (
+            specifier.operator == "=="
+            and "+" in specifier.version
+            and Version(specifier.version).public == version.public
+        )
+        for specifier in Requirement(requirement).specifier
     )
 
 

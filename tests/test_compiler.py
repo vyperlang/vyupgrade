@@ -659,6 +659,8 @@ source = { registry = "https://pypi.org/simple" }
         ("vyper>=0.4", _LOCKED_VYPER_0_4_3, ">=0.4.1", True),
         ("vyper==0.4.1", "stale", "0.4.1", True),
         ("vyper>=0.4", _LOCKED_VYPER_0_4_3.replace('"0.4.3"', '"0.4.3+vendor.1"'), "0.4.3", True),
+        ("vyper==0.4.3+vendor.1", _LOCKED_VYPER_0_4_3.replace('"0.4.3"', '"0.4.3+vendor.1"'), "0.4.3", True),
+        ("vyper==0.4.3+vendor.1", None, "0.3.10", False),
         ("vyper==0.4.3", None, None, True),
         ("vyper==0.4.3", None, "0.9.9", True),
         ("requests==2.32.4", None, "0.3.10", False),
@@ -671,6 +673,8 @@ source = { registry = "https://pypi.org/simple" }
         "range-admits-lock",
         "stale-lock-ignored",
         "local-build-lock",
+        "local-build-pin",
+        "local-build-pin-conflicts",
         "no-pragma",
         "unknown-pragma-release",
         "no-vyper-requirement",
@@ -810,6 +814,50 @@ dependencies = ["vyper==0.4.3", "snekmate==0.1.1"]
         command, contract, project_compiler=False, source_spec="0.3.10"
     ) as (target, _context):
         assert "--python" not in target
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "python"),
+    [('["vyper==0.4.3"]', "3.12"), ("[]", None)],
+    ids=["pragma-fallback", "no-vyper-requirement"],
+)
+def test_declared_project_environment_python_respects_the_whole_workspace(
+    tmp_path, dependencies: str, python: str | None
+) -> None:
+    # uv applies every workspace member's `requires-python`, not only the member's own.
+    (tmp_path / "pyproject.toml").write_text(
+        """[project]
+name = "root"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = ["member"]
+""",
+        encoding="utf-8",
+    )
+    member = tmp_path / "member"
+    member.mkdir()
+    (member / "pyproject.toml").write_text(
+        f"""[project]
+name = "member"
+version = "0.1.0"
+requires-python = ">=3.10,<4"
+dependencies = {dependencies}
+""",
+        encoding="utf-8",
+    )
+    contract = member / "contract.vy"
+    contract.write_text("# @version 0.3.10\n", encoding="utf-8")
+    command = [_uv_bin(), "run", "--no-project", "--python", "3.11", "--with", "vyper==0.3.10", "vyper"]
+
+    with _declared_project_environment(
+        command, contract, project_compiler=True, source_spec="0.3.10"
+    ) as (prepared, _context):
+        if python is None:
+            assert "--python" not in prepared
+        else:
+            assert prepared[prepared.index("--python") + 1] == python
 
 
 def test_declared_project_environment_without_manifest_stays_isolated(tmp_path) -> None:
