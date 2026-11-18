@@ -16,11 +16,14 @@ from vyupgrade.compiler import (
     ProjectEnvironmentError,
     _CompilerProcess,
     _declared_project_environment,
+    _compiler_authority,
+    _enforced_lockfile,
     _compiler_environment_key,
     _compiler_coherence,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
+    _project_supplies_compiler,
     _provision_environment,
     _run_compiler_process,
     _supports_warning_policy,
@@ -634,6 +637,227 @@ dependencies = ["requests==2.32.4"]
             "--with",
             "vyper==0.3.10",
         ]
+
+
+_LOCKED_VYPER_0_4_3 = """version = 1
+requires-python = ">=3.10"
+
+[[package]]
+name = "vyper"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+"""
+
+
+@pytest.mark.parametrize(
+    ("requirement", "lock", "source_spec", "supplies"),
+    [
+        ("vyper==0.4.3", None, "0.4.3", True),
+        ("vyper==0.4.3", None, "0.3.10", False),
+        ("vyper==0.4.3", None, "^0.4.0", True),
+        ("vyper>=0.4", _LOCKED_VYPER_0_4_3, "0.4.1", False),
+        ("vyper>=0.4", _LOCKED_VYPER_0_4_3, ">=0.4.1", True),
+        ("vyper==0.4.1", "stale", "0.4.1", True),
+        ("vyper>=0.4", _LOCKED_VYPER_0_4_3.replace('"0.4.3"', '"0.4.3+vendor.1"'), "0.4.3", True),
+        ("vyper==0.4.3+vendor.1", _LOCKED_VYPER_0_4_3.replace('"0.4.3"', '"0.4.3+vendor.1"'), "0.4.3", True),
+        ("vyper==0.4.3+vendor.1", None, "0.3.10", False),
+        ("vyper==0.4.3", None, None, True),
+        ("vyper==0.4.3", None, "0.9.9", True),
+        ("requests==2.32.4", None, "0.3.10", False),
+    ],
+    ids=[
+        "pragma-matches-manifest",
+        "pragma-conflicts-with-manifest",
+        "range-admits-manifest",
+        "pragma-conflicts-with-lock",
+        "range-admits-lock",
+        "stale-lock-ignored",
+        "local-build-lock",
+        "local-build-pin",
+        "local-build-pin-conflicts",
+        "no-pragma",
+        "unknown-pragma-release",
+        "no-vyper-requirement",
+    ],
+)
+def test_project_supplies_compiler_only_when_it_admits_the_pragma(
+    tmp_path, requirement: str, lock: str | None, source_spec: str | None, supplies: bool
+) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        f"""[project]
+name = "mixed"
+version = "0.1.0"
+dependencies = ["{requirement}"]
+""",
+        encoding="utf-8",
+    )
+    lockfile = tmp_path / "uv.lock"
+    if lock is not None:
+        # A stale lock still on disk (pinning 0.4.3) is not the lock provisioning enforces.
+        lockfile.write_text(_LOCKED_VYPER_0_4_3 if lock == "stale" else lock, encoding="utf-8")
+    enforced = lockfile if lock not in (None, "stale") else None
+
+    assert _project_supplies_compiler(pyproject, source_spec, lockfile=enforced) is supplies
+
+
+def test_enforced_lockfile_ignores_a_stale_lock(tmp_path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    manifest = '[project]\nname = "stale"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
+    pyproject.write_text(f'{manifest}dependencies = ["vyper==0.4.3"]\n', encoding="utf-8")
+    subprocess.run([_uv_bin(), "lock", "--project", str(tmp_path)], check=True, capture_output=True)
+
+    assert _enforced_lockfile(pyproject, timeout=60.0) == tmp_path / "uv.lock"
+
+    pyproject.write_text(f'{manifest}dependencies = ["vyper==0.4.1"]\n', encoding="utf-8")
+
+    assert _enforced_lockfile(pyproject, timeout=60.0) is None
+
+
+@pytest.mark.parametrize(
+    ("source_spec", "authority"),
+    [
+        ("0.3.10", "source-exact"),
+        ("==0.4.1", "source-exact"),
+        (">=0.4.0,<0.4.2", "source-range"),
+        ("^0.4.0", "source-range"),
+        ("~=0.4.3", "source-range"),
+        (">=0.3.0 <0.4.0", "source-range"),
+    ],
+)
+def test_compiler_authority_distinguishes_exact_and_ranged_pragmas(
+    tmp_path, source_spec: str, authority: str
+) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("", encoding="utf-8")
+
+    assert (
+        _compiler_authority(
+            [_uv_bin(), "run", "--no-project", "--with", "vyper==0.4.1", "vyper"],
+            contract,
+            project_compiler=True,
+            locked=False,
+            source_spec=source_spec,
+        )
+        == authority
+    )
+
+
+@pytest.mark.parametrize(
+    ("requires_python", "requested", "python"),
+    [
+        (">=3.10,<4", "3.11", "3.11"),
+        (">=3.10,<4", "3.8", "3.10"),
+        (">=3.13", "3.11", "3.13"),
+        (">=3.14", "3.11", None),
+    ],
+    ids=[
+        "pragma-python-allowed",
+        "oldest-allowed-python",
+        "newest-legacy-python",
+        "no-legacy-python-allowed",
+    ],
+)
+def test_declared_project_environment_layers_pragma_compiler_over_conflicting_project(
+    tmp_path, requires_python: str, requested: str, python: str | None
+) -> None:
+    project = tmp_path / "project"
+    contract = project / "contract.vy"
+    project.mkdir()
+    contract.write_text("# @version 0.3.10\n", encoding="utf-8")
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        f"""[project]
+name = "mixed-pragmas"
+version = "0.1.0"
+requires-python = "{requires_python}"
+dependencies = ["vyper==0.4.3", "snekmate==0.1.1"]
+""",
+        encoding="utf-8",
+    )
+    command = [
+        _uv_bin(),
+        "run",
+        "--no-project",
+        "--python",
+        requested,
+        "--with",
+        "vyper==0.3.10",
+        "vyper",
+    ]
+
+    with _declared_project_environment(
+        command, contract, project_compiler=True, source_spec="0.3.10"
+    ) as (prepared, context):
+        assert context.mode == "project"
+        assert "--no-project" not in prepared
+        assert prepared[prepared.index("--with") : prepared.index("--with") + 2] == [
+            "--with",
+            "vyper==0.3.10",
+        ]
+        if python is None:
+            assert "--python" not in prepared
+        else:
+            assert prepared[prepared.index("--python") + 1] == python
+        assert (
+            _compiler_authority(
+                prepared,
+                contract,
+                project_compiler=True,
+                locked=False,
+                source_spec="0.3.10",
+            )
+            == "source-exact"
+        )
+
+    with _declared_project_environment(
+        command, contract, project_compiler=False, source_spec="0.3.10"
+    ) as (target, _context):
+        assert "--python" not in target
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "python"),
+    [('["vyper==0.4.3"]', "3.12"), ("[]", None)],
+    ids=["pragma-fallback", "no-vyper-requirement"],
+)
+def test_declared_project_environment_python_respects_the_whole_workspace(
+    tmp_path, dependencies: str, python: str | None
+) -> None:
+    # uv applies every workspace member's `requires-python`, not only the member's own.
+    (tmp_path / "pyproject.toml").write_text(
+        """[project]
+name = "root"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.uv.workspace]
+members = ["member"]
+""",
+        encoding="utf-8",
+    )
+    member = tmp_path / "member"
+    member.mkdir()
+    (member / "pyproject.toml").write_text(
+        f"""[project]
+name = "member"
+version = "0.1.0"
+requires-python = ">=3.10,<4"
+dependencies = {dependencies}
+""",
+        encoding="utf-8",
+    )
+    contract = member / "contract.vy"
+    contract.write_text("# @version 0.3.10\n", encoding="utf-8")
+    command = [_uv_bin(), "run", "--no-project", "--python", "3.11", "--with", "vyper==0.3.10", "vyper"]
+
+    with _declared_project_environment(
+        command, contract, project_compiler=True, source_spec="0.3.10"
+    ) as (prepared, _context):
+        if python is None:
+            assert "--python" not in prepared
+        else:
+            assert prepared[prepared.index("--python") + 1] == python
 
 
 def test_declared_project_environment_without_manifest_stays_isolated(tmp_path) -> None:

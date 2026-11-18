@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Compile a file whose pragma conflicts with its project's declared or locked
+  Vyper with the pragma's compiler, layered over the project environment,
+  instead of failing with a compiler coherence error. Reports record
+  `source-exact` or `source-range` authority for these files. Explicit
+  `--source-vyper` compilers and pragmas naming no known release are still
+  checked against the pragma.
+- Report `source-range` authority for ranged pragmas such as `^0.4.0`; any
+  pragma naming a version was reported as `source-exact`.
+- Keep a compiler's requested Python when installing project dependencies,
+  instead of letting the project's `.python-version` replace it.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into

@@ -55,6 +55,7 @@ from .versions import (
     VyperVersion,
     compiler_version_for_spec,
     infer_pragma,
+    is_exact_version_spec,
     known_versions_satisfying,
     legacy_prerelease_version,
     parse_version,
@@ -1234,8 +1235,14 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         )
         result: CompileResult | None = None
         formats = ("annotated_ast", "ast")
-        if _command_vyper_version(command) == "0.3.10" and not _project_declares_vyper(
-            _nearest_pyproject(path.parent)
+        pyproject = _nearest_pyproject(path.parent)
+        if _command_vyper_version(command) == "0.3.10" and not (
+            _project_declares_vyper(pyproject)
+            and _project_supplies_compiler(
+                pyproject,
+                infer_pragma(staged.read_text()),
+                lockfile=_enforced_lockfile(pyproject, timeout=config.network_timeout),
+            )
         ):
             formats = ("ast",)  # This exact managed compiler only exposes a raw AST.
         for output_format in formats:
@@ -2173,6 +2180,7 @@ def _run_compiler_process(
         marker_environment=marker_environment,
         python_pin=python_pin,
         network_timeout=network_timeout,
+        source_spec=source_spec,
     ) as (full, context):
         authority = _compiler_authority(
             command,
@@ -2354,6 +2362,8 @@ def _environment_provisioning_commands(
                 "--active",
                 "--no-editable",
                 "--no-install-project",
+                # Without it, sync replaces the venv with the project's `.python-version`.
+                *(("--python", python) if python is not None else ()),
                 *(("--frozen",) if "--frozen" in options else ()),
                 *_uv_dependency_selection(options),
             ]
@@ -2646,13 +2656,18 @@ def _compiler_authority(
     pyproject = _nearest_pyproject(path.parent)
     if not _is_uv_run_command(command):
         return "explicit-executable"
-    if project_compiler and _project_declares_vyper(pyproject, marker_environment):
+    if project_compiler and _project_supplies_compiler(
+        pyproject,
+        source_spec,
+        marker_environment,
+        lockfile=_project_lockfile(pyproject) if locked and pyproject is not None else None,
+    ):
         return "project-lock" if locked else "project-manifest"
     if not project_compiler:
         return "fixed-target"
     if source_spec is None:
         return "default"
-    return "source-exact" if parse_version(source_spec) is not None else "source-range"
+    return "source-exact" if is_exact_version_spec(source_spec) else "source-range"
 
 
 def _compiler_declarations(
@@ -2817,6 +2832,7 @@ def _declared_project_environment(
     network_timeout: float = DEFAULT_NETWORK_TIMEOUT_SECONDS,
     marker_environment: Mapping[str, str] | None = None,
     python_pin: str | None = None,
+    source_spec: str | None = None,
 ) -> Iterator[tuple[list[str], DependencyContext]]:
     pyproject = _nearest_pyproject(path.parent)
     if pyproject is None:
@@ -2873,6 +2889,7 @@ def _declared_project_environment(
                 frozen=True,
                 marker_environment=marker_environment,
                 python_pin=python_pin,
+                source_spec=source_spec,
             ),
             context,
         )
@@ -2894,6 +2911,7 @@ def _declared_project_environment(
                 frozen=False,
                 marker_environment=marker_environment,
                 python_pin=python_pin,
+                source_spec=source_spec,
             ),
             context,
         )
@@ -2921,6 +2939,7 @@ def _project_environment_command(
     frozen: bool,
     marker_environment: Mapping[str, str],
     python_pin: str | None,
+    source_spec: str | None = None,
 ) -> list[str]:
     environment = [
         _uv_bin(),
@@ -2933,15 +2952,51 @@ def _project_environment_command(
     ]
     if not _is_uv_run_command(command):
         return [*environment, *command]
-    project_declares_vyper = _project_declares_vyper(pyproject, marker_environment)
+    project_vyper = project_compiler and _project_supplies_compiler(
+        pyproject,
+        source_spec,
+        marker_environment,
+        lockfile=_project_lockfile(pyproject) if frozen else None,
+    )
+    pragma_vyper = (
+        project_compiler
+        and not project_vyper
+        and _project_declares_vyper(pyproject, marker_environment)
+    )
 
     command_index = _uv_run_command_index(command)
-    options = _project_uv_options(
-        command[2:command_index],
-        remove_vyper=project_compiler and project_declares_vyper,
-        remove_python=_use_project_interpreter(command, pyproject, python_pin=python_pin),
+    remove_python = _use_project_interpreter(
+        command, pyproject, python_pin=python_pin, pragma_vyper=pragma_vyper
     )
+    options = _project_uv_options(
+        command[2:command_index], remove_vyper=project_vyper, remove_python=remove_python
+    )
+    if pragma_vyper and remove_python and (python := _nearest_allowed_python(command, pyproject)):
+        options = ["--python", python, *options]
     return [*environment, *options, *command[command_index:]]
+
+
+# Legacy Vyper releases crash on Python 3.14 (removed `ast.Str` and `Constant.n`).
+_NEWEST_LEGACY_COMPILER_PYTHON_MINOR = 13
+
+
+def _nearest_allowed_python(command: Sequence[str], pyproject: Path) -> str | None:
+    """The oldest Python the project allows that is not older than the compiler's own."""
+    try:
+        requested = Version(_uv_option_value(command, "--python") or "")
+        allowed = _requires_python(pyproject)
+    except (InvalidSpecifier, InvalidVersion):
+        return None
+    if allowed is None or requested.major != 3:
+        return None
+    return next(
+        (
+            f"3.{minor}"
+            for minor in range(requested.minor, _NEWEST_LEGACY_COMPILER_PYTHON_MINOR + 1)
+            if allowed.contains(Version(f"3.{minor}"), prereleases=True)
+        ),
+        None,
+    )
 
 
 def _use_project_interpreter(
@@ -2949,20 +3004,39 @@ def _use_project_interpreter(
     pyproject: Path,
     *,
     python_pin: str | None,
+    pragma_vyper: bool = False,
 ) -> bool:
     if python_pin is not None:
         return False
-    if _project_has_vyper_requirement(pyproject):
+    # A pragma's compiler layered over a Vyper project keeps its own interpreter when the
+    # project allows it: legacy releases do not run on the newest Python.
+    if _project_has_vyper_requirement(pyproject) and not pragma_vyper:
         return True
-    constraint = _project_data(pyproject).get("project")
-    constraint = constraint.get("requires-python") if isinstance(constraint, dict) else None
     requested = _uv_option_value(command, "--python")
-    if not isinstance(constraint, str) or requested is None:
+    if requested is None:
         return False
     try:
-        return not SpecifierSet(constraint).contains(Version(requested), prereleases=True)
+        allowed = _requires_python(pyproject)
+        return allowed is not None and not allowed.contains(Version(requested), prereleases=True)
     except (InvalidSpecifier, InvalidVersion):
         return True
+
+
+def _requires_python(pyproject: Path) -> SpecifierSet | None:
+    """The Pythons uv allows for the project: every `requires-python` in its workspace."""
+    workspace_manifest = _owning_uv_workspace(pyproject)
+    manifests = {pyproject.resolve(), workspace_manifest.resolve()}
+    workspace = _uv_workspace(_project_data(workspace_manifest))
+    if workspace is not None:
+        members = _uv_workspace_member_roots(workspace_manifest.parent.resolve(), workspace)
+        manifests.update(member / "pyproject.toml" for member in members)
+    constraints = sorted(
+        constraint
+        for manifest in manifests
+        if isinstance(project := _project_data(manifest).get("project"), dict)
+        and isinstance(constraint := project.get("requires-python"), str)
+    )
+    return SpecifierSet(",".join(constraints)) if constraints else None
 
 
 def _uv_option_value(command: Sequence[str], option: str) -> str | None:
@@ -3184,6 +3258,88 @@ def _project_declares_vyper(
     marker_environment: Mapping[str, str] | None = None,
 ) -> bool:
     return pyproject is not None and bool(_project_vyper_specs(pyproject, marker_environment))
+
+
+def _project_supplies_compiler(
+    pyproject: Path | None,
+    source_spec: str | None,
+    marker_environment: Mapping[str, str] | None = None,
+    *,
+    lockfile: Path | None,
+) -> bool:
+    """Whether the project's own Vyper requirement is the source compiler.
+
+    A project that declares Vyper supplies the compiler unless its requirement, and the lock
+    provisioning enforces (``lockfile``, None when unlocked or stale) when that lock records
+    Vyper, admits no release the source pragma admits. Such a file is a
+    legacy contract kept beside newer ones, and compiles with its pragma's release layered over
+    the project environment. Without a pragma, or with one no known release satisfies, the
+    project's compiler stays authoritative and the coherence check still rejects a mismatch.
+    """
+    if pyproject is None:
+        return False
+    specs = _project_vyper_specs(pyproject, marker_environment)
+    if not specs:
+        return False
+    pragma_versions = known_versions_satisfying(source_spec)
+    if not pragma_versions:
+        return True
+    locked = _locked_vyper_versions(lockfile) if lockfile is not None else frozenset()
+    return any(
+        all(_admits_release(spec, version) for spec in specs)
+        and (not locked or version.public in locked)
+        for version in pragma_versions
+    )
+
+
+def _admits_release(requirement: str, version: Version) -> bool:
+    """Whether the requirement admits a build of the release, as coherence compares them.
+
+    A local `==` pin such as `vyper==0.4.3+vendor.1` names a build of 0.4.3.
+    """
+    return all(
+        specifier.contains(version, prereleases=True)
+        or (
+            specifier.operator == "=="
+            and "+" in specifier.version
+            and Version(specifier.version).public == version.public
+        )
+        for specifier in Requirement(requirement).specifier
+    )
+
+
+def _project_lockfile(pyproject: Path) -> Path:
+    return _owning_uv_workspace(pyproject).parent / "uv.lock"
+
+
+def _enforced_lockfile(pyproject: Path | None, *, timeout: float) -> Path | None:
+    """The lock provisioning enforces with ``--frozen``: present and matching its manifest."""
+    if pyproject is None:
+        return None
+    lockfile = _project_lockfile(pyproject)
+    if not lockfile.is_file() or not _lock_matches_manifest(lockfile.parent, timeout=timeout):
+        return None
+    return lockfile
+
+
+def _locked_vyper_versions(lockfile: Path) -> frozenset[str]:
+    """Public versions of the lock's Vyper entries, as compiler coherence compares them."""
+    try:
+        data = tomllib.loads(lockfile.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return frozenset()
+    packages = data.get("package")
+    if not isinstance(packages, list):
+        return frozenset()
+    versions: set[str] = set()
+    for package in packages:
+        if not isinstance(package, dict) or package.get("name") != "vyper":
+            continue
+        try:
+            versions.add(Version(str(package.get("version"))).public)
+        except InvalidVersion:
+            continue
+    return frozenset(versions)
 
 
 def _project_dependency_selection(
