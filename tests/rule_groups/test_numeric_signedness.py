@@ -46,6 +46,41 @@ def f(x: uint256) -> uint256:
     assert "convert(i, uint256)" not in result.source
 
 
+def test_literal_comparison_exemption_is_per_occurrence(config) -> None:
+    source = """# @version 0.3.10
+C: constant(int128) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    if C == 2 and x > (C + 1):
+        return True
+    if (C) != 3 and x > 0:
+        return True
+    return False
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "if C == 2 and x > (convert(C, uint256) + 1):" in result.source
+    assert "if (C) != 3 and x > 0:" in result.source
+
+
+def test_literal_outside_signed_type_keeps_the_cast(config) -> None:
+    source = """# @version 0.3.10
+C: constant(int8) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    return C < 128 and x > 0
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "return convert(C, uint256) < 128 and x > 0" in result.source
+
+
 def test_signed_constant_converted_in_uint_arithmetic(config) -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 3

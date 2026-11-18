@@ -148,7 +148,7 @@ def _mixed_signed_unsigned_arithmetic(
                     or _inside_type_subscript(source, start)
                     # A literal takes the signed operand's type, so the comparison
                     # needs no cast; casting would revert on negative values.
-                    or _integer_literal_comparison_peer(source, start, name)
+                    or _literal_comparison_operand(source, start, end, name, vars_for_line)
                     or (
                         name in constant_values
                         and comparison_target is not None
@@ -1192,9 +1192,40 @@ def _unsigned_comparison_target_type_at(
     return normalize_type(other_type) if _is_unsigned_integer_type(other_type) else None
 
 
-def _integer_literal_comparison_peer(source: str, index: int, name: str) -> bool:
-    peer = _comparison_peer(_comparison_expression_at(source, index), name)
-    return peer is not None and re.fullmatch(r"-?\s*\d(?:_?\d)*", peer) is not None
+_INTEGER_LITERAL = r"-?\s*\d(?:_?\d)*"
+_COMPARISON_OPERATOR = r"(?:==|!=|<=|>=|<|>)"
+# Text that may precede or follow a whole comparison operand: anything that
+# binds less tightly than a comparison.
+_OPERAND_OPENER = r"(?:^|[(\[,:=]|\b(?:not|and|or|if|elif|else|assert|return))\s*"
+_OPERAND_CLOSER = r"\s*(?:$|[)\],:#]|(?:and|or|if|else)\b)"
+
+
+def _literal_comparison_operand(
+    source: str, start: int, end: int, name: str, vars_for_line: dict[str, str]
+) -> bool:
+    """Whether the name at ``start`` is a whole operand compared with an integer
+    literal that fits the name's own type."""
+    line_start = source.rfind("\n", 0, start) + 1
+    line_end = source.find("\n", end)
+    if line_end == -1:
+        line_end = len(source)
+    before, after = source[line_start:start], source[end:line_end]
+    while before.rstrip().endswith("(") and after.lstrip().startswith(")"):
+        before, after = before.rstrip()[:-1], after.lstrip()[1:]
+    literal_after = re.match(
+        rf"\s*{_COMPARISON_OPERATOR}\s*({_INTEGER_LITERAL})(?={_OPERAND_CLOSER})", after
+    )
+    literal_before = re.search(
+        rf"{_OPERAND_OPENER}({_INTEGER_LITERAL})\s*{_COMPARISON_OPERATOR}\s*\Z", before
+    )
+    if literal_after is not None and re.search(rf"{_OPERAND_OPENER}\Z", before):
+        literal = literal_after.group(1)
+    elif literal_before is not None and re.match(_OPERAND_CLOSER, after):
+        literal = literal_before.group(1)
+    else:
+        return False
+    value = int(re.sub(r"[\s_]", "", literal))
+    return _integer_value_fits_type(value, vars_for_line.get(name) or "")
 
 
 def _comparison_peer(expr: str, name: str) -> str | None:

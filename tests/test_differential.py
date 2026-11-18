@@ -162,6 +162,22 @@ def f(x: int256) -> int256:
             assert _outcome(deployment, "f(int256)", x) == expected
 
 
+def test_negated_signed_literal_comparison_keeps_negative_values(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+@pure
+def f(x: uint256) -> uint256:
+    count: uint256 = 0
+    for i in range(-1, 3):
+        if not i == 2 and x > 0:
+            count += 1
+    return count
+""")
+    for x, expected in ((0, 0), (1, 3)):
+        for deployment in deployments:
+            assert _outcome(deployment, "f(uint256)", x) == expected
+
+
 @pytest.mark.parametrize("index", ["1", "BOOL_MEMBER"])
 def test_tuple_assignment_preserves_signed_membership(tmp_path, index):
     deployments = _migration_pair(tmp_path, f"""# @version 0.3.10
