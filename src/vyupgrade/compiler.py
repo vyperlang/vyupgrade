@@ -1235,10 +1235,14 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         )
         result: CompileResult | None = None
         formats = ("annotated_ast", "ast")
-        if _command_vyper_version(command) == "0.3.10" and not _project_supplies_compiler(
-            pyproject := _nearest_pyproject(path.parent),
-            infer_pragma(staged.read_text()),
-            lockfile=_enforced_lockfile(pyproject, timeout=config.network_timeout),
+        pyproject = _nearest_pyproject(path.parent)
+        if _command_vyper_version(command) == "0.3.10" and not (
+            _project_declares_vyper(pyproject)
+            and _project_supplies_compiler(
+                pyproject,
+                infer_pragma(staged.read_text()),
+                lockfile=_enforced_lockfile(pyproject, timeout=config.network_timeout),
+            )
         ):
             formats = ("ast",)  # This exact managed compiler only exposes a raw AST.
         for output_format in formats:
