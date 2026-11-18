@@ -414,8 +414,13 @@ def test_wildcard_ignores_an_unrelated_root_compiled_before_04(
         assert "no matching compiler evidence is available for other.vy" in diagnostic.message
 
 
-@pytest.mark.parametrize("local", ["", "math: constant(uint256) = 1\n"])
-def test_wildcard_ignores_a_legacy_root_that_migrates_to_import_math(tmp_path: Path, local: str) -> None:
+@pytest.mark.parametrize(
+    ("local", "imported"),
+    [("", r"^import math$"), ("math: constant(uint256) = 1\n", r"^import math as \w+$")],
+)
+def test_wildcard_ignores_a_legacy_root_that_migrates_to_import_math(
+    tmp_path: Path, local: str, imported: str,
+) -> None:
     # VY101 imports the builtin `math` module (aliased if `math` is taken),
     # which the target resolves before any search path.
     legacy = (
@@ -427,7 +432,7 @@ def test_wildcard_ignores_a_legacy_root_that_migrates_to_import_math(tmp_path: P
     assert migrated.source_compile.resolved_compiler == "0.3.10"
     assert migrated.source_compile.status == "passed", migrated.source_compile.stderr
     assert any(fix.rule == "VY101" for fix in migrated.rewrite.fixes), batch.reports
-    assert re.search(r"^import math\b", migrated.rewrite.source, flags=re.MULTILINE)
+    assert re.search(imported, migrated.rewrite.source, flags=re.MULTILINE), migrated.rewrite.source
     assert _wildcards(batch) == ["Bytes[...]"], batch.reports
 
 
