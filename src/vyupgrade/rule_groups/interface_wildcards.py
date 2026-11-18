@@ -5,15 +5,16 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..ast_facts import CompilerSource, SourceSpan, iter_nodes
 from ..constant_evaluation import eval_integer_constant_expr, integer_constant_values
-from ..models import Config, Diagnostic, Fix, RewriteResult
+from ..interfaces import split_interfaces_to_vyi
+from ..models import CompilerFacts, Config, Diagnostic, Fix, RewriteResult
 from ..rule_registry import Rule, crossing, is_enabled, rule_changes
-from ..source import TextEdit, apply_edits, line_number
+from ..source import TextEdit, apply_edits, code_mask, line_number, lone_cr_as_lf
 from ..versions import MigrationContext, infer_pragma, parse_version
 
 if TYPE_CHECKING:
@@ -423,11 +424,7 @@ def _check_consumers(
 
 
 def _compiled_before_interfaces(result: CompileResult | None) -> bool:
-    """Whether a full compile passed before 0.4 and imported only Vyper's builtin interfaces.
-
-    Such a module can't bind a captured interface, and nor can its migration. Any
-    other import could resolve to one once migrated, so it keeps blocking.
-    """
+    """Whether a full pre-0.4 compile had no imports outside the old builtin namespace."""
     if result is None or result.status != "passed":
         return False
     artifacts = result.artifacts or {}
@@ -446,6 +443,29 @@ def _compiled_before_interfaces(result: CompileResult | None) -> bool:
         for node in iter_nodes(ast)
         if node.get("ast_type") in {"Import", "ImportFrom"}
     )
+
+
+def _legacy_migration_is_unrelated(
+    path: Path, source: str, spec: str | None, result: CompileResult, config: Config,
+) -> bool:
+    if not _compiled_before_interfaces(result):
+        return False
+
+    # Imported builtin names have a reserved namespace after VY020 runs. If
+    # the old import survives, the target can instead resolve it to a local file.
+    from ..rules import RULE_CHANGES, apply_rules
+
+    file_config = replace(config, source_version=spec, source_ast=None)
+    candidate = apply_rules(
+        source, file_config, path, compiler_facts=CompilerFacts.from_artifacts(result.artifacts),
+    ).source
+    context = MigrationContext.from_specs(spec or infer_pragma(source), config.target_version)
+    if config.split_interfaces and is_enabled("VY120", config, context, RULE_CHANGES):
+        candidate = split_interfaces_to_vyi(candidate, path).source
+    candidate = lone_cr_as_lf(candidate)
+    code = "".join(char if live else " " for char, live in zip(candidate, code_mask(candidate), strict=True))
+    remaining = re.sub(r"^[ \t]*from[ \t]+ethereum\.ercs[ \t]+import\b", "", code, flags=re.MULTILINE)
+    return re.search(r"\bimport\b", remaining) is None
 
 
 def plan_interface_wildcards(
@@ -485,9 +505,12 @@ def plan_interface_wildcards(
         path for path in (sources.keys() - verified) | (set(snapshot.roots) - documents.keys())
         if path.suffix == ".vy"
     )
-    results = {path.resolve(): result for path, _, _, result in inputs}
+    input_by_path = {path.resolve(): (source, spec, result) for path, source, spec, result in inputs}
+    declaration_paths = {path for path, _ in candidates}
     unproven_file = next(
-        (path for path in missing if not _compiled_before_interfaces(results.get(path))), None
+        (path for path in missing if path in declaration_paths or path not in specs
+         or not _legacy_migration_is_unrelated(path, *input_by_path[path], config)),
+        None,
     )
     # Each compilation's own blockers reach only the captured files it loaded.
     unverifiable_imports = [

@@ -413,6 +413,56 @@ def test_wildcard_ignores_an_unrelated_root_compiled_before_04(
         assert "no matching compiler evidence is available for other.vy" in diagnostic.message
 
 
+def test_wildcard_keeps_bound_when_legacy_import_survives_migration(tmp_path: Path) -> None:
+    interface = tmp_path / "vyper" / "interfaces" / "ERC20Detailed.vyi"
+    interface.parent.mkdir(parents=True)
+    interface_source = """#pragma version 0.4.3
+@view
+def name() -> String[1]:
+    ...
+"""
+    interface.write_text(interface_source)
+    wide = tmp_path / "Wide.vy"
+    wide_source = """#pragma version 0.4.3
+from vyper.interfaces import ERC20Detailed
+implements: ERC20Detailed
+
+@external
+@view
+def name() -> String[5]:
+    return "abcde"
+"""
+    wide.write_text(wide_source)
+    legacy = tmp_path / "Legacy.vy"
+    legacy_source = """#pragma version 0.3.10
+from vyper.interfaces import ERC20Detailed
+
+@external
+@view
+def call_name(peer: address) -> String[10]:
+    return ERC20Detailed(peer).name()
+"""
+    legacy.write_text(legacy_source)
+    config = Config(
+        paths=(wide, legacy), target_version="0.5.0b2",
+        include_dependencies=True, ignore=frozenset({"VY020"}),
+    )
+    batch = engine.prepare_migrations([
+        engine.bounded_migration_request(wide, wide_source, config),
+        engine.bounded_migration_request(legacy, legacy_source, config),
+        engine.bounded_migration_request(
+            interface, interface_source, config, role="dependency", consumer_roots=(wide, legacy),
+        ),
+    ], config)
+
+    assert batch.files[1].source_compile.status == "passed"
+    assert "from vyper.interfaces import ERC20Detailed" in batch.files[1].rewrite.source
+    assert _wildcards(batch) == []
+    bound_diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
+    assert "no matching compiler evidence is available for Legacy.vy" in bound_diagnostic.message
+    assert engine.validate_migrations(batch, config).status == "blocked"
+
+
 def test_wildcard_ignores_an_unrelated_compile_with_an_uncaptured_import(
     tmp_path: Path, monkeypatch,
 ) -> None:

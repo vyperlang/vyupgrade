@@ -60,7 +60,8 @@
   builtin `ethereum.ercs` interfaces. A compilation with an unmapped module or an
   unresolved call now blocks only the interfaces it loaded, and a root that
   compiled on a Vyper release before 0.4 and imports only `vyper.interfaces`
-  no longer blocks the wildcard.
+  no longer blocks the wildcard if its migrated imports all use the reserved
+  builtin namespace.
 
 ## 0.10.0 - 2026-11-07
 
