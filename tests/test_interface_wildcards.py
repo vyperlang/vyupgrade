@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -411,6 +412,23 @@ def test_wildcard_ignores_an_unrelated_root_compiled_before_04(
     if not wildcards:
         diagnostic = next(d for d in batch.files[-1].rewrite.diagnostics if d.rule == "VYD022")
         assert "no matching compiler evidence is available for other.vy" in diagnostic.message
+
+
+@pytest.mark.parametrize("local", ["", "math: constant(uint256) = 1\n"])
+def test_wildcard_ignores_a_legacy_root_that_migrates_to_import_math(tmp_path: Path, local: str) -> None:
+    # VY101 imports the builtin `math` module (aliased if `math` is taken),
+    # which the target resolves before any search path.
+    legacy = (
+        "# pragma version 0.3.10\n" + local
+        + "\n@external\n@view\ndef root(x: uint256) -> uint256:\n    return isqrt(x)\n"
+    )
+    batch = _prepare_with_unrelated_root(tmp_path, legacy)
+    migrated = batch.files[1]
+    assert migrated.source_compile.resolved_compiler == "0.3.10"
+    assert migrated.source_compile.status == "passed", migrated.source_compile.stderr
+    assert any(fix.rule == "VY101" for fix in migrated.rewrite.fixes), batch.reports
+    assert re.search(r"^import math\b", migrated.rewrite.source, flags=re.MULTILINE)
+    assert _wildcards(batch) == ["Bytes[...]"], batch.reports
 
 
 def test_wildcard_keeps_bound_when_legacy_import_survives_migration(tmp_path: Path) -> None:

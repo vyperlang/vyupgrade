@@ -453,6 +453,8 @@ def _legacy_migration_is_unrelated(
 
     # Imported builtin names have a reserved namespace after VY020 runs. If
     # the old import survives, the target can instead resolve it to a local file.
+    # `math`, which VY101 imports for `isqrt`, is also resolved as a builtin
+    # before any search path, so it can't bind a captured interface either.
     from ..rules import RULE_CHANGES, apply_rules
 
     file_config = replace(config, source_version=spec, source_ast=None)
@@ -465,6 +467,9 @@ def _legacy_migration_is_unrelated(
     candidate = lone_cr_as_lf(candidate)
     code = "".join(char if live else " " for char, live in zip(candidate, code_mask(candidate), strict=True))
     remaining = re.sub(r"^[ \t]*from[ \t]+ethereum\.ercs[ \t]+import\b", "", code, flags=re.MULTILINE)
+    remaining = re.sub(
+        r"^[ \t]*import[ \t]+math(?:[ \t]+as[ \t]+\w+)?[ \t]*$", "", remaining, flags=re.MULTILINE,
+    )
     return re.search(r"\bimport\b", remaining) is None
 
 

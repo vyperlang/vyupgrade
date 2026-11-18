@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A pre-0.4 root whose migration only adds the builtin `math` import (`VY101`)
+  no longer blocks `VY125` wildcards elsewhere in the batch: the target compiler
+  resolves `math` before any search path, as it does `ethereum.ercs`.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into
