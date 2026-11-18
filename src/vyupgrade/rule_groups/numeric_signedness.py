@@ -26,9 +26,9 @@ from ..source import (
     code_mask,
     find_matching,
     line_number,
+    line_offsets,
     line_starts_in_code,
     logical_statement_tokens,
-    lone_cr_as_lf,
     split_top_level_arg_spans,
     split_top_level_args,
     span_is_code,
@@ -1208,13 +1208,13 @@ _OPERAND_CLOSERS = frozenset({")", "]", ",", ":", "and", "or", "if", "else"})
 @lru_cache(maxsize=4)
 def _statement_name_tokens(source: str) -> dict[int, tuple[list[tokenize.TokenInfo], int]]:
     """Map the offset of each name token to its logical statement and position in it."""
-    line_offsets = [0, *(match.end() for match in re.finditer("\n", lone_cr_as_lf(source)))]
+    offsets = line_offsets(source)
     names: dict[int, tuple[list[tokenize.TokenInfo], int]] = {}
     for statement in logical_statement_tokens(source):
         for position, token in enumerate(statement):
             if token.type == tokenize.NAME:
                 row, column = token.start
-                names[line_offsets[row - 1] + column] = (statement, position)
+                names[offsets[row - 1] + column] = (statement, position)
     return names
 
 
@@ -1256,8 +1256,17 @@ def _ends_operand(texts: list[str], last: int) -> bool:
     return last == len(texts) - 1 or texts[last + 1] in _OPERAND_CLOSERS
 
 
-def _is_decimal_literal(text: str | None) -> bool:
-    return text is not None and re.fullmatch(r"\d(?:_?\d)*", text) is not None
+# Decimal, octal and binary integer literals. Vyper types hex literals as bytes.
+# The length bound keeps int() far from Python's digit limit; no 256-bit
+# literal needs more.
+_INTEGER_LITERAL = re.compile(r"\d(?:_?\d)*|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+")
+_MAX_INTEGER_LITERAL_LENGTH = 600
+
+
+def _integer_literal_value(text: str | None) -> int | None:
+    if text is None or len(text) > _MAX_INTEGER_LITERAL_LENGTH or not _INTEGER_LITERAL.fullmatch(text):
+        return None
+    return int(text.replace("_", ""), 0)
 
 
 def _literal_starting_at(texts: list[str], first: int) -> int | None:
@@ -1270,13 +1279,9 @@ def _literal_starting_at(texts: list[str], first: int) -> int | None:
     negative = _token_at(texts, number) == "-"
     number += negative
     last = number + depth
-    if not (
-        _is_decimal_literal(_token_at(texts, number))
-        and texts[number + 1 : last + 1] == [")"] * depth
-        and _ends_operand(texts, last)
-    ):
+    value = _integer_literal_value(_token_at(texts, number))
+    if value is None or texts[number + 1 : last + 1] != [")"] * depth or not _ends_operand(texts, last):
         return None
-    value = int(texts[number].replace("_", ""))
     return -value if negative else value
 
 
@@ -1287,7 +1292,8 @@ def _literal_ending_at(texts: list[str], last: int) -> int | None:
     while _token_at(texts, last - depth) == ")":
         depth += 1
     number = last - depth
-    if not _is_decimal_literal(_token_at(texts, number)):
+    value = _integer_literal_value(_token_at(texts, number))
+    if value is None:
         return None
     first = number - depth
     negative = _token_at(texts, number - 1) == "-" and (
@@ -1297,7 +1303,6 @@ def _literal_ending_at(texts: list[str], last: int) -> int | None:
         first -= 1
     if first < 0 or texts[first : first + depth] != ["("] * depth or not _starts_operand(texts, first):
         return None
-    value = int(texts[number].replace("_", ""))
     return -value if negative else value
 
 

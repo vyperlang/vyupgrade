@@ -77,6 +77,8 @@ def f(x: uint256) -> uint256:
             break
         if (-1) < i and x > 0:
             total += x
+        if i != 0o2 and 0b1 != i and x > 0:
+            total += x
     return total
 """
 
@@ -84,6 +86,7 @@ def f(x: uint256) -> uint256:
 
     assert "if i == (2) and x > 0:" in result.source
     assert "if (-1) < i and x > 0:" in result.source
+    assert "if i != 0o2 and 0b1 != i and x > 0:" in result.source
     assert "convert(i, uint256)" not in result.source
 
 
@@ -101,6 +104,21 @@ def f(x: uint256) -> bool:
     result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
 
     assert "return (convert(C, uint256) == 2" in result.source
+
+
+def test_overlong_literal_comparison_does_not_abort_the_rule(config) -> None:
+    source = f"""# @version 0.3.10
+C: constant(int8) = 2
+
+@external
+@pure
+def f(x: uint256) -> bool:
+    return C == {"9" * 5000} and x > 0
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "return convert(C, uint256) == 999" in result.source
 
 
 def test_literal_outside_signed_type_keeps_the_cast(config) -> None:
