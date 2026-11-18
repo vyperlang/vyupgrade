@@ -431,6 +431,21 @@ def test_wildcard_ignores_a_legacy_root_that_migrates_to_import_math(tmp_path: P
     assert _wildcards(batch) == ["Bytes[...]"], batch.reports
 
 
+@pytest.mark.parametrize(("imports", "wildcards"), [("", ["Bytes[...]"]), ("import Other\n", [])])
+def test_wildcard_ignores_an_unrelated_root_compiled_before_043(
+    tmp_path: Path, imports: str, wildcards: list[str],
+) -> None:
+    # 0.4.0-0.4.2 give no module evidence; a root importing a captured
+    # interface may call through it, one importing nothing cannot.
+    (tmp_path / "Other.vyi").write_text("@external\ndef g() -> uint256:\n    ...\n")
+    unrelated = "# pragma version 0.4.1\n" + imports + "\n@external\n@view\ndef answer() -> uint256:\n    return 42\n"
+    batch = _prepare_with_unrelated_root(tmp_path, unrelated)
+    compiled = batch.files[1]
+    assert compiled.source_compile.resolved_compiler == "0.4.1"
+    assert compiled.source_compile.status == "passed", compiled.source_compile.stderr
+    assert _wildcards(batch) == wildcards, batch.reports
+
+
 def test_wildcard_keeps_bound_when_legacy_import_survives_migration(tmp_path: Path) -> None:
     interface = tmp_path / "vyper" / "interfaces" / "ERC20Detailed.vyi"
     interface.parent.mkdir(parents=True)
@@ -612,10 +627,18 @@ def test_wildcard_keeps_bound_when_a_same_project_root_fails_to_compile(tmp_path
         ]}}, False),
         ("0.3.10", {"bytecode": "0x00", "ast": {"body": [{"ast_type": "Import", "name": "Lib"}]}}, False),
         ("0.4.0b6", {"bytecode": "0x00", "ast": {}}, False),
-        ("0.4.3", {"bytecode": "0x00", "ast": {}}, False),
+        ("0.4.0", {"bytecode": "0x00", "ast": {"ast": {"body": []}}}, True),
+        ("0.4.1", {"bytecode": "0x00", "ast": {"ast": {"body": [
+            {"ast_type": "ImportFrom", "module": "ethereum.ercs", "level": 0, "name": "IERC20"},
+        ]}}}, True),
+        ("0.4.2", {"bytecode": "0x00", "ast": {"ast": {"body": [
+            {"ast_type": "ImportFrom", "module": "vyper.interfaces", "level": 0, "name": "ERC20"},
+        ]}}}, False),
+        ("0.4.1", {"bytecode": "0x00", "ast": {"ast": {"body": [{"ast_type": "Import", "name": "Narrow"}]}}}, False),
+        ("0.4.3", {"bytecode": "0x00", "ast": {"ast": {"body": []}}}, False),
     ],
 )
-def test_only_a_full_pre_04_compile_is_exempt(compiler, artifacts, exempt) -> None:
+def test_only_a_full_compile_without_043_evidence_is_exempt(compiler, artifacts, exempt) -> None:
     result = CompileResult("passed", artifacts=artifacts, resolved_compiler=compiler)
     assert _compiled_before_interfaces(result) is exempt
 

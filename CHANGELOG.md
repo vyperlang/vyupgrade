@@ -8,6 +8,10 @@
 - A pre-0.4 root whose compile is degraded only because an output such as the
   storage layout is unavailable (0.2.x) still counts as compiled for the `VY125`
   exemption: its bytecode and AST are all the exemption reads.
+- A 0.4.0-0.4.2 root that imports nothing but builtin `ethereum.ercs`
+  interfaces no longer blocks `VY125` wildcards: like a pre-0.4 root, it cannot
+  call through a captured interface, though only 0.4.3 compiles give module
+  evidence.
 
 ## 0.11.0 - 2026-11-18
 

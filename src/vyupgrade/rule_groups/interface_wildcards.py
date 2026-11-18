@@ -424,7 +424,7 @@ def _check_consumers(
 
 
 def _compiled_before_interfaces(result: CompileResult | None) -> bool:
-    """Whether a full pre-0.4 compile had no imports outside the old builtin namespace."""
+    """Whether a full compile without 0.4.3 evidence imported nothing outside the builtin namespace."""
     # A degraded compile (0.2.x emits no storage layout) still has the bytecode and AST read here.
     if result is None or result.status not in {"passed", "degraded"}:
         return False
@@ -435,11 +435,17 @@ def _compiled_before_interfaces(result: CompileResult | None) -> bool:
     ):
         return False
     version = parse_version(result.resolved_compiler)
-    # 0.4.0 prereleases already resolve .vyi imports, so compare the release only.
-    if version is None or version.release >= (0, 4, 0):
+    # 0.4.3 compiles give module evidence instead. 0.4.0 prereleases already
+    # resolve .vyi imports, so compare the release only.
+    if version is None or version.release >= (0, 4, 3):
         return False
+    modular = version.release >= (0, 4, 0)
+    if modular and not isinstance(_node(ast.get("ast", ast)).get("body"), list):
+        return False
+    # From 0.4.0, `vyper.interfaces` is an ordinary path and `ethereum.ercs` the builtin one.
+    builtin = "ethereum.ercs" if modular else "vyper.interfaces"
     return all(
-        (node.get("ast_type") == "ImportFrom" and node.get("module") == "vyper.interfaces"
+        (node.get("ast_type") == "ImportFrom" and node.get("module") == builtin
          and node.get("level") == 0)
         for node in iter_nodes(ast)
         if node.get("ast_type") in {"Import", "ImportFrom"}
