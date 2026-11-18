@@ -200,6 +200,20 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
     )
 
 
+def is_exact_version_spec(spec: str | None) -> bool:
+    """Whether a pragma pins one release rather than admitting a range."""
+    if not spec:
+        return False
+    specifiers = _specifier_set(spec)
+    if specifiers is None:
+        clauses = _parse_clauses(spec)
+        return len(clauses) == 1 and clauses[0][0] == "=="
+    return len(specifiers) == 1 and all(
+        specifier.operator == "==" and not specifier.version.endswith(".*")
+        for specifier in specifiers
+    )
+
+
 def _specifier_set(spec: str) -> SpecifierSet | None:
     # Match the compiler's own pragma check (vyper.ast.pre_parser): a bare
     # version pins exactly, an npm-style caret becomes a PEP 440

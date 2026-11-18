@@ -2398,20 +2398,25 @@ dependencies = ["vyper==0.4.3"]
     assert attestation["failure_origin"] is None
 
 
-def test_real_locked_project_keeps_dependencies_for_conflicting_pragma(tmp_path: Path) -> None:
+def test_real_lock_excluding_pragmas_compiles_them_with_their_own_compilers(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
         """[project]
 name = "mixed-pragmas"
 version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = ["vyper>=0.4.2", "snekmate==0.1.1"]
+requires-python = ">=3.10,<4"
+dependencies = ["vyper>=0.3.10,<0.5", "snekmate==0.1.1"]
 """,
         encoding="utf-8",
     )
-    contract = project / "contract.vy"
-    contract.write_text(
+    (project / ".python-version").write_text("3.12\n", encoding="utf-8")
+    legacy = project / "legacy.vy"
+    legacy.write_text("# @version 0.3.10\nvalue: public(uint256)\n", encoding="utf-8")
+    modern = project / "modern.vy"
+    modern.write_text(
         """# pragma version 0.4.1
 from snekmate.auth import ownable
 initializes: ownable
@@ -2429,49 +2434,71 @@ def __init__():
         capture_output=True,
         text=True,
     )
+    assert '\nname = "vyper"\nversion = "0.4.3"\n' in (project / "uv.lock").read_text()
+    report = tmp_path / "mixed-report.json"
 
-    result = compile_source_file(
-        contract,
-        Config(paths=(contract,), target_version="0.4.3"),
-        "0.4.1",
+    assert (
+        main(
+            [
+                str(legacy),
+                str(modern),
+                "--target-version",
+                "0.4.1",
+                "--report-json",
+                str(report),
+            ]
+        )
+        == 0
     )
 
-    assert result.status == "passed", result.stderr
-    assert result.resolved_compiler == "0.4.1"
-    assert result.compiler_authority == "source-exact"
-    assert result.dependency_context is not None
-    assert result.dependency_context.lockfile is not None
-    assert {"vyper", "snekmate"} <= {
-        package.name.lower() for package in result.dependency_context.resolved_packages
+    report_data = json.loads(report.read_text(encoding="utf-8"))
+    attestations = {
+        Path(entry["path"]).name: entry["validation"]["source_attestation"]
+        for entry in report_data["files"]
     }
+    for name, version in (("legacy.vy", "0.3.10"), ("modern.vy", "0.4.1")):
+        attestation = attestations[name]
+        assert attestation["authority_rule"] == "source-exact"
+        assert attestation["resolved_compiler"]["version"] == version
+        assert attestation["dependency_context"]["lockfile"]["path"] == str(
+            (project / "uv.lock").resolve()
+        )
+        packages = report_data["package_sets"][
+            attestation["dependency_context"]["resolved_packages_sha256"]
+        ]
+        assert "snekmate" in {package["name"].lower() for package in packages}
+    # 0.3.10 keeps the interpreter its compiler runs on, not the project's `.python-version`.
+    assert "/python3.11/" in attestations["legacy.vy"]["resolved_compiler"]["artifact"]["path"]
 
 
-def test_real_legacy_pragma_keeps_its_python_in_newer_vyper_project(tmp_path: Path) -> None:
+def test_real_unknown_pragma_release_still_conflicts_with_project_compiler(
+    tmp_path: Path,
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
         """[project]
-name = "legacy-beside-modern"
+name = "unknown-pragma"
 version = "0.1.0"
-requires-python = ">=3.10,<4"
+requires-python = ">=3.11"
 dependencies = ["vyper==0.4.3"]
 """,
         encoding="utf-8",
     )
     contract = project / "contract.vy"
-    contract.write_text("# @version 0.3.10\nvalue: public(uint256)\n", encoding="utf-8")
+    contract.write_text("# pragma version 0.3.11\nvalue: public(uint256)\n", encoding="utf-8")
 
     result = compile_source_file(
         contract,
         Config(paths=(contract,), target_version="0.4.3"),
-        "0.3.10",
+        "0.3.11",
     )
 
-    assert result.status == "passed", result.stderr
-    assert result.resolved_compiler == "0.3.10"
-    assert result.compiler_authority == "source-exact"
-    assert result.command is not None
-    assert result.command[result.command.index("--python") + 1] == "3.11"
+    assert result.status == "failed"
+    assert result.compiler_started is False
+    assert result.failure_origin == "environment"
+    assert result.compiler_authority == "project-manifest"
+    assert "conflicts with source declaration 0.3.11" in (result.stderr or "")
 
 
 def test_real_explicit_project_compiler_conflict_is_environment_origin(tmp_path: Path) -> None:

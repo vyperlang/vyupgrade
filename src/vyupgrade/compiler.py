@@ -55,6 +55,7 @@ from .versions import (
     VyperVersion,
     compiler_version_for_spec,
     infer_pragma,
+    is_exact_version_spec,
     known_versions_satisfying,
     legacy_prerelease_version,
     parse_version,
@@ -1234,8 +1235,12 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         )
         result: CompileResult | None = None
         formats = ("annotated_ast", "ast")
+        pyproject = _nearest_pyproject(path.parent)
+        # Only orders the AST formats tried, so the lock is read without `uv lock --check`.
         if _command_vyper_version(command) == "0.3.10" and not _project_supplies_compiler(
-            _nearest_pyproject(path.parent), infer_pragma(staged.read_text())
+            pyproject,
+            infer_pragma(staged.read_text()),
+            lockfile=_project_lockfile(pyproject) if pyproject is not None else None,
         ):
             formats = ("ast",)  # This exact managed compiler only exposes a raw AST.
         for output_format in formats:
@@ -2355,6 +2360,8 @@ def _environment_provisioning_commands(
                 "--active",
                 "--no-editable",
                 "--no-install-project",
+                # Without it, sync replaces the venv with the project's `.python-version`.
+                *(("--python", python) if python is not None else ()),
                 *(("--frozen",) if "--frozen" in options else ()),
                 *_uv_dependency_selection(options),
             ]
@@ -2647,13 +2654,18 @@ def _compiler_authority(
     pyproject = _nearest_pyproject(path.parent)
     if not _is_uv_run_command(command):
         return "explicit-executable"
-    if project_compiler and _project_supplies_compiler(pyproject, source_spec, marker_environment):
+    if project_compiler and _project_supplies_compiler(
+        pyproject,
+        source_spec,
+        marker_environment,
+        lockfile=_project_lockfile(pyproject) if locked and pyproject is not None else None,
+    ):
         return "project-lock" if locked else "project-manifest"
     if not project_compiler:
         return "fixed-target"
     if source_spec is None:
         return "default"
-    return "source-exact" if parse_version(source_spec) is not None else "source-range"
+    return "source-exact" if is_exact_version_spec(source_spec) else "source-range"
 
 
 def _compiler_declarations(
@@ -2939,7 +2951,10 @@ def _project_environment_command(
     if not _is_uv_run_command(command):
         return [*environment, *command]
     project_vyper = project_compiler and _project_supplies_compiler(
-        pyproject, source_spec, marker_environment
+        pyproject,
+        source_spec,
+        marker_environment,
+        lockfile=_project_lockfile(pyproject) if frozen else None,
     )
     pragma_vyper = (
         project_compiler
@@ -3207,11 +3222,14 @@ def _project_supplies_compiler(
     pyproject: Path | None,
     source_spec: str | None,
     marker_environment: Mapping[str, str] | None = None,
+    *,
+    lockfile: Path | None,
 ) -> bool:
     """Whether the project's own Vyper requirement is the source compiler.
 
-    A project that declares Vyper supplies the compiler unless its requirement, and its lock
-    when the lock records Vyper, admits no release the source pragma admits. Such a file is a
+    A project that declares Vyper supplies the compiler unless its requirement, and the lock
+    provisioning enforces (``lockfile``, None when unlocked or stale) when that lock records
+    Vyper, admits no release the source pragma admits. Such a file is a
     legacy contract kept beside newer ones, and compiles with its pragma's release layered over
     the project environment. Without a pragma, or with one no known release satisfies, the
     project's compiler stays authoritative and the coherence check still rejects a mismatch.
@@ -3224,12 +3242,16 @@ def _project_supplies_compiler(
     pragma_versions = known_versions_satisfying(source_spec)
     if not pragma_versions:
         return True
-    locked = _locked_vyper_versions(_owning_uv_workspace(pyproject).parent / "uv.lock")
+    locked = _locked_vyper_versions(lockfile) if lockfile is not None else frozenset()
     return any(
         all(Requirement(spec).specifier.contains(version, prereleases=True) for spec in specs)
         and (not locked or version in locked)
         for version in pragma_versions
     )
+
+
+def _project_lockfile(pyproject: Path) -> Path:
+    return _owning_uv_workspace(pyproject).parent / "uv.lock"
 
 
 def _locked_vyper_versions(lockfile: Path) -> frozenset[Version]:

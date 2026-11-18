@@ -656,6 +656,7 @@ source = { registry = "https://pypi.org/simple" }
         ("vyper==0.4.3", None, "^0.4.0", True),
         ("vyper>=0.4", _LOCKED_VYPER_0_4_3, "0.4.1", False),
         ("vyper>=0.4", _LOCKED_VYPER_0_4_3, ">=0.4.1", True),
+        ("vyper==0.4.1", "stale", "0.4.1", True),
         ("vyper==0.4.3", None, None, True),
         ("vyper==0.4.3", None, "0.9.9", True),
         ("requests==2.32.4", None, "0.3.10", False),
@@ -666,6 +667,7 @@ source = { registry = "https://pypi.org/simple" }
         "range-admits-manifest",
         "pragma-conflicts-with-lock",
         "range-admits-lock",
+        "stale-lock-ignored",
         "no-pragma",
         "unknown-pragma-release",
         "no-vyper-requirement",
@@ -683,10 +685,42 @@ dependencies = ["{requirement}"]
 """,
         encoding="utf-8",
     )
+    lockfile = tmp_path / "uv.lock"
     if lock is not None:
-        (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+        # A stale lock still on disk (pinning 0.4.3) is not the lock provisioning enforces.
+        lockfile.write_text(_LOCKED_VYPER_0_4_3 if lock == "stale" else lock, encoding="utf-8")
+    enforced = lockfile if lock not in (None, "stale") else None
 
-    assert _project_supplies_compiler(pyproject, source_spec) is supplies
+    assert _project_supplies_compiler(pyproject, source_spec, lockfile=enforced) is supplies
+
+
+@pytest.mark.parametrize(
+    ("source_spec", "authority"),
+    [
+        ("0.3.10", "source-exact"),
+        ("==0.4.1", "source-exact"),
+        (">=0.4.0,<0.4.2", "source-range"),
+        ("^0.4.0", "source-range"),
+        ("~=0.4.3", "source-range"),
+        (">=0.3.0 <0.4.0", "source-range"),
+    ],
+)
+def test_compiler_authority_distinguishes_exact_and_ranged_pragmas(
+    tmp_path, source_spec: str, authority: str
+) -> None:
+    contract = tmp_path / "contract.vy"
+    contract.write_text("", encoding="utf-8")
+
+    assert (
+        _compiler_authority(
+            [_uv_bin(), "run", "--no-project", "--with", "vyper==0.4.1", "vyper"],
+            contract,
+            project_compiler=True,
+            locked=False,
+            source_spec=source_spec,
+        )
+        == authority
+    )
 
 
 @pytest.mark.parametrize(
