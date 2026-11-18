@@ -2408,7 +2408,7 @@ def test_real_lock_excluding_pragmas_compiles_them_with_their_own_compilers(
 name = "mixed-pragmas"
 version = "0.1.0"
 requires-python = ">=3.10,<4"
-dependencies = ["vyper>=0.3.10,<0.5", "snekmate==0.1.1"]
+dependencies = ["vyper>=0.3.10,<=0.4.3", "snekmate==0.1.1"]
 """,
         encoding="utf-8",
     )

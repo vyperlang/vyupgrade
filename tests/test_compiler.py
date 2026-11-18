@@ -17,6 +17,7 @@ from vyupgrade.compiler import (
     _CompilerProcess,
     _declared_project_environment,
     _compiler_authority,
+    _enforced_lockfile,
     _compiler_environment_key,
     _compiler_coherence,
     _compiler_command,
@@ -692,6 +693,19 @@ dependencies = ["{requirement}"]
     enforced = lockfile if lock not in (None, "stale") else None
 
     assert _project_supplies_compiler(pyproject, source_spec, lockfile=enforced) is supplies
+
+
+def test_enforced_lockfile_ignores_a_stale_lock(tmp_path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    manifest = '[project]\nname = "stale"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
+    pyproject.write_text(f'{manifest}dependencies = ["vyper==0.4.3"]\n', encoding="utf-8")
+    subprocess.run([_uv_bin(), "lock", "--project", str(tmp_path)], check=True, capture_output=True)
+
+    assert _enforced_lockfile(pyproject, timeout=60.0) == tmp_path / "uv.lock"
+
+    pyproject.write_text(f'{manifest}dependencies = ["vyper==0.4.1"]\n', encoding="utf-8")
+
+    assert _enforced_lockfile(pyproject, timeout=60.0) is None
 
 
 @pytest.mark.parametrize(

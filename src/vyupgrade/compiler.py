@@ -1235,12 +1235,10 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         )
         result: CompileResult | None = None
         formats = ("annotated_ast", "ast")
-        pyproject = _nearest_pyproject(path.parent)
-        # Only orders the AST formats tried, so the lock is read without `uv lock --check`.
         if _command_vyper_version(command) == "0.3.10" and not _project_supplies_compiler(
-            pyproject,
+            pyproject := _nearest_pyproject(path.parent),
             infer_pragma(staged.read_text()),
-            lockfile=_project_lockfile(pyproject) if pyproject is not None else None,
+            lockfile=_enforced_lockfile(pyproject, timeout=config.network_timeout),
         ):
             formats = ("ast",)  # This exact managed compiler only exposes a raw AST.
         for output_format in formats:
@@ -3252,6 +3250,16 @@ def _project_supplies_compiler(
 
 def _project_lockfile(pyproject: Path) -> Path:
     return _owning_uv_workspace(pyproject).parent / "uv.lock"
+
+
+def _enforced_lockfile(pyproject: Path | None, *, timeout: float) -> Path | None:
+    """The lock provisioning enforces with ``--frozen``: present and matching its manifest."""
+    if pyproject is None:
+        return None
+    lockfile = _project_lockfile(pyproject)
+    if not lockfile.is_file() or not _lock_matches_manifest(lockfile.parent, timeout=timeout):
+        return None
+    return lockfile
 
 
 def _locked_vyper_versions(lockfile: Path) -> frozenset[Version]:
