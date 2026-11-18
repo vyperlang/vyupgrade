@@ -146,6 +146,9 @@ def _mixed_signed_unsigned_arithmetic(
                     # checked arithmetic and conversions, before choosing direction.
                     or _inside_shift_amount(source, start)
                     or _inside_type_subscript(source, start)
+                    # A literal takes the signed operand's type, so the comparison
+                    # needs no cast; casting would revert on negative values.
+                    or _integer_literal_comparison_peer(source, start, name)
                     or (
                         name in constant_values
                         and comparison_target is not None
@@ -1187,6 +1190,11 @@ def _unsigned_comparison_target_type_at(
         return None
     other_type = infer_expr_type(other, vars_for_line, facts)
     return normalize_type(other_type) if _is_unsigned_integer_type(other_type) else None
+
+
+def _integer_literal_comparison_peer(source: str, index: int, name: str) -> bool:
+    peer = _comparison_peer(_comparison_expression_at(source, index), name)
+    return peer is not None and re.fullmatch(r"-?\s*\d(?:_?\d)*", peer) is not None
 
 
 def _comparison_peer(expr: str, name: str) -> str | None:

@@ -143,6 +143,25 @@ def is_zero(pair: (uint256, int256)) -> bool:
             assert _outcome(deployment, "is_zero((uint256,int256))", 4, member) == expected
 
 
+def test_signed_loop_index_compared_with_literal_keeps_negative_values(tmp_path):
+    deployments = _migration_pair(tmp_path, """# @version 0.3.10
+@external
+@pure
+def f(x: int256) -> int256:
+    total: int256 = 0
+    for i in range(-2, 4):
+        if i == 1:
+            continue
+        if i == 3:
+            break
+        total += x * i
+    return total
+""")
+    for x, expected in ((0, 0), (5, 2**256 - 5), (-3, 3)):
+        for deployment in deployments:
+            assert _outcome(deployment, "f(int256)", x) == expected
+
+
 @pytest.mark.parametrize("index", ["1", "BOOL_MEMBER"])
 def test_tuple_assignment_preserves_signed_membership(tmp_path, index):
     deployments = _migration_pair(tmp_path, f"""# @version 0.3.10

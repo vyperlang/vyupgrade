@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Leave a comparison between a signed integer and an integer literal
+  unconverted (`VY052`). It used to cast the signed operand to `uint256`,
+  so the migrated contract reverted whenever that operand was negative.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into

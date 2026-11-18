@@ -25,6 +25,27 @@ def f():
     assert second.source == first.source
 
 
+def test_signed_loop_index_compared_with_literal_is_not_converted(config) -> None:
+    source = """# @version 0.3.10
+@external
+@pure
+def f(x: uint256) -> uint256:
+    total: uint256 = 0
+    for i in range(-1, 3):
+        if i == 2 and x > 0:
+            break
+        if 0 <= i:
+            total += x
+    return total
+"""
+
+    result = apply_rules(source, config(source_version="0.3.10", target_version="0.4.3"))
+
+    assert "if i == 2 and x > 0:" in result.source
+    assert "if 0 <= i:" in result.source
+    assert "convert(i, uint256)" not in result.source
+
+
 def test_signed_constant_converted_in_uint_arithmetic(config) -> None:
     source = """# @version 0.2.8
 N_COINS: constant(int128) = 3
