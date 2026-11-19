@@ -13,8 +13,10 @@ def integer_constant_values(
     source: str, source_ast: dict[str, object] | None = None
 ) -> dict[str, int]:
     values: dict[str, int] = ast_integer_constants(source_ast) if source_ast is not None else {}
+    # Only integer-typed declarations: a hex literal declared bytesN or address
+    # is not the integer Python reads it as.
     constant_re = re.compile(
-        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:public\s*\(\s*)?constant\s*\([^#\n=]+\)\s*\)?\s*=\s*(?P<expr>[^\n#]+)",
+        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:public\s*\(\s*)?constant\s*\(\s*u?int\d*\s*\)\s*\)?\s*=\s*(?P<expr>[^\n#]+)",
         re.MULTILINE,
     )
     mask = code_mask(source)
