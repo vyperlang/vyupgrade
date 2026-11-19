@@ -1334,7 +1334,7 @@ def f(x: uint256) -> uint256:
 
 def test_shift_builtin_inlines_integer_constant_amount(config) -> None:
     source = """#pragma version 0.4.1
-K: constant(uint256) = 0x02
+K: constant((uint256)) = 2
 
 @external
 def f(x: uint256) -> uint256:

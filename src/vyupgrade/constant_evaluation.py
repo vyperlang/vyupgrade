@@ -13,14 +13,16 @@ def integer_constant_values(
     source: str, source_ast: dict[str, object] | None = None
 ) -> dict[str, int]:
     values: dict[str, int] = ast_integer_constants(source_ast) if source_ast is not None else {}
-    # Only integer-typed declarations: a hex literal declared bytesN or address
-    # is not the integer Python reads it as.
     constant_re = re.compile(
-        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:public\s*\(\s*)?constant\s*\(\s*u?int\d*\s*\)\s*\)?\s*=\s*(?P<expr>[^\n#]+)",
+        r"^[ \t]*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:public\s*\(\s*)?constant\s*\((?P<type>[^#\n=]+)\)\s*\)?\s*=\s*(?P<expr>[^\n#]+)",
         re.MULTILINE,
     )
     mask = code_mask(source)
     for match in constant_re.finditer(source):
+        # Only integer-typed declarations: a hex literal declared bytesN or address
+        # is not the integer Python reads it as. The type may sit in parentheses.
+        if not re.fullmatch(r"[\s()]*u?int\d*[\s()]*", match.group("type")):
+            continue
         if match.group("name") not in values and span_is_code(mask, match.start(), match.end()):
             value = eval_integer_constant_expr(match.group("expr"), values)
             if value is not None:
