@@ -139,24 +139,45 @@ def test_ast_facts_extract_call_spans() -> None:
     assert node_span(shift.args[1]) is not None
 
 
+def _legacy_constant_type(type_name: str) -> dict[str, object]:
+    return {
+        "ast_type": "Call",
+        "func": {"ast_type": "Name", "id": "constant"},
+        "args": [{"ast_type": "Name", "id": type_name}],
+    }
+
+
 def test_ast_facts_extract_legacy_list_body_integer_constants() -> None:
     ast = {
         "ast": [
             {
                 "ast_type": "AnnAssign",
                 "target": {"ast_type": "Name", "id": "N_COINS"},
-                "annotation": {"ast_type": "Call", "func": {"ast_type": "Name", "id": "constant"}},
+                "annotation": _legacy_constant_type("int128"),
                 "value": {"ast_type": "Num", "n": 3},
             },
             {
                 "ast_type": "AnnAssign",
                 "target": {"ast_type": "Name", "id": "NEGATIVE"},
-                "annotation": {"ast_type": "Call", "func": {"ast_type": "Name", "id": "constant"}},
+                "annotation": _legacy_constant_type("int128"),
                 "value": {
                     "ast_type": "UnaryOp",
                     "op": {"ast_type": "USub"},
                     "operand": {"ast_type": "Num", "n": 1},
                 },
+            },
+            {
+                # Pre-0.2 compilers give hex literals as integer ``Num`` nodes.
+                "ast_type": "AnnAssign",
+                "target": {"ast_type": "Name", "id": "MASK"},
+                "annotation": _legacy_constant_type("bytes32"),
+                "value": {"ast_type": "Num", "n": 2**248},
+            },
+            {
+                "ast_type": "AnnAssign",
+                "target": {"ast_type": "Name", "id": "OWNER"},
+                "annotation": _legacy_constant_type("address"),
+                "value": {"ast_type": "Num", "n": 1},
             },
             {
                 "ast_type": "AnnAssign",
