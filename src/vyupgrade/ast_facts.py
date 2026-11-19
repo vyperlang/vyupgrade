@@ -170,7 +170,7 @@ def integer_constants(output: dict[str, Any]) -> dict[str, int]:
         if isinstance(raw_value, int):
             constants[name] = raw_value
     for node in iter_nodes(root_ast(output), "AnnAssign"):
-        if not _legacy_constant_annotation(node.get("annotation")):
+        if not _legacy_integer_constant_annotation(node.get("annotation")):
             continue
         name = _name_id(node.get("target"))
         value = node.get("value")
@@ -211,12 +211,22 @@ def _name_id(node: Any) -> str | None:
     return name if isinstance(name, str) else None
 
 
-def _legacy_constant_annotation(node: Any) -> bool:
+def _legacy_integer_constant_annotation(node: Any) -> bool:
+    # Pre-0.2 ASTs give every hex literal, bytesN and address included, as an
+    # integer ``Num``, so only the declared type tells an integer constant apart.
     if not isinstance(node, dict) or node.get("ast_type") != "Call":
         return False
     func = node.get("func")
+    args = node.get("args")
     return (
-        isinstance(func, dict) and func.get("ast_type") == "Name" and func.get("id") == "constant"
+        isinstance(func, dict)
+        and func.get("ast_type") == "Name"
+        and func.get("id") == "constant"
+        and isinstance(args, list)
+        and len(args) == 1
+        and isinstance(args[0], dict)
+        and args[0].get("ast_type") == "Name"
+        and re.fullmatch(r"u?int\d*", str(args[0].get("id"))) is not None
     )
 
 

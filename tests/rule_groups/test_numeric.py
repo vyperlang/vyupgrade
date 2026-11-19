@@ -1314,3 +1314,33 @@ def check(items: uint256[2][2], accounts: address[2], first: bool):
     assert "for item: uint256 in batch:" in result.source
     assert "for item: address in batch:" in result.source
     assert apply_rules(result.source, settings).source == result.source
+
+
+def test_shift_builtin_keeps_bytes_constant_name_in_amount(config) -> None:
+    source = """#pragma version 0.4.1
+B: constant(bytes1) = 0x01
+
+@external
+def f(x: uint256) -> uint256:
+    return shift(x, convert(convert(B, bytes32), uint256))
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "shift(" not in result.source
+    assert "convert(convert(B, bytes32), uint256)" in result.source
+    assert "convert(1, bytes32)" not in result.source
+
+
+def test_shift_builtin_inlines_integer_constant_amount(config) -> None:
+    source = """#pragma version 0.4.1
+K: constant((uint256)) = 2
+
+@external
+def f(x: uint256) -> uint256:
+    return shift(x, K)
+"""
+
+    result = apply_rules(source, config(target_version="0.4.3"))
+
+    assert "return (x << 2)" in result.source

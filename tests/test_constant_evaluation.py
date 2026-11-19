@@ -30,3 +30,15 @@ def test_compiler_constant_evidence_takes_precedence():
         "value": {"ast_type": "Int", "value": 7},
     }]}
     assert integer_constant_values("VALUE: constant(int128) = 3\n", ast) == {"VALUE": 7}
+
+
+def test_fallback_skips_constants_without_integer_type():
+    source = (
+        "B: constant(bytes1) = 0x01\n"
+        "W: constant(bytes32) = 0x" + "00" * 31 + "02\n"
+        "A: constant(address) = 0x" + "00" * 19 + "03\n"
+        "U: constant(uint256) = 4\n"
+        "Q: constant((int8)) = 6\n"
+        "P: public(constant(int128)) = -5\n"
+    )
+    assert integer_constant_values(source) == {"U": 4, "Q": 6, "P": -5}
