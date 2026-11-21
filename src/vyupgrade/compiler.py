@@ -32,6 +32,7 @@ from .compiler_runner import (
     INTERFACE_AST_FORMAT,
     SOURCE_EVIDENCE_FORMATS,
     SOURCE_VALIDATION_ARGUMENT,
+    _resolved_compiler,
     source_validation_command,
 )
 from .models import (
@@ -58,6 +59,7 @@ from .versions import (
     known_versions_satisfying,
     legacy_prerelease_version,
     parse_version,
+    version_satisfies,
 )
 
 
@@ -2113,14 +2115,24 @@ def _explicit_target_version(config: Config) -> str | None:
     return config.target_version if config.target_vyper else None
 
 
-def _compiler_coherence(source_spec: str | None, *, target: bool = False) -> str:
+def _mismatched_target_version(executable: str, target_spec: str) -> str | None:
+    """The version an explicit target executable reports, if it misses the target."""
+    try:
+        version, _identity = _resolved_compiler([executable], False)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return None  # The compiler runner reports a failed version query itself.
+    return None if version_satisfies(version, target_spec) else version
+
+
+def _compiler_coherence(source_spec: str | None) -> str:
     if source_spec is None:
         return ""
     versions = [str(version) for version in known_versions_satisfying(source_spec)]
-    evidence: dict[str, object] = {"declaration": source_spec, "versions": versions}
-    if target:
-        evidence["target"] = True
-    return json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {"declaration": source_spec, "versions": versions},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _run_compiler_process(
@@ -2173,10 +2185,7 @@ def _run_compiler_process(
         marker_environment=marker_environment,
         source_spec=source_spec,
     )
-    if project_declares_vyper:
-        coherence = _compiler_coherence(source_spec)
-    else:
-        coherence = _compiler_coherence(explicit_target_version, target=True)
+    coherence = _compiler_coherence(source_spec) if project_declares_vyper else ""
     with _declared_project_environment(
         command,
         path,
@@ -2206,6 +2215,21 @@ def _run_compiler_process(
                 context=context,
                 failure_origin="environment",
                 error=str(exc),
+                compiler_authority=authority,
+                compiler_declarations=declarations,
+            )
+        if explicit_target_version is not None and (
+            reported := _mismatched_target_version(command[0], explicit_target_version)
+        ):
+            return _CompilerProcess(
+                command=full,
+                context=context,
+                resolved_compiler=reported,
+                failure_origin="environment",
+                error=(
+                    f"target compiler executable reports {reported}, "
+                    f"not target version {explicit_target_version}"
+                ),
                 compiler_authority=authority,
                 compiler_declarations=declarations,
             )

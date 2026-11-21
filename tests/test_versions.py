@@ -14,6 +14,7 @@ from vyupgrade.versions import (
     is_supported_source_version,
     known_versions_satisfying,
     minimum_satisfying_version,
+    version_satisfies,
 )
 
 
@@ -125,3 +126,18 @@ def test_default_evm_versions_track_vyper_release_defaults() -> None:
     assert default_evm_version_for_spec("0.4.2") == "cancun"
     assert default_evm_version_for_spec("0.4.3") == "prague"
     assert default_evm_version_for_spec("0.5.0b2") == "prague"
+
+
+def test_version_satisfies_checks_reported_compiler_versions_against_specs() -> None:
+    # Releases past the known catalog still match an exact target.
+    assert version_satisfies("0.4.4+commit.abc", "0.4.4")
+    assert version_satisfies("0.4.3+commit.bff19ea2", "0.4.3")
+    assert not version_satisfies("0.4.1+commit.8a93dd27", "0.4.3")
+    # A local build label counts only when the spec names one.
+    assert version_satisfies("0.4.3+commit.bff19ea2", "0.4.3+commit.bff19ea2")
+    assert not version_satisfies("0.4.3+commit.other", "0.4.3+commit.bff19ea2")
+    assert version_satisfies("0.4.4", ">=0.4.3")
+    assert version_satisfies("0.4.4", "^0.4.3")
+    assert not version_satisfies("0.5.0a3", "<0.5.0")
+    assert version_satisfies("0.5.0b2", "0.5.0b2")
+    assert not version_satisfies("not a version", "0.4.3")

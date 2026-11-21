@@ -561,8 +561,6 @@ def _compiler_coherence_error(version: str, raw_evidence: str) -> str | None:
     public_version = version.partition("+")[0]
     if public_version in {candidate.partition("+")[0] for candidate in versions}:
         return None
-    if evidence.get("target") is True:
-        return f"target compiler executable reports {version}, not target version {declaration}"
     return f"resolved project compiler {version} conflicts with source declaration {declaration}"
 
 

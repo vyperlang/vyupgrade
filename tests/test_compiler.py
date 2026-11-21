@@ -108,16 +108,6 @@ def test_compiler_coherence_rejects_genuine_version_mismatch() -> None:
     )
 
 
-def test_compiler_coherence_names_target_version_mismatch() -> None:
-    evidence = _compiler_coherence("0.4.3", target=True)
-
-    assert _compiler_coherence_error("0.4.3+commit.bff19ea2", evidence) is None
-    assert (
-        _compiler_coherence_error("0.4.1+commit.8a93dd27", evidence)
-        == "target compiler executable reports 0.4.1+commit.8a93dd27, not target version 0.4.3"
-    )
-
-
 def test_compiler_command_pins_python_for_uv(monkeypatch) -> None:
     monkeypatch.setattr("vyupgrade.compiler.find_uv_bin", lambda: "/tmp/uv")
 
