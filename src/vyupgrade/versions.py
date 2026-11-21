@@ -200,25 +200,6 @@ def known_versions_satisfying(spec: str | None) -> tuple[VyperVersion, ...]:
     )
 
 
-def version_satisfies(version: str, spec: str) -> bool:
-    """Whether a compiler's reported version meets a version or spec.
-
-    Unlike ``known_versions_satisfying``, this accepts releases newer than the
-    catalog. A local build label (``+commit.<hash>``) counts only when the
-    spec names one.
-    """
-    try:
-        candidate = Version(version)
-    except InvalidVersion:
-        return False
-    specifiers = _specifier_set(spec)
-    if specifiers is not None:
-        return specifiers.contains(candidate, prereleases=True)
-    clauses = _parse_clauses(spec)
-    public = Version(candidate.public)
-    return bool(clauses) and all(_satisfies(public, op, bound) for op, bound in clauses)
-
-
 def _specifier_set(spec: str) -> SpecifierSet | None:
     # Match the compiler's own pragma check (vyper.ast.pre_parser): a bare
     # version pins exactly, an npm-style caret becomes a PEP 440
