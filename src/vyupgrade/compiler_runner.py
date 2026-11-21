@@ -559,8 +559,14 @@ def _compiler_coherence_error(version: str, raw_evidence: str) -> str | None:
     # Vyper release executables report versions such as
     # ``0.4.1+commit.8a93dd27`` while pragmas name the public ``0.4.1`` release.
     public_version = version.partition("+")[0]
-    if public_version in {candidate.partition("+")[0] for candidate in versions}:
+    if any(
+        # A candidate naming a build must match it; otherwise any build of the release does.
+        version == candidate if "+" in candidate else public_version == candidate
+        for candidate in versions
+    ):
         return None
+    if evidence.get("target") is True:
+        return f"target compiler executable reports {version}, not target version {declaration}"
     return f"resolved project compiler {version} conflicts with source declaration {declaration}"
 
 

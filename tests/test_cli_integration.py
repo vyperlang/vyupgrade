@@ -2580,6 +2580,84 @@ def test_real_unhandled_explicit_compiler_failure_is_not_rejection(tmp_path: Pat
     assert "RuntimeError: compiler crashed" in result.compiler_output.stderr
 
 
+def _pragma_checking_compiler(directory: Path, version: str) -> Path:
+    # Like the real compiler, the fake rejects an exact pragma for another release.
+    directory.mkdir()
+    return _write_test_compiler(
+        directory,
+        f"""import re
+
+text = open(sys.argv[-1], encoding="utf-8").read()
+pragma = re.search(r"^#pragma version (\\S+)", text, re.M)
+if pragma and pragma.group(1) != {version.partition("+")[0]!r}:
+    sys.exit("pragma version mismatch")
+print("[]")
+print("{{}}")
+print("{{}}")
+print("0x00")
+print('{{"ast_type": "Module", "body": []}}')
+""",
+        version=version,
+    )
+
+
+def _run_explicit_target_compiler(tmp_path: Path, target_reports: str) -> tuple[int, dict]:
+    source = _pragma_checking_compiler(tmp_path / "source", "0.4.1")
+    target = _pragma_checking_compiler(tmp_path / "target", target_reports)
+    contract = tmp_path / "contract.vy"
+    contract.write_text(
+        "#pragma version 0.4.1\n\n@external\ndef f() -> uint256:\n    return 1\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+    exit_code = main(
+        [
+            str(contract),
+            "--target-version",
+            "0.4.3",
+            "--source-vyper",
+            str(source),
+            "--target-vyper",
+            str(target),
+            "--ignore",
+            "VY001",
+            "--report-json",
+            str(report),
+        ]
+    )
+    return exit_code, json.loads(report.read_text())["files"][0]["validation"]
+
+
+def test_explicit_target_executable_must_report_target_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The 0.4.1 executable accepts the retained 0.4.1 pragma that 0.4.3 rejects,
+    # so compiling with it would validate a target the caller never asked for.
+    exit_code, validation = _run_explicit_target_compiler(tmp_path, "0.4.1+commit.fake")
+
+    assert exit_code == 2
+    assert validation["source_compile"] == "passed"
+    assert validation["target_compile"] == "failed"
+    assert validation["target_attestation"]["failure_origin"] == "environment"
+    assert validation["target_attestation"]["compiler_started"] is False
+    assert validation["decision"]["write_allowed"] is False
+    assert (
+        "target compiler executable reports 0.4.1+commit.fake, not target version 0.4.3"
+        in capsys.readouterr().out
+    )
+
+
+def test_matching_explicit_target_executable_still_compiles(tmp_path: Path) -> None:
+    exit_code, validation = _run_explicit_target_compiler(tmp_path, "0.4.3+commit.fake")
+
+    # The matching compiler runs and rejects the retained pragma itself.
+    assert exit_code == 2
+    assert validation["target_compile"] == "failed"
+    assert validation["target_attestation"]["compiler_started"] is True
+    assert validation["target_attestation"]["resolved_compiler"]["version"] == "0.4.3+commit.fake"
+    assert validation["decision"]["write_allowed"] is False
+
+
 def test_real_source_nonrejection_has_one_attested_attempt(tmp_path: Path) -> None:
     attempt_log = tmp_path / "attempts.log"
     executable = _write_test_compiler(

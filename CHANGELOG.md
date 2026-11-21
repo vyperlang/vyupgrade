@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fail target validation, and block the write, when a `--target-vyper`
+  executable reports a version that doesn't match `--target-version`. Compiling
+  with the wrong release could pass a candidate the requested target rejects.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into

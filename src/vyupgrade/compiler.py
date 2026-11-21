@@ -634,6 +634,7 @@ def compile_target_archive(
             compiler_timeout=config.compiler_timeout,
             network_timeout=config.network_timeout,
             cwd=overlay.root,
+            explicit_target_version=_explicit_target_version(config),
         )
         if process.compiler_started:
             process = replace(
@@ -1892,6 +1893,7 @@ def _run_compile_with_formats(
         network_timeout=config.network_timeout,
         source_text=source_text,
         requested_evidence=requested_evidence,
+        explicit_target_version=None if project_compiler else _explicit_target_version(config),
     )
     if project_compiler and process.compiler_started and "layout" in formats:
         # Mirror the adapter's effective source command using the resolved identity.
@@ -2105,6 +2107,29 @@ def _command_vyper_version(command: list[str]) -> str | None:
     return None
 
 
+def _explicit_target_version(config: Config) -> str | None:
+    # A managed target compiler is installed at the target version; an explicit
+    # executable is whatever the caller passed, so check what it reports.
+    return config.target_version if config.target_vyper else None
+
+
+def _target_coherence(target_spec: str | None) -> str:
+    """Versions an explicit target executable may report, for the compiler runner."""
+    if target_spec is None:
+        return ""
+    # An exact target may be newer than the known releases, or name one build.
+    exact = re.sub(r"^\s*==?\s*", "", target_spec).strip()
+    try:
+        versions = [str(Version(exact))]
+    except InvalidVersion:
+        versions = [str(version) for version in known_versions_satisfying(target_spec)]
+    return json.dumps(
+        {"declaration": target_spec, "target": True, "versions": versions},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _compiler_coherence(source_spec: str | None) -> str:
     if source_spec is None:
         return ""
@@ -2127,6 +2152,7 @@ def _run_compiler_process(
     cwd: Path | None = None,
     source_text: str | None = None,
     requested_evidence: tuple[str, ...] = (),
+    explicit_target_version: str | None = None,
 ) -> _CompilerProcess:
     pyproject = _nearest_pyproject(path.parent)
     marker_environment: Mapping[str, str] | None = None
@@ -2165,7 +2191,11 @@ def _run_compiler_process(
         marker_environment=marker_environment,
         source_spec=source_spec,
     )
-    coherence = _compiler_coherence(source_spec) if project_declares_vyper else ""
+    coherence = (
+        _compiler_coherence(source_spec)
+        if project_declares_vyper
+        else _target_coherence(explicit_target_version)
+    )
     with _declared_project_environment(
         command,
         path,

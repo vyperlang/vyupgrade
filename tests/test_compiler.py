@@ -18,6 +18,7 @@ from vyupgrade.compiler import (
     _declared_project_environment,
     _compiler_environment_key,
     _compiler_coherence,
+    _target_coherence,
     _compiler_command,
     _overlay_search_paths,
     _run_compile,
@@ -106,6 +107,31 @@ def test_compiler_coherence_rejects_genuine_version_mismatch() -> None:
         == "resolved project compiler 0.4.2+commit.c4227f2 "
         "conflicts with source declaration 0.4.1"
     )
+
+
+def test_target_coherence_accepts_only_the_target_release() -> None:
+    assert _target_coherence(None) == ""
+    # Exact targets need not be known releases; build metadata is ignored unless named.
+    assert _compiler_coherence_error("0.4.4+commit.abc", _target_coherence("0.4.4")) is None
+    assert _compiler_coherence_error("0.4.3+commit.bff19ea2", _target_coherence("==0.4.3")) is None
+    assert (
+        _compiler_coherence_error("0.4.1+commit.8a93dd27", _target_coherence("0.4.3"))
+        == "target compiler executable reports 0.4.1+commit.8a93dd27, not target version 0.4.3"
+    )
+
+
+def test_target_coherence_enforces_a_named_build() -> None:
+    for spec in ("0.4.3+commit.bff19ea2", "=0.4.3+commit.bff19ea2"):
+        evidence = _target_coherence(spec)
+        assert _compiler_coherence_error("0.4.3+commit.bff19ea2", evidence) is None
+        assert _compiler_coherence_error("0.4.3+commit.other", evidence) is not None
+
+
+def test_target_coherence_ranges_cover_known_releases() -> None:
+    evidence = _target_coherence(">=0.4.2,<0.5.0")
+
+    assert _compiler_coherence_error("0.4.3+commit.bff19ea2", evidence) is None
+    assert _compiler_coherence_error("0.4.1+commit.8a93dd27", evidence) is not None
 
 
 def test_compiler_command_pins_python_for_uv(monkeypatch) -> None:
