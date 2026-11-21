@@ -2580,6 +2580,56 @@ def test_real_unhandled_explicit_compiler_failure_is_not_rejection(tmp_path: Pat
     assert "RuntimeError: compiler crashed" in result.compiler_output.stderr
 
 
+def test_explicit_target_executable_must_report_target_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A 0.4.1 executable accepts the retained 0.4.1 pragma that 0.4.3 rejects,
+    # so compiling with it would validate a target the caller never asked for.
+    executable = _write_test_compiler(
+        tmp_path,
+        """print("[]")
+print("{}")
+print("{}")
+print("0x00")
+print('{"ast_type": "Module", "body": []}')
+""",
+        version="0.4.1+commit.fake",
+    )
+    contract = tmp_path / "contract.vy"
+    contract.write_text(
+        "#pragma version 0.4.1\n\n@external\ndef f() -> uint256:\n    return 1\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "report.json"
+
+    exit_code = main(
+        [
+            str(contract),
+            "--target-version",
+            "0.4.3",
+            "--source-vyper",
+            str(executable),
+            "--target-vyper",
+            str(executable),
+            "--ignore",
+            "VY001",
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert exit_code == 2
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["source_compile"] == "passed"
+    assert validation["target_compile"] == "failed"
+    assert validation["target_attestation"]["failure_origin"] == "environment"
+    assert validation["decision"]["write_allowed"] is False
+    assert (
+        "target compiler executable reports 0.4.1+commit.fake, not target version 0.4.3"
+        in capsys.readouterr().out
+    )
+
+
 def test_real_source_nonrejection_has_one_attested_attempt(tmp_path: Path) -> None:
     attempt_log = tmp_path / "attempts.log"
     executable = _write_test_compiler(

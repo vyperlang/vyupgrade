@@ -146,6 +146,7 @@ stderr; environment-manager or adapter diagnostics remain separate.
 - `--test-command CMD` — run a test command after a successful write, record its result, and fail when it does not pass.
 - `--enable-decimals` — treat decimals as enabled when reasoning about `0.4.x` rules.
 - `--source-vyper` / `--target-vyper` — pin the exact compiler version for each side.
+  A `--target-vyper` executable must report `--target-version`.
 - `--source-python` / `--target-python` — pin the Python interpreter for each compiler subprocess.
 - `--compiler-search-paths` — extra import search paths for the compiler.
 - `--compiler-timeout SECONDS` — time budget for each compile, measured after its environment is provisioned (default `120`).
