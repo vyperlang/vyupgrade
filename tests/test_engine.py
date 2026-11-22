@@ -740,3 +740,77 @@ def test_dependency_source_final_newline_retry_handles_read_only_directory(
     assert batch.files[0].report.source_compile == "skipped"
     assert batch.files[0].report.source_attestation is None
     assert set(dependency_directory.iterdir()) == original_entries
+
+
+def _module_struct_compile(
+    slot: int = 0,
+    *,
+    name: str = "ledger.record",
+    type_name: str = "Record",
+    evidence: dict | None = None,
+) -> CompileResult:
+    *namespace, leaf = name.split(".")
+    node: dict = {leaf: {"slot": slot, "type": type_name, "n_slots": 2 if type_name == "Record" else 1}}
+    for key in reversed(namespace):
+        node = {key: node}
+    artifacts = {**SOURCE_ARTIFACTS, "layout": {"storage_layout": node}, "bytecode": "0x00"}
+    if evidence is not None:
+        artifacts[compiler.STORAGE_TYPE_AST] = evidence
+    return CompileResult("passed", artifacts=artifacts)
+
+
+def _ledger_evidence() -> dict:
+    def name(value: str) -> dict:
+        return {"ast_type": "Name", "id": value}
+
+    member = {"ast_type": "AnnAssign", "target": name("left"), "annotation": name("uint256")}
+    ledger = {
+        "ast_type": "Module",
+        "resolved_path": "/project/ledger.vy",
+        "body": [
+            {"ast_type": "StructDef", "name": "Record", "body": [member]},
+            {"ast_type": "VariableDecl", "target": name("record"), "annotation": name("Record")},
+        ],
+    }
+    info = {"alias": "ledger", "resolved_path": "/project/ledger.vy"}
+    return {
+        "ast": {
+            "ast_type": "Module",
+            "body": [
+                {"ast_type": "Import", "import_info": info},
+                {"ast_type": "InitializesDecl", "annotation": name("ledger")},
+            ],
+        },
+        "imports": [ledger],
+    }
+
+
+@pytest.mark.parametrize(
+    ("isolated", "shared", "conflict"),
+    [
+        # Neither compile has module evidence: both report the struct as unverified.
+        (_module_struct_compile(), _module_struct_compile(), False),
+        (_module_struct_compile(), _module_struct_compile(2), True),
+        # Only one compile could check the struct.
+        (_module_struct_compile(), _module_struct_compile(evidence=_ledger_evidence()), True),
+        # Entry-module storage keeps the existing fail-closed comparison.
+        (
+            _module_struct_compile(name="records", type_name="HashMap[address, Record]"),
+            _module_struct_compile(name="records", type_name="HashMap[address, Record]"),
+            True,
+        ),
+    ],
+)
+def test_shared_closure_check_accepts_only_unverified_module_storage_on_both_sides(
+    monkeypatch, tmp_path: Path, isolated: CompileResult, shared: CompileResult, conflict: bool
+) -> None:
+    monkeypatch.setattr(engine, "compile_target_source", lambda *args: shared)
+
+    def check() -> None:
+        engine._check_shared_target(tmp_path / "main.vy", "", _config(tmp_path), isolated, None)
+
+    if conflict:
+        with pytest.raises(compiler.OverlayLayoutConflictError, match="validation artifacts differ"):
+            check()
+    else:
+        check()

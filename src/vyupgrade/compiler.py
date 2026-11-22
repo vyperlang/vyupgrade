@@ -439,10 +439,12 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         evidence = (result.artifacts or {}).get(INTERFACE_AST_FORMAT)
         if isinstance(evidence, dict):
             result = _with_interface_ast_paths(result, evidence, paths)
-        result = _with_storage_type_evidence(
-            result, command, staged, compile_config, (), suppress_warnings,
-            project_compiler=True, environment_path=path,
-        )
+        if config.source_snapshot is not None:
+            # The probe is a second compile; only captured imports can't change between them.
+            result = _with_storage_type_evidence(
+                result, command, staged, compile_config, (), suppress_warnings,
+                project_compiler=True, environment_path=path,
+            )
         return _restore_compile_error_paths(result, paths, path)
 
 
@@ -485,6 +487,11 @@ def compile_target_source(
                 extra_paths=(),
                 suppress_warnings=suppress_warnings,
                 environment_path=path,
+            )
+            # Overlay imports are staged copies, so a second compile sees the same code.
+            result = _with_storage_type_evidence(
+                result, command, tmp_path, compile_config, (), suppress_warnings,
+                project_compiler=False, environment_path=path,
             )
         return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
@@ -1415,6 +1422,7 @@ def _annotated_ast_probe(
     *,
     project_compiler: bool,
     environment_path: Path,
+    same_bytecode: bool = False,
 ) -> dict | None:
     # Reuse the captured imports and identity of the successful executable.
     try:
@@ -1422,7 +1430,7 @@ def _annotated_ast_probe(
             command,
             staged,
             config,
-            ("annotated_ast",),
+            ("bytecode", "annotated_ast") if same_bytecode else ("annotated_ast",),
             extra_paths,
             suppress_warnings,
             project_compiler=project_compiler,
@@ -1439,6 +1447,10 @@ def _annotated_ast_probe(
         and probe.dependency_context == result.dependency_context
         and isinstance(evidence, dict)
         and _matches_source(result, staged, evidence.get("ast"))
+        and (
+            not same_bytecode
+            or (probe.artifacts or {}).get("bytecode") == (result.artifacts or {}).get("bytecode")
+        )
     ):
         return evidence
     return None
@@ -1465,9 +1477,14 @@ def _with_storage_type_evidence(
         )
     ):
         return result
+    # Vyper 0.4.1+ embeds a hash of every compiled source in the bytecode
+    # metadata, so equal bytecode ties the probe's module ASTs to the layout's
+    # imports. This assumes the compiler keeps that metadata, as its CLI does by
+    # default and as vyupgrade never disables.
     evidence = _annotated_ast_probe(
         result, command, staged, config, extra_paths, suppress_warnings,
         project_compiler=project_compiler, environment_path=environment_path,
+        same_bytecode=True,
     )
     if evidence is None or not isinstance(evidence.get("imports"), list):
         return result
@@ -1476,11 +1493,10 @@ def _with_storage_type_evidence(
 
 
 def _module_storage_ast(artifacts: Mapping[str, object]) -> dict | None:
-    for name in (STORAGE_TYPE_AST, "annotated_ast"):
-        value = artifacts.get(name)
-        if isinstance(value, dict) and isinstance(value.get("imports"), list):
-            return value
-    return None
+    # Only the bytecode-bound probe; other `annotated_ast` evidence may come
+    # from a compile that read different imports.
+    value = artifacts.get(STORAGE_TYPE_AST)
+    return value if isinstance(value, dict) and isinstance(value.get("imports"), list) else None
 
 
 @dataclass(frozen=True)
@@ -1904,7 +1920,7 @@ def _run_compile(
     suppress_warnings: bool = False,
     environment_path: Path | None = None,
 ) -> CompileResult:
-    result = _run_compile_with_formats(
+    return _run_compile_with_formats(
         command,
         path,
         config,
@@ -1913,10 +1929,6 @@ def _run_compile(
         suppress_warnings,
         optional_formats=frozenset({"ast"}),
         environment_path=environment_path,
-    )
-    return _with_storage_type_evidence(
-        result, command, path, config, extra_paths, suppress_warnings,
-        project_compiler=False, environment_path=environment_path or path,
     )
 
 

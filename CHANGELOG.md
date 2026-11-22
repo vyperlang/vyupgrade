@@ -5,6 +5,8 @@
 - Compare struct member definitions of storage declared in an initialized
   module. A module's storage type that can't be resolved from its own AST
   is now reported as unverified instead of matching on name and width.
+  Shared closure exports whose compiles have identical bytecode are not
+  blocked by module-owned storage that neither compile can resolve.
 - Compare struct fields and flag members of imported types stored by the
   root module, such as `x: lib.Record` or `p: lib.Permission`.
 
