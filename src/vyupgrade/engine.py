@@ -504,7 +504,12 @@ def _check_shared_target(
             f"cannot export a shared closure for {path}: bytecode differs from the isolated project compile"
         )
     compared = compare_validation_artifacts(isolated, shared)
-    if False in compared.equalities:
+    abi, method_identifiers, storage_layout = compared.equalities
+    # Unverified types only mean evidence is missing; the bytecode already matched.
+    storage_conflict = storage_layout is False and not all(
+        line.startswith("unverified ") for line in compared.storage_layout.differences
+    )
+    if False in (abi, method_identifiers) or storage_conflict:
         raise OverlayLayoutConflictError(
             f"cannot export a shared closure for {path}: validation artifacts differ from the isolated project compile"
         )

@@ -740,3 +740,28 @@ def test_dependency_source_final_newline_retry_handles_read_only_directory(
     assert batch.files[0].report.source_compile == "skipped"
     assert batch.files[0].report.source_attestation is None
     assert set(dependency_directory.iterdir()) == original_entries
+
+
+def _module_struct_compile(slot: int) -> CompileResult:
+    layout = {"storage_layout": {"ledger": {"record": {"slot": slot, "type": "Record", "n_slots": 2}}}}
+    return CompileResult("passed", artifacts={**SOURCE_ARTIFACTS, "layout": layout, "bytecode": "0x00"})
+
+
+@pytest.mark.parametrize(("shared_slot", "conflict"), [(0, False), (2, True)])
+def test_shared_closure_check_accepts_matching_unverified_module_storage(
+    monkeypatch, tmp_path: Path, shared_slot: int, conflict: bool
+) -> None:
+    # Without module evidence both compiles report the struct as unverified.
+    isolated = _module_struct_compile(0)
+    shared = _module_struct_compile(shared_slot)
+    assert compiler.compare_validation_artifacts(isolated, isolated).storage_layout.equal is False
+    monkeypatch.setattr(engine, "compile_target_source", lambda *args: shared)
+
+    def check() -> None:
+        engine._check_shared_target(tmp_path / "main.vy", "", _config(tmp_path), isolated, None)
+
+    if conflict:
+        with pytest.raises(compiler.OverlayLayoutConflictError, match="validation artifacts differ"):
+            check()
+    else:
+        check()
