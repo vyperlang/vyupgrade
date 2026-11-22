@@ -5,6 +5,8 @@
 - Compare struct member definitions of storage declared in an initialized
   module. A module's storage type that can't be resolved from its own AST
   is now reported as unverified instead of matching on name and width.
+  Shared closure exports whose compiles have identical bytecode are not
+  blocked by module-owned storage that neither compile can resolve.
 
 ## 0.11.0 - 2026-11-18
 
