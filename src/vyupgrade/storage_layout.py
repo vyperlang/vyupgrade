@@ -602,6 +602,8 @@ class _StorageTypeEvidence:
                 for index, arg in enumerate(args)
             ]
             return (generic, *profiles) if all(p is not None for p in profiles) else None
+        if type_name.startswith("interface "):
+            return ("atom", type_name.removeprefix("interface "))
         imported = [bound for at, bound in bindings if at == path and "." in bound]
         if imported:
             # The layout names only ``Record`` for ``lib.Record``, which may even
@@ -610,16 +612,15 @@ class _StorageTypeEvidence:
             if qualified.rpartition(".")[2] != type_name:
                 return None
             return self._imported_definition_profile(qualified, frozenset())
-        if type_name.startswith("interface "):
-            return ("atom", type_name.removeprefix("interface "))
+        if (path, type_name) in bindings and type_name in self.definitions:
+            # So may a local definition bound at this path.
+            return self._definition_profile(type_name, frozenset())
         if _known_storage_width(type_name) not in {None, 0}:
             return ("atom", type_name)
         if type_name in self.definitions:
             # A bare compiler type name must resolve at this exact grammar path
             # in the root variable, never through an imported module's namesake.
-            if (path, type_name) not in bindings:
-                return None
-            return self._definition_profile(type_name, frozenset())
+            return None
         # Preserve the legacy top-level unknown-width comparison. Inside a
         # container, identical names and widths do not prove identical layout.
         return None if nested else ("opaque", type_name)

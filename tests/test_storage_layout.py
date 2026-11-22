@@ -819,3 +819,23 @@ def test_imported_flag_spelling_a_scalar_name_compares_its_members() -> None:
 
     assert _module_comparison(source, source, "x", "int").equal
     assert not _module_comparison(source, target, "x", "int").equal
+
+
+def test_imported_interface_in_a_legacy_layout_stays_comparable() -> None:
+    # 0.4.0 lays out ``x: ledger.I`` as ``interface I`` and its AST has no imports.
+    evidence = _root_storing(_ledger_type("I"))
+    assert _module_comparison(evidence, evidence, "x", "interface I").equal
+
+
+def test_local_struct_spelling_a_scalar_name_compares_its_members() -> None:
+    def project(*members: str) -> dict[str, object]:
+        local = {"ast_type": "StructDef", "name": "int", "body": [
+            _member("f", _ledger_type("Permission")),
+        ]}
+        return _root_storing(_name("int"), _flag_ledger(*members), extra=(local,))
+
+    source = project("READ", "WRITE")
+    target = project("WRITE", "READ")
+
+    assert _module_comparison(source, source, "x", "int").equal
+    assert not _module_comparison(source, target, "x", "int").equal
