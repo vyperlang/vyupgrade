@@ -679,6 +679,11 @@ class _StorageTypeEvidence:
                 return ("atom", name)
             return None
         if ast_type == "Attribute":
+            chain = _initialized_alias_chain(node)
+            if chain is not None and len(chain) > 1 and chain[-1] == "__interface__":
+                # A module interface is an address, named by the module it types.
+                path = self._imported_path(chain[:-1])
+                return ("atom", path) if path is not None else None
             chain = _imported_type_chain(node)
             if chain is None:
                 return None

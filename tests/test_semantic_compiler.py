@@ -519,7 +519,12 @@ def test_imported_types_stored_by_the_root_compare_member_order(tmp_path: Path) 
 
 
 def test_stored_module_interface_stays_comparable(tmp_path: Path) -> None:
-    (tmp_path / "types.vy").write_text(TYPES_MODULE.format(fields="x: uint256", members="A"))
+    (tmp_path / "iface.vy").write_text(
+        "#pragma version 0.4.3\n@external\ndef f():\n    pass\n"
+    )
+    types = TYPES_MODULE.format(fields="x: uint256\n    i: iface.__interface__", members="A")
+    # An imported struct's field may itself be a module interface.
+    (tmp_path / "types.vy").write_text(types.replace("\n\n", "\nimport iface\n\n", 1))
     entry = tmp_path / "main.vy"
     entry.write_text(f"{TYPES_ENTRY}module: types.__interface__\n")
     config = Config(paths=(entry,), target_version="0.4.3")
