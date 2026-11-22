@@ -1422,6 +1422,7 @@ def _annotated_ast_probe(
     *,
     project_compiler: bool,
     environment_path: Path,
+    same_bytecode: bool = False,
 ) -> dict | None:
     # Reuse the captured imports and identity of the successful executable.
     try:
@@ -1429,7 +1430,7 @@ def _annotated_ast_probe(
             command,
             staged,
             config,
-            ("annotated_ast",),
+            ("bytecode", "annotated_ast") if same_bytecode else ("annotated_ast",),
             extra_paths,
             suppress_warnings,
             project_compiler=project_compiler,
@@ -1446,6 +1447,10 @@ def _annotated_ast_probe(
         and probe.dependency_context == result.dependency_context
         and isinstance(evidence, dict)
         and _matches_source(result, staged, evidence.get("ast"))
+        and (
+            not same_bytecode
+            or (probe.artifacts or {}).get("bytecode") == (result.artifacts or {}).get("bytecode")
+        )
     ):
         return evidence
     return None
@@ -1470,9 +1475,12 @@ def _with_storage_type_evidence(
         or not storage_layout_needs_module_types(parse_storage_layout(artifacts.get("layout")))
     ):
         return result
+    # Vyper 0.4.1+ embeds a hash of every compiled source in the bytecode, so
+    # equal bytecode ties the probe's module ASTs to the layout's imports.
     evidence = _annotated_ast_probe(
         result, command, staged, config, extra_paths, suppress_warnings,
         project_compiler=project_compiler, environment_path=environment_path,
+        same_bytecode=True,
     )
     if evidence is None or not isinstance(evidence.get("imports"), list):
         return result

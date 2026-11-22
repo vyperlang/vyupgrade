@@ -473,3 +473,29 @@ def test_imported_module_struct_member_order_is_compared(tmp_path: Path, version
         assert compare_artifact_details(source, copy)[2] == []
         # The layout names only the struct, so its members come from the module's AST.
         assert tuple(compare_artifact_details(source, swapped)[2]) == changed
+
+
+def test_module_evidence_requires_the_layout_compile_bytecode(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "ledger.vy").write_text(
+        LEDGER_MODULE.format(version="0.4.3", first="left", second="right")
+    )
+    entry = tmp_path / "main.vy"
+    entry.write_text(LEDGER_ENTRY.format(version="0.4.3"))
+    run = compiler._run_compile_with_formats
+    probes = []
+
+    def change_module_before_probe(command, path, config, formats, *args, **kwargs):
+        if "annotated_ast" in formats:
+            # A module read live (not captured) changes between the two compiles.
+            module = path.parent / "ledger.vy"
+            module.write_text(module.read_text().replace("left: uint256", "left: uint128"))
+            probes.append(path)
+        return run(command, path, config, formats, *args, **kwargs)
+
+    monkeypatch.setattr(compiler, "_run_compile_with_formats", change_module_before_probe)
+    config = Config(paths=(entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,))
+    with target_overlay({entry: entry.read_text()}, "0.4.3", (tmp_path,)) as overlay:
+        result = compile_target_source(entry, entry.read_text(), config, overlay)
+
+    assert result.status == "passed" and probes
+    assert compiler.STORAGE_TYPE_AST not in (result.artifacts or {})

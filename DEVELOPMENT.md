@@ -156,10 +156,12 @@ Storage owned by an initialized module is keyed in the layout by that module's
 alias. When such a variable's type has an unknown width (a struct, or a
 container of one), validation compiles of captured sources (a source snapshot
 or a target overlay) add the compiler's `annotated_ast` with its imported
-modules, and the type resolves in the declaring module's own AST, found by
-following each `initializes:` target through its import. Without that evidence
-(for example on Vyper 0.4.0, whose `annotated_ast` lists no imports) the
-variable is reported as unverified and requires the same waiver. When a shared
+modules. It comes from a second compile whose bytecode, which embeds a hash of
+every compiled source, must match the first. The type then resolves in the
+declaring module's own AST, found by following each `initializes:` target
+through its import. Without that evidence (for example on Vyper 0.4.0, whose
+`annotated_ast` lists no imports) the variable is reported as unverified and
+requires the same waiver. When a shared
 closure export's isolated and shared compiles have identical bytecode and
 neither can resolve the same module-owned variable, that unverified type doesn't
 block the export.
