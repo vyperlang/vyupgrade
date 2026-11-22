@@ -16,8 +16,10 @@ from vyupgrade.ast_facts import iter_nodes, root_ast
 from vyupgrade.cli import main
 from vyupgrade.compiler import (
     CompileResult,
+    compare_artifact_details,
     compile_source_ast,
     compile_source_file,
+    compile_target_source,
     resolve_import_closure,
     unavailable_validation_artifacts,
 )
@@ -400,3 +402,59 @@ def test_public_error_resolves_to_an_imported_definition(
         assert len(compiler_processes) == 2
         command = compiler_processes[-1].command
         assert command[command.index("-f") + 1] == "annotated_ast"
+
+
+TYPES_MODULE = """#pragma version 0.4.3
+
+struct Record:
+    {fields}
+
+flag Permission:
+    {members}
+"""
+
+TYPES_ENTRY = """#pragma version 0.4.3
+import types
+
+record: public(types.Record)
+permission: public(types.Permission)
+"""
+
+
+def test_imported_types_stored_by_the_root_compare_member_order(tmp_path: Path) -> None:
+    def project(name: str, fields: str, members: str) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "types.vy").write_text(
+            TYPES_MODULE.format(fields="\n    ".join(fields), members="\n    ".join(members))
+        )
+        entry = root / "main.vy"
+        entry.write_text(TYPES_ENTRY)
+        return entry
+
+    struct = ("left: uint256", "right: uint256")
+    flag = ("READ", "WRITE")
+    source_entry = project("source", struct, flag)
+    variants = {
+        project("copy", struct, flag): [],
+        project("struct", struct[::-1], flag): [
+            "changed storage type definition: record (Record)",
+        ],
+        project("flag", struct, flag[::-1]): [
+            "changed storage type definition: permission (Permission)",
+        ],
+    }
+    config = Config(
+        paths=(source_entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,)
+    )
+    source = compile_source_file(source_entry, config, "0.4.3")
+
+    for compile_entry in (
+        lambda entry: compile_source_file(entry, config, "0.4.3"),
+        lambda entry: compile_target_source(entry, entry.read_text(), config),
+    ):
+        for entry, differences in variants.items():
+            target = compile_entry(entry)
+            assert target.status == "passed"
+            # The layout names only Record and Permission; their members live in types.vy.
+            assert sorted(compare_artifact_details(source, target)[2]) == differences
