@@ -485,17 +485,23 @@ def test_module_evidence_requires_the_layout_compile_bytecode(monkeypatch, tmp_p
     probes = []
 
     def change_module_before_probe(command, path, config, formats, *args, **kwargs):
-        if "annotated_ast" in formats:
-            # A module read live (not captured) changes between the two compiles.
-            module = path.parent / "ledger.vy"
-            module.write_text(module.read_text().replace("left: uint256", "left: uint128"))
-            probes.append(path)
-        return run(command, path, config, formats, *args, **kwargs)
+        if "annotated_ast" not in formats:
+            return run(command, path, config, formats, *args, **kwargs)
+        # A module read live (not captured) changes between the two compiles.
+        module = path.parent / "ledger.vy"
+        module.write_text(module.read_text().replace("left: uint256", "left: uint128"))
+        probe = run(command, path, config, formats, *args, **kwargs)
+        probes.append(probe)
+        return probe
 
     monkeypatch.setattr(compiler, "_run_compile_with_formats", change_module_before_probe)
     config = Config(paths=(entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,))
     with target_overlay({entry: entry.read_text()}, "0.4.3", (tmp_path,)) as overlay:
         result = compile_target_source(entry, entry.read_text(), config, overlay)
 
-    assert result.status == "passed" and probes
-    assert compiler.STORAGE_TYPE_AST not in (result.artifacts or {})
+    # The probe itself succeeded with module ASTs; only the bytecode differs.
+    [probe] = probes
+    assert result.status == probe.status == "passed"
+    assert isinstance(probe.artifacts["annotated_ast"].get("imports"), list)
+    assert probe.artifacts["bytecode"] != result.artifacts["bytecode"]
+    assert compiler.STORAGE_TYPE_AST not in result.artifacts

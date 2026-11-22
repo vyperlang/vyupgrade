@@ -1475,8 +1475,10 @@ def _with_storage_type_evidence(
         or not storage_layout_needs_module_types(parse_storage_layout(artifacts.get("layout")))
     ):
         return result
-    # Vyper 0.4.1+ embeds a hash of every compiled source in the bytecode, so
-    # equal bytecode ties the probe's module ASTs to the layout's imports.
+    # Vyper 0.4.1+ embeds a hash of every compiled source in the bytecode
+    # metadata, so equal bytecode ties the probe's module ASTs to the layout's
+    # imports. This assumes the compiler keeps that metadata, as its CLI does by
+    # default and as vyupgrade never disables.
     evidence = _annotated_ast_probe(
         result, command, staged, config, extra_paths, suppress_warnings,
         project_compiler=project_compiler, environment_path=environment_path,
@@ -1489,11 +1491,10 @@ def _with_storage_type_evidence(
 
 
 def _module_storage_ast(artifacts: Mapping[str, object]) -> dict | None:
-    for name in (STORAGE_TYPE_AST, "annotated_ast"):
-        value = artifacts.get(name)
-        if isinstance(value, dict) and isinstance(value.get("imports"), list):
-            return value
-    return None
+    # Only the bytecode-bound probe; other `annotated_ast` evidence may come
+    # from a compile that read different imports.
+    value = artifacts.get(STORAGE_TYPE_AST)
+    return value if isinstance(value, dict) and isinstance(value.get("imports"), list) else None
 
 
 @dataclass(frozen=True)
