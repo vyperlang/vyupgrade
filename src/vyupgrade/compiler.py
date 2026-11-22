@@ -49,7 +49,11 @@ from .models import (
     ResolvedPackage,
 )
 from .source import code_mask
-from .storage_layout import compare_storage_layouts, parse_storage_layout
+from .storage_layout import (
+    compare_storage_layouts,
+    parse_storage_layout,
+    storage_layout_needs_module_types,
+)
 from .versions import (
     MigrationContext,
     VyperVersion,
@@ -64,6 +68,7 @@ from .versions import (
 FORMATS = ("abi", "method_identifiers", "layout")
 SOURCE_FORMATS = (*FORMATS, "bytecode", "ast")
 TARGET_FORMATS = SOURCE_FORMATS
+STORAGE_TYPE_AST = "storage_type_ast"
 ADAPTER_TIMEOUT_GRACE_SECONDS = 30
 PKG_RESOURCES_REQUIREMENT = "setuptools<82"
 ARCHIVE_TARGET_FLOOR = "0.4.0"
@@ -434,6 +439,12 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         evidence = (result.artifacts or {}).get(INTERFACE_AST_FORMAT)
         if isinstance(evidence, dict):
             result = _with_interface_ast_paths(result, evidence, paths)
+        if config.source_snapshot is not None:
+            # The probe is a second compile; only captured imports can't change between them.
+            result = _with_storage_type_evidence(
+                result, command, staged, compile_config, (), suppress_warnings,
+                project_compiler=True, environment_path=path,
+            )
         return _restore_compile_error_paths(result, paths, path)
 
 
@@ -476,6 +487,11 @@ def compile_target_source(
                 extra_paths=(),
                 suppress_warnings=suppress_warnings,
                 environment_path=path,
+            )
+            # Overlay imports are staged copies, so a second compile sees the same code.
+            result = _with_storage_type_evidence(
+                result, command, tmp_path, compile_config, (), suppress_warnings,
+                project_compiler=False, environment_path=path,
             )
         return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
@@ -1380,7 +1396,6 @@ def _add_explicit_error_evidence(
     config: Config,
     suppress_warnings: bool,
 ) -> CompileResult:
-    # Reuse the captured imports and identity of the successful executable.
     artifacts = result.artifacts or {}
     root = artifacts["ast"]["ast"]
     if config.source_snapshot is None and any(
@@ -1388,20 +1403,42 @@ def _add_explicit_error_evidence(
         for node in root["body"]
     ):
         return result
+    evidence = _annotated_ast_probe(
+        result, command, staged, config, (), suppress_warnings,
+        project_compiler=True, environment_path=path,
+    )
+    if evidence is not None:
+        return replace(result, artifacts={**artifacts, "annotated_ast": evidence})
+    return result
+
+
+def _annotated_ast_probe(
+    result: CompileResult,
+    command: list[str],
+    staged: Path,
+    config: Config,
+    extra_paths: tuple[Path, ...],
+    suppress_warnings: bool,
+    *,
+    project_compiler: bool,
+    environment_path: Path,
+    same_bytecode: bool = False,
+) -> dict | None:
+    # Reuse the captured imports and identity of the successful executable.
     try:
         probe = _run_compile_with_formats(
             command,
             staged,
             config,
-            ("annotated_ast",),
-            (),
+            ("bytecode", "annotated_ast") if same_bytecode else ("annotated_ast",),
+            extra_paths,
             suppress_warnings,
-            project_compiler=True,
+            project_compiler=project_compiler,
             allow_format_retries=False,
-            environment_path=path,
+            environment_path=environment_path,
         )
     except (OSError, UnicodeError):
-        return result
+        return None
     evidence = (probe.artifacts or {}).get("annotated_ast")
     if (
         probe.status == "passed"
@@ -1410,9 +1447,56 @@ def _add_explicit_error_evidence(
         and probe.dependency_context == result.dependency_context
         and isinstance(evidence, dict)
         and _matches_source(result, staged, evidence.get("ast"))
+        and (
+            not same_bytecode
+            or (probe.artifacts or {}).get("bytecode") == (result.artifacts or {}).get("bytecode")
+        )
     ):
-        return replace(result, artifacts={**artifacts, "annotated_ast": evidence})
-    return result
+        return evidence
+    return None
+
+
+def _with_storage_type_evidence(
+    result: CompileResult,
+    command: list[str],
+    staged: Path,
+    config: Config,
+    extra_paths: tuple[Path, ...],
+    suppress_warnings: bool,
+    *,
+    project_compiler: bool,
+    environment_path: Path,
+) -> CompileResult:
+    """Attach imported module ASTs when a module's storage type needs them."""
+    artifacts = result.artifacts or {}
+    if (
+        result.status != "passed"
+        or _module_storage_ast(artifacts) is not None
+        or not storage_layout_needs_module_types(
+            parse_storage_layout(artifacts.get("layout")), artifacts.get("ast")
+        )
+    ):
+        return result
+    # Vyper 0.4.1+ embeds a hash of every compiled source in the bytecode
+    # metadata, so equal bytecode ties the probe's module ASTs to the layout's
+    # imports. This assumes the compiler keeps that metadata, as its CLI does by
+    # default and as vyupgrade never disables.
+    evidence = _annotated_ast_probe(
+        result, command, staged, config, extra_paths, suppress_warnings,
+        project_compiler=project_compiler, environment_path=environment_path,
+        same_bytecode=True,
+    )
+    if evidence is None or not isinstance(evidence.get("imports"), list):
+        return result
+    # A separate key keeps rewrite rules from seeing evidence they never requested.
+    return replace(result, artifacts={**artifacts, STORAGE_TYPE_AST: evidence})
+
+
+def _module_storage_ast(artifacts: Mapping[str, object]) -> dict | None:
+    # Only the bytecode-bound probe; other `annotated_ast` evidence may come
+    # from a compile that read different imports.
+    value = artifacts.get(STORAGE_TYPE_AST)
+    return value if isinstance(value, dict) and isinstance(value.get("imports"), list) else None
 
 
 @dataclass(frozen=True)
@@ -1450,8 +1534,8 @@ def compare_validation_artifacts(source: CompileResult, target: CompileResult) -
         result = compare_storage_layouts(
             source_layout,
             target_layout,
-            source_ast=source.artifacts.get("ast"),
-            target_ast=target.artifacts.get("ast"),
+            source_ast=_module_storage_ast(source.artifacts) or source.artifacts.get("ast"),
+            target_ast=_module_storage_ast(target.artifacts) or target.artifacts.get("ast"),
         )
         layout = ArtifactComparison(result.equal, tuple(result.differences))
     source_abi = source.artifacts.get("abi")
