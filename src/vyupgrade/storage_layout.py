@@ -328,7 +328,14 @@ def _target_storage_interface_markers(
 def _target_annotation_interface_markers(
     annotation: object,
     interface_names: frozenset[str],
+    *,
+    namespaced: bool = False,
 ) -> frozenset[_StorageInterfaceMarker]:
+    """Map grammar paths to the type names they bind.
+
+    With ``namespaced``, an imported type such as ``lib.Record`` binds its
+    dotted name too.
+    """
     if not isinstance(annotation, dict):
         return frozenset()
     ast_type = annotation.get("ast_type")
@@ -337,6 +344,9 @@ def _target_annotation_interface_markers(
         if name in interface_names:
             return frozenset({((), name)})
         return frozenset()
+    if ast_type == "Attribute":
+        chain = _initialized_alias_chain(annotation) if namespaced else None
+        return frozenset({((), ".".join(chain))}) if chain is not None else frozenset()
     if ast_type == "Call":
         wrapper = _ast_name(annotation.get("func"))
         args = annotation.get("args")
@@ -346,7 +356,9 @@ def _target_annotation_interface_markers(
             or len(args) != 1
         ):
             return frozenset()
-        return _target_annotation_interface_markers(args[0], interface_names)
+        return _target_annotation_interface_markers(
+            args[0], interface_names, namespaced=namespaced
+        )
     if ast_type != "Subscript":
         return frozenset()
 
@@ -360,13 +372,17 @@ def _target_annotation_interface_markers(
         for index, arg in enumerate(args):
             markers.update(
                 ((index, *path), name)
-                for path, name in _target_annotation_interface_markers(arg, interface_names)
+                for path, name in _target_annotation_interface_markers(
+                    arg, interface_names, namespaced=namespaced
+                )
             )
         return frozenset(markers)
 
     return frozenset(
         ((-1, *path), name)
-        for path, name in _target_annotation_interface_markers(value, interface_names)
+        for path, name in _target_annotation_interface_markers(
+            value, interface_names, namespaced=namespaced
+        )
     )
 
 
@@ -447,6 +463,9 @@ class _StorageTypeEvidence:
                 continue
             digests[path] = digest
             modules[path] = cls._from_module(module)
+        # Every module resolves its own imports through the same map.
+        for path, module in modules.items():
+            modules[path] = replace(module, modules=modules)
         return replace(evidence, modules=modules)
 
     @classmethod
@@ -501,26 +520,46 @@ class _StorageTypeEvidence:
             owner = self._initialized_module(owner, key) if owner is not None else None
         if owner is None:
             owner = _StorageTypeEvidence({}, {}, {})
-        bindings = _target_annotation_interface_markers(
-            owner.variables.get(name), frozenset(owner.definitions)
-        )
-        profile = owner._layout_profile(type_name, bindings, (), nested=False)
+        profile = owner._layout_profile(type_name, owner._bindings(name), (), nested=False)
         if namespace and isinstance(profile, tuple) and profile[0] == "opaque":
             # Name and width alone never prove a module's own type layout.
             return None
         return profile
 
+    def _bindings(self, variable: str) -> frozenset[_StorageInterfaceMarker]:
+        return _target_annotation_interface_markers(
+            self.variables.get(variable), frozenset(self.definitions), namespaced=True
+        )
+
     def _initialized_module(
         self, owner: _StorageTypeEvidence, key: str
     ) -> _StorageTypeEvidence | None:
         chain = owner.initializes.get(key)
-        if chain is None:
-            return None
-        module: _StorageTypeEvidence | None = owner
+        path = owner._imported_path(chain) if chain is not None else None
+        return self.modules.get(path) if path is not None else None
+
+    def _imported_path(self, chain: tuple[str, ...]) -> str | None:
+        module: _StorageTypeEvidence | None = self
+        path = None
         for alias in chain:
             path = module.imports.get(alias) if module is not None else None
             module = self.modules.get(path) if path is not None else None
-        return module
+        return path if module is not None else None
+
+    def _imported_definition_profile(
+        self, qualified: str, seen: frozenset[str]
+    ) -> object | None:
+        *chain, name = qualified.split(".")
+        path = self._imported_path(tuple(chain))
+        module = self.modules.get(path) if path is not None else None
+        if module is None or name not in module.definitions:
+            # An imported type is only checked against its own module's definition.
+            return None
+        key = f"{path}:{name}"
+        if key in seen:
+            return None
+        # Bare names in ``seen`` belong to this module, not the imported one.
+        return module._definition_profile(name, frozenset(s for s in seen if ":" in s) | {key})
 
     def _layout_profile(
         self,
@@ -554,6 +593,13 @@ class _StorageTypeEvidence:
             return ("atom", type_name.removeprefix("interface "))
         if _known_storage_width(type_name) not in {None, 0}:
             return ("atom", type_name)
+        imported = [bound for at, bound in bindings if at == path and "." in bound]
+        if imported:
+            # The layout names only ``Record`` for ``lib.Record``.
+            (qualified,) = imported
+            if qualified.rpartition(".")[2] != type_name:
+                return None
+            return self._imported_definition_profile(qualified, frozenset())
         if type_name in self.definitions:
             # A bare compiler type name must resolve at this exact grammar path
             # in the root variable, never through an imported module's namesake.
@@ -617,6 +663,11 @@ class _StorageTypeEvidence:
             ):
                 return ("atom", name)
             return None
+        if ast_type == "Attribute":
+            chain = _initialized_alias_chain(node)
+            if chain is None or len(chain) < 2:
+                return None
+            return self._imported_definition_profile(".".join(chain), seen)
         if ast_type in {"Int", "Num"}:
             value = node.get("value") if ast_type == "Int" else node.get("n")
             return ("int", value) if type(value) is int else None
@@ -1014,13 +1065,15 @@ def _matching_square_bracket(value: str, open_index: int) -> int | None:
     return None
 
 
-def storage_layout_needs_module_types(layout: StorageLayout | None) -> bool:
-    """Whether a module's storage type can only be checked with that module's AST."""
+def storage_layout_needs_module_types(layout: StorageLayout | None, ast: object = None) -> bool:
+    """Whether a storage type can only be checked with an imported module's AST."""
     if layout is None:
         return False
+    root = _StorageTypeEvidence.from_ast(ast)
     unresolved = _StorageTypeEvidence({}, {}, {})
     return any(
-        "." in name and unresolved.profile(value.type_name, name) is None
+        ("." in name and unresolved.profile(value.type_name, name) is None)
+        or any("." in bound for _, bound in root._bindings(name))
         for namespace in (layout.persistent, layout.transient)
         for name, value in namespace.items()
     )

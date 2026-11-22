@@ -1460,7 +1460,9 @@ def _with_storage_type_evidence(
     if (
         result.status != "passed"
         or _module_storage_ast(artifacts) is not None
-        or not storage_layout_needs_module_types(parse_storage_layout(artifacts.get("layout")))
+        or not storage_layout_needs_module_types(
+            parse_storage_layout(artifacts.get("layout")), artifacts.get("ast")
+        )
     ):
         return result
     evidence = _annotated_ast_probe(

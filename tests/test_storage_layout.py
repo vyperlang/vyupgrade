@@ -671,3 +671,102 @@ def test_module_type_evidence_is_needed_only_for_module_owned_unknown_types(
 ) -> None:
     parsed = parse_storage_layout({"storage_layout": layout})
     assert storage_layout_needs_module_types(parsed) is needed
+
+
+def _ledger_type(name: str = "Record") -> dict[str, object]:
+    return {"ast_type": "Attribute", "value": _name("ledger"), "attr": name}
+
+
+def _root_storing(
+    annotation: dict[str, object], *imports: dict[str, object], extra: tuple = ()
+) -> dict[str, object]:
+    variable = {"ast_type": "VariableDecl", "target": _name("x"), "annotation": annotation}
+    return _entry(*imports, body=(*extra, variable))
+
+
+def _flag_ledger(*members: str) -> dict[str, object]:
+    return {
+        "ast_type": "Module",
+        "resolved_path": "/project/ledger.vy",
+        "source_sha256sum": "-".join(members),
+        "body": [
+            {
+                "ast_type": "FlagDef",
+                "name": "Permission",
+                "body": [{"ast_type": "Expr", "value": _name(member)} for member in members],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("annotation", "type_name"),
+    [
+        (_ledger_type(), "Record"),
+        ({"ast_type": "Call", "func": _name("public"), "args": [_ledger_type()]}, "Record"),
+        (_subscript("HashMap", _name("address"), _ledger_type()), "HashMap[address, Record]"),
+        (_subscript(_ledger_type(), {"ast_type": "Int", "value": 3}), "Record[3]"),
+    ],
+)
+def test_root_storage_of_an_imported_struct_compares_its_members(
+    annotation: dict[str, object], type_name: str
+) -> None:
+    source = _root_storing(annotation, _ledger("left", "right"))
+    target = _root_storing(annotation, _ledger("right", "left"))
+
+    assert _module_comparison(source, source, "x", type_name).equal
+    assert _module_comparison(source, target, "x", type_name).differences == (
+        f"changed storage type definition: x ({type_name})",
+    )
+
+
+def test_root_storage_of_an_imported_flag_compares_its_members() -> None:
+    annotation = _ledger_type("Permission")
+    source = _root_storing(annotation, _flag_ledger("READ", "WRITE"))
+    target = _root_storing(annotation, _flag_ledger("WRITE", "READ"))
+
+    assert _module_comparison(source, source, "x", "Permission").equal
+    assert not _module_comparison(source, target, "x", "Permission").equal
+
+
+def test_struct_member_of_an_imported_namesake_type_is_compared() -> None:
+    def project(ledger: dict[str, object]) -> dict[str, object]:
+        local = {
+            "ast_type": "StructDef",
+            "name": "Record",
+            "body": [_member("inner", _ledger_type())],
+        }
+        return _root_storing(_name("Record"), ledger, extra=(local,))
+
+    source = project(_ledger("left", "right"))
+    target = project(_ledger("right", "left"))
+
+    assert _module_comparison(source, source, "x").equal
+    assert not _module_comparison(source, target, "x").equal
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [(), (_ledger("left", "right"), _ledger("right", "left"))],
+)
+def test_root_storage_of_an_unresolved_imported_type_fails_closed(
+    imports: tuple[dict[str, object], ...],
+) -> None:
+    evidence = _root_storing(_ledger_type(), *imports)
+    assert _module_comparison(evidence, evidence, "x").differences == (
+        "unverified storage type definition: x (Record)",
+    )
+
+
+@pytest.mark.parametrize(
+    ("annotation", "needed"),
+    [(_ledger_type(), True), (_name("Record"), False), (_name("uint256"), False)],
+)
+def test_root_storage_of_an_imported_type_needs_module_evidence(
+    annotation: dict[str, object], needed: bool
+) -> None:
+    raw_ast = {"ast": {"ast_type": "Module", "body": [
+        {"ast_type": "VariableDecl", "target": _name("x"), "annotation": annotation},
+    ]}}
+    layout = parse_storage_layout({"storage_layout": {"x": {"slot": 0, "type": "Record"}}})
+    assert storage_layout_needs_module_types(layout, raw_ast) is needed
