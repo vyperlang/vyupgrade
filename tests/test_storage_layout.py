@@ -790,3 +790,32 @@ def test_local_struct_with_an_imported_field_needs_module_evidence(
 def test_stored_module_interface_keeps_its_layout_type_comparison() -> None:
     evidence = _root_storing(_ledger_type("__interface__"))
     assert _module_comparison(evidence, evidence, "x", "/project/ledger.vy").equal
+
+
+def test_beta_import_infos_resolve_imported_types() -> None:
+    # The 0.5 betas list an import's facts under ``import_infos``.
+    def project(ledger: dict[str, object]) -> dict[str, object]:
+        evidence = _root_storing(_ledger_type(), ledger)
+        body = evidence["ast"]["body"]
+        info = body[0].pop("import_info")
+        body[0]["import_infos"] = [info]
+        return evidence
+
+    source = project(_ledger("left", "right"))
+    target = project(_ledger("right", "left"))
+
+    assert _module_comparison(source, source, "x").equal
+    assert not _module_comparison(source, target, "x").equal
+
+
+def test_imported_flag_spelling_a_scalar_name_compares_its_members() -> None:
+    def project(*members: str) -> dict[str, object]:
+        ledger = _flag_ledger(*members)
+        ledger["body"][0]["name"] = "int"
+        return _root_storing(_ledger_type("int"), ledger)
+
+    source = project("READ", "WRITE")
+    target = project("WRITE", "READ")
+
+    assert _module_comparison(source, source, "x", "int").equal
+    assert not _module_comparison(source, target, "x", "int").equal

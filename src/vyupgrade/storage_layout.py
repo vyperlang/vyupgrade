@@ -506,16 +506,18 @@ class _StorageTypeEvidence:
                 if node.get("is_constant") is True or _constant_annotation(annotation):
                     constants[name] = node.get("value")
             elif node.get("ast_type") in {"Import", "ImportFrom"}:
-                info = node.get("import_info")
-                if not isinstance(info, dict):
-                    continue
-                alias = info.get("alias")
-                path = info.get("resolved_path")
-                if not _nonempty_string(alias) or not _nonempty_string(path):
-                    continue
-                if alias in imports:
-                    return cls({}, {}, {})
-                imports[alias] = path
+                # 0.4 records one ``import_info``; the 0.5 betas a list of ``import_infos``.
+                infos = node.get("import_infos", [node.get("import_info")])
+                for info in infos if isinstance(infos, list) else ():
+                    if not isinstance(info, dict):
+                        continue
+                    alias = info.get("alias")
+                    path = info.get("resolved_path")
+                    if not _nonempty_string(alias) or not _nonempty_string(path):
+                        continue
+                    if alias in imports:
+                        return cls({}, {}, {})
+                    imports[alias] = path
             elif node.get("ast_type") == "InitializesDecl":
                 chain = _initialized_alias_chain(node.get("annotation"))
                 if chain is None or chain[-1] in initializes:
@@ -600,17 +602,18 @@ class _StorageTypeEvidence:
                 for index, arg in enumerate(args)
             ]
             return (generic, *profiles) if all(p is not None for p in profiles) else None
-        if type_name.startswith("interface "):
-            return ("atom", type_name.removeprefix("interface "))
-        if _known_storage_width(type_name) not in {None, 0}:
-            return ("atom", type_name)
         imported = [bound for at, bound in bindings if at == path and "." in bound]
         if imported:
-            # The layout names only ``Record`` for ``lib.Record``.
+            # The layout names only ``Record`` for ``lib.Record``, which may even
+            # spell a scalar such as ``int``.
             (qualified,) = imported
             if qualified.rpartition(".")[2] != type_name:
                 return None
             return self._imported_definition_profile(qualified, frozenset())
+        if type_name.startswith("interface "):
+            return ("atom", type_name.removeprefix("interface "))
+        if _known_storage_width(type_name) not in {None, 0}:
+            return ("atom", type_name)
         if type_name in self.definitions:
             # A bare compiler type name must resolve at this exact grammar path
             # in the root variable, never through an imported module's namesake.

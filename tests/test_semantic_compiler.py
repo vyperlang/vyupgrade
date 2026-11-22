@@ -17,6 +17,7 @@ from vyupgrade.cli import main
 from vyupgrade.compiler import (
     CompileResult,
     compare_artifact_details,
+    compare_artifacts,
     compile_source_ast,
     compile_source_file,
     compile_target_source,
@@ -514,6 +515,7 @@ def test_imported_types_stored_by_the_root_compare_member_order(tmp_path: Path) 
             assert target.status == "passed"
             # The layout names only Record and Permission; their members live in types.vy.
             assert sorted(compare_artifact_details(source, target)[2]) == differences
+            assert compare_artifacts(source, target)[2] is (not differences)
 
 
 def test_stored_module_interface_stays_comparable(tmp_path: Path) -> None:
@@ -525,8 +527,10 @@ def test_stored_module_interface_stays_comparable(tmp_path: Path) -> None:
     source = compile_source_file(entry, config, "0.4.3")
     target = compile_target_source(entry, entry.read_text(), config)
 
+    assert source.status == target.status == "passed"
     # The layout types ``module`` as the module's path, not as a definition.
     assert compare_artifact_details(source, target)[2] == []
+    assert compare_artifacts(source, target)[2] is True
 
 
 def test_local_struct_with_an_imported_field_compares_its_members(tmp_path: Path) -> None:
@@ -561,4 +565,6 @@ outer: public(Outer)
         (project("swapped", fields[::-1]), ["changed storage type definition: outer (Outer)"]),
     ):
         target = compile_target_source(entry, entry.read_text(), config)
+        assert source.status == target.status == "passed"
         assert compare_artifact_details(source, target)[2] == differences
+        assert compare_artifacts(source, target)[2] is (not differences)
