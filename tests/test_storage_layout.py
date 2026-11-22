@@ -487,8 +487,8 @@ def _flag_module(kind: str, *members: str) -> dict[str, object]:
             },
             {
                 "ast_type": "VariableDecl",
-                "target": _name("permission"),
-                "annotation": _name("Permission"),
+                "target": _name("perms"),
+                "annotation": _subscript("HashMap", _name("address"), _name("Permission")),
             },
         ],
     }
@@ -503,15 +503,18 @@ def test_legacy_enum_matches_flag_only_with_same_member_order(
 ) -> None:
     from vyupgrade.compiler import CompileResult, compare_validation_artifacts
 
+    # Layout shapes as 0.3.10 and 0.4.3 emit them for HashMap[address, Permission].
     source = CompileResult(
         "passed",
         artifacts={
             "layout": {
-                "permission": {
-                    "slot": 0,
-                    "type": "enum Permission('READ','WRITE')",
-                    "location": "storage",
-                }
+                "storage_layout": {
+                    "perms": {
+                        "slot": 0,
+                        "type": "HashMap[address, enum Permission('READ','WRITE')]",
+                    }
+                },
+                "code_layout": {},
             },
             "ast": _flag_module("EnumDef", "READ", "WRITE"),
         },
@@ -519,7 +522,11 @@ def test_legacy_enum_matches_flag_only_with_same_member_order(
     target = CompileResult(
         "passed",
         artifacts={
-            "layout": {"storage_layout": {"permission": {"slot": 0, "type": "Permission"}}},
+            "layout": {
+                "storage_layout": {
+                    "perms": {"slot": 0, "type": "HashMap[address, Permission]", "n_slots": 1}
+                }
+            },
             "ast": _flag_module("FlagDef", *target_members),
         },
     )
