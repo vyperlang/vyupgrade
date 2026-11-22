@@ -333,8 +333,8 @@ def _target_annotation_interface_markers(
 ) -> frozenset[_StorageInterfaceMarker]:
     """Map grammar paths to the type names they bind.
 
-    With ``namespaced``, an imported type such as ``lib.Record`` binds its
-    dotted name too.
+    With ``namespaced``, an imported type such as ``lib.Record`` or a module
+    interface such as ``lib.__interface__`` binds its dotted name too.
     """
     if not isinstance(annotation, dict):
         return frozenset()
@@ -345,7 +345,7 @@ def _target_annotation_interface_markers(
             return frozenset({((), name)})
         return frozenset()
     if ast_type == "Attribute":
-        chain = _imported_type_chain(annotation) if namespaced else None
+        chain = _initialized_alias_chain(annotation) if namespaced else None
         return frozenset({((), ".".join(chain))}) if chain is not None else frozenset()
     if ast_type == "Call":
         wrapper = _ast_name(annotation.get("func"))
@@ -619,6 +619,10 @@ class _StorageTypeEvidence:
             # The layout names only ``Record`` for ``lib.Record``, which may even
             # spell a scalar such as ``int``.
             (qualified,) = imported
+            if qualified.endswith(".__interface__"):
+                # The layout names the module by its path; the interface is an
+                # address, compared by name as other interfaces are.
+                return ("atom", qualified)
             if qualified.rpartition(".")[2] != type_name:
                 return None
             return self._imported_profile(qualified, frozenset())

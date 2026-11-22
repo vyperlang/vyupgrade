@@ -152,7 +152,9 @@ Struct members are compared in declaration order, recursively expanding nested
 structs and evaluating bounded integer arithmetic in constants, an imported
 module's (`lib.N`) included. Integer
 `min_value`/`max_value` calls are normalized. Enum and flag members are compared
-in declaration order, which assigns their bits. Interfaces remain scalar types.
+in declaration order, which assigns their bits. Interfaces remain scalar types:
+a module interface such as `lib.__interface__`, which the layout names by the
+module's path, compares by that spelling at its grammar path.
 Missing, malformed or cyclic definitions, and imported ones whose module can't
 be resolved, fail closed and require `--allow-storage-layout-change`.
 Unsupported bound expressions also require this waiver, even when their source

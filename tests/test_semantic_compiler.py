@@ -626,3 +626,21 @@ outer: public(Outer)
         assert source.status == target.status == "passed"
         assert compare_artifact_details(source, target)[2] == differences
         assert compare_artifacts(source, target)[2] is (not differences)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    ["HashMap[address, lib.__interface__]", "DynArray[lib.__interface__, 3]", "lib.__interface__[2]"],
+)
+def test_module_interface_in_a_container_stays_comparable(tmp_path: Path, annotation: str) -> None:
+    (tmp_path / "lib.vy").write_text("#pragma version 0.4.3\n@external\ndef f():\n    pass\n")
+    entry = tmp_path / "main.vy"
+    entry.write_text(f"#pragma version 0.4.3\nimport lib\nm: {annotation}\n")
+
+    source = _captured_source_compile(entry, "0.4.3")
+    target = _overlay_target_compile(entry, "0.4.3")
+
+    assert source.status == target.status == "passed"
+    # The layout names the element by lib.vy's path, which no definition binds.
+    assert compare_artifact_details(source, target)[2] == []
+    assert compare_artifacts(source, target)[2] is True
