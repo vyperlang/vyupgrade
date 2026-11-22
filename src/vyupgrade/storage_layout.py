@@ -480,9 +480,20 @@ class _StorageTypeEvidence:
         if name in seen:
             return None
         definition = self.definitions[name]
+        body = definition.get("body")
+        if definition.get("ast_type") in {"EnumDef", "FlagDef"}:
+            # Member order assigns each member's bit, so it is part of the layout.
+            if not isinstance(body, list) or not body:
+                return None
+            flag_members = [
+                _ast_name(member.get("value")) if isinstance(member, dict) else None
+                for member in body
+            ]
+            if any(member is None for member in flag_members):
+                return None
+            return ("flag", name, tuple(flag_members))
         if definition.get("ast_type") != "StructDef":
             return ("atom", name)
-        body = definition.get("body")
         if not isinstance(body, list) or not body:
             return None
         members: list[tuple[str, object]] = []
