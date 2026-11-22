@@ -158,9 +158,9 @@ container of one), validation compiles add the compiler's `annotated_ast` with
 its imported modules, and the type resolves in the declaring module's own AST,
 found by following each `initializes:` target through its import. Without that
 evidence (for example on Vyper 0.4.0, whose `annotated_ast` lists no imports)
-the variable is reported as unverified and requires the same waiver. Two compiles
-of a shared closure export with identical bytecode that are both unverified are
-treated as agreeing.
+the variable is reported as unverified and requires the same waiver. When a
+shared closure export's isolated and shared compiles have identical bytecode,
+storage differences that are only unverified types don't block the export.
 
 JSON reports use the existing top-level envelope with `schema_version: 7`.
 Lists shared by many attestations (declared sources, resolved packages) are

@@ -458,7 +458,7 @@ class _StorageTypeEvidence:
         variables: dict[str, object] = {}
         constants: dict[str, object] = {}
         imports: dict[str, str] = {}
-        initializes: dict[str, tuple[str, ...]] = {}
+        initializes: dict[str, tuple[str, ...] | None] = {}
         for node in body:
             if not isinstance(node, dict):
                 continue
@@ -488,11 +488,17 @@ class _StorageTypeEvidence:
                 imports[alias] = path
             elif node.get("ast_type") == "InitializesDecl":
                 chain = _initialized_alias_chain(node.get("annotation"))
-                if chain is None or chain[-1] in initializes:
-                    return cls({}, {}, {})
-                # Vyper keys a module's layout by its alias where it was imported.
-                initializes[chain[-1]] = chain
-        return cls(definitions, variables, constants, imports, initializes)
+                if chain is not None:
+                    # Vyper keys a module's layout by its alias where it was
+                    # imported; a key two targets share resolves to neither.
+                    initializes[chain[-1]] = None if chain[-1] in initializes else chain
+        return cls(
+            definitions,
+            variables,
+            constants,
+            imports,
+            {key: chain for key, chain in initializes.items() if chain is not None},
+        )
 
     def profile(self, type_name: str, variable: str) -> object | None:
         *namespace, name = variable.split(".")
