@@ -154,13 +154,15 @@ text is unchanged.
 
 Storage owned by an initialized module is keyed in the layout by that module's
 alias. When such a variable's type has an unknown width (a struct, or a
-container of one), validation compiles add the compiler's `annotated_ast` with
-its imported modules, and the type resolves in the declaring module's own AST,
-found by following each `initializes:` target through its import. Without that
-evidence (for example on Vyper 0.4.0, whose `annotated_ast` lists no imports)
-the variable is reported as unverified and requires the same waiver. When a
-shared closure export's isolated and shared compiles have identical bytecode,
-storage differences that are only unverified types don't block the export.
+container of one), validation compiles of captured sources (a source snapshot
+or a target overlay) add the compiler's `annotated_ast` with its imported
+modules, and the type resolves in the declaring module's own AST, found by
+following each `initializes:` target through its import. Without that evidence
+(for example on Vyper 0.4.0, whose `annotated_ast` lists no imports) the
+variable is reported as unverified and requires the same waiver. When a shared
+closure export's isolated and shared compiles have identical bytecode and
+neither can resolve the same module-owned variable, that unverified type doesn't
+block the export.
 
 JSON reports use the existing top-level envelope with `schema_version: 7`.
 Lists shared by many attestations (declared sources, resolved packages) are

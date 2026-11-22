@@ -636,3 +636,17 @@ def test_shared_initialized_alias_keeps_the_entry_module_evidence() -> None:
     assert not _module_comparison(source, target, "record").equal
     # The shared key resolves to neither module.
     assert not _module_comparison(source, source).equal
+
+
+def test_vyper_05_import_infos_resolve_initialized_modules() -> None:
+    def project(first: str, second: str) -> dict[str, object]:
+        imported = _import("ledger", "/project/ledger.vy")
+        imported["import_infos"] = [imported.pop("import_info")]
+        return {
+            "ast": {"ast_type": "Module", "body": [imported, _initializes(_name("ledger"))]},
+            "imports": [_ledger(first, second)],
+        }
+
+    source = project("left", "right")
+    assert _module_comparison(source, source).equal
+    assert not _module_comparison(source, project("right", "left")).equal

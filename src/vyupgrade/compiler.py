@@ -439,10 +439,12 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         evidence = (result.artifacts or {}).get(INTERFACE_AST_FORMAT)
         if isinstance(evidence, dict):
             result = _with_interface_ast_paths(result, evidence, paths)
-        result = _with_storage_type_evidence(
-            result, command, staged, compile_config, (), suppress_warnings,
-            project_compiler=True, environment_path=path,
-        )
+        if config.source_snapshot is not None:
+            # The probe is a second compile; only captured imports can't change between them.
+            result = _with_storage_type_evidence(
+                result, command, staged, compile_config, (), suppress_warnings,
+                project_compiler=True, environment_path=path,
+            )
         return _restore_compile_error_paths(result, paths, path)
 
 
@@ -485,6 +487,11 @@ def compile_target_source(
                 extra_paths=(),
                 suppress_warnings=suppress_warnings,
                 environment_path=path,
+            )
+            # Overlay imports are staged copies, so a second compile sees the same code.
+            result = _with_storage_type_evidence(
+                result, command, tmp_path, compile_config, (), suppress_warnings,
+                project_compiler=False, environment_path=path,
             )
         return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
@@ -1902,7 +1909,7 @@ def _run_compile(
     suppress_warnings: bool = False,
     environment_path: Path | None = None,
 ) -> CompileResult:
-    result = _run_compile_with_formats(
+    return _run_compile_with_formats(
         command,
         path,
         config,
@@ -1911,10 +1918,6 @@ def _run_compile(
         suppress_warnings,
         optional_formats=frozenset({"ast"}),
         environment_path=environment_path,
-    )
-    return _with_storage_type_evidence(
-        result, command, path, config, extra_paths, suppress_warnings,
-        project_compiler=False, environment_path=environment_path or path,
     )
 
 
