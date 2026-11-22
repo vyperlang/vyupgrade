@@ -644,3 +644,33 @@ def test_module_interface_in_a_container_stays_comparable(tmp_path: Path, annota
     # The layout names the element by lib.vy's path, which no definition binds.
     assert compare_artifact_details(source, target)[2] == []
     assert compare_artifacts(source, target)[2] is True
+
+
+@pytest.mark.parametrize("name", ["int", "uint"])
+def test_module_flag_spelling_a_bare_integer_compares_its_members(
+    tmp_path: Path, name: str
+) -> None:
+    def project(label: str, *members: str) -> Path:
+        root = tmp_path / label
+        root.mkdir()
+        (root / "ledger.vy").write_text(
+            f"#pragma version 0.4.3\nflag {name}:\n    "
+            + "\n    ".join(members)
+            + f"\npermission: public({name})\n"
+        )
+        entry = root / "main.vy"
+        entry.write_text(
+            "#pragma version 0.4.3\nimport ledger\ninitializes: ledger\n"
+            "exports: ledger.__interface__\n"
+        )
+        return entry
+
+    source = _captured_source_compile(project("source", "READ", "WRITE"), "0.4.3")
+    copy_entry = project("copy", "READ", "WRITE")
+    swapped_entry = project("swapped", "WRITE", "READ")
+    changed = [f"changed storage type definition: ledger.permission ({name})"]
+
+    for compile_entry in (_captured_source_compile, _overlay_target_compile):
+        # Vyper has no bare int/uint, so the layout's name is the module's flag.
+        assert compare_artifact_details(source, compile_entry(copy_entry, "0.4.3"))[2] == []
+        assert compare_artifact_details(source, compile_entry(swapped_entry, "0.4.3"))[2] == changed

@@ -833,9 +833,10 @@ def _known_storage_width(
         return 1
     if type_name in {"address", "bool", "decimal"}:
         return 1
-    integer = re.fullmatch(r"u?int(?P<bits>[0-9]+)?", type_name)
+    # Vyper has no bare ``int``/``uint``; a user type may take either name.
+    integer = re.fullmatch(r"u?int(?P<bits>[0-9]+)", type_name)
     if integer is not None:
-        bits = int(integer.group("bits") or "256")
+        bits = int(integer.group("bits"))
         return 1 if 8 <= bits <= 256 and bits % 8 == 0 else 0
     fixed_bytes = re.fullmatch(r"bytes(?P<size>[0-9]+)", type_name)
     if fixed_bytes is not None:
