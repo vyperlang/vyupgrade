@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import NamedTuple
 
-from .ast_facts import iter_nodes, root_ast
+from .ast_facts import root_ast
 from .constant_evaluation import eval_integer_binary
 
 
@@ -1095,21 +1095,12 @@ def storage_layout_needs_module_types(layout: StorageLayout | None, ast: object 
     """Whether a storage type can only be checked with an imported module's AST."""
     if layout is None:
         return False
+    # The raw AST carries no imported modules, so a type that needs one is unverified.
     root = _StorageTypeEvidence.from_ast(ast)
-    unresolved = _StorageTypeEvidence({}, {}, {})
-    if any(
-        ("." in name and unresolved.profile(value.type_name, name) is None)
-        or any("." in bound for _, bound in root._bindings(name))
+    return any(
+        root.profile(value.type_name, name) is None
         for namespace in (layout.persistent, layout.transient)
         for name, value in namespace.items()
-    ):
-        return True
-    # A local struct may hold an imported type in one of its fields.
-    return any(
-        _imported_type_chain(node) is not None
-        for definition in root.definitions.values()
-        if definition.get("ast_type") == "StructDef"
-        for node in iter_nodes(definition, "Attribute")
     )
 
 

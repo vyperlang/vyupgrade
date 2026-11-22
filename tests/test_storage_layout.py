@@ -787,6 +787,17 @@ def test_local_struct_with_an_imported_field_needs_module_evidence(
     assert storage_layout_needs_module_types(layout, raw_ast) is needed
 
 
+def test_local_struct_with_a_module_interface_field_compares_without_module_evidence() -> None:
+    # No imported module is listed: the raw AST is all a probe-free compile has.
+    outer = {
+        "ast_type": "StructDef",
+        "name": "Outer",
+        "body": [_member("i", _ledger_type("__interface__"))],
+    }
+    evidence = _root_storing(_name("Outer"), extra=(outer,))
+    assert _module_comparison(evidence, evidence, "x", "Outer").equal
+
+
 def test_stored_module_interface_keeps_its_layout_type_comparison() -> None:
     evidence = _root_storing(_ledger_type("__interface__"))
     assert _module_comparison(evidence, evidence, "x", "/project/ledger.vy").equal
