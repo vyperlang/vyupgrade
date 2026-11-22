@@ -16,9 +16,12 @@ from vyupgrade.ast_facts import iter_nodes, root_ast
 from vyupgrade.cli import main
 from vyupgrade.compiler import (
     CompileResult,
+    compare_artifact_details,
     compile_source_ast,
     compile_source_file,
+    compile_target_source,
     resolve_import_closure,
+    target_overlay,
     unavailable_validation_artifacts,
 )
 from vyupgrade.models import Config
@@ -400,3 +403,105 @@ def test_public_error_resolves_to_an_imported_definition(
         assert len(compiler_processes) == 2
         command = compiler_processes[-1].command
         assert command[command.index("-f") + 1] == "annotated_ast"
+
+
+LEDGER_ENTRY = """#pragma version {version}
+import ledger
+
+initializes: ledger
+exports: ledger.__interface__
+
+@deploy
+def __init__():
+    ledger.__init__()
+"""
+
+LEDGER_MODULE = """#pragma version {version}
+
+struct Record:
+    {first}: uint256
+    {second}: uint256
+
+record: public(Record)
+
+@deploy
+def __init__():
+    self.record.left = 1
+    self.record.right = 2
+"""
+
+
+@pytest.mark.parametrize("version", ["0.4.3", "0.5.0b2"])
+def test_imported_module_struct_member_order_is_compared(tmp_path: Path, version: str) -> None:
+    def project(name: str, first: str, second: str) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        module = LEDGER_MODULE.format(version=version, first=first, second=second)
+        (root / "ledger.vy").write_text(module)
+        entry = root / "main.vy"
+        entry.write_text(LEDGER_ENTRY.format(version=version))
+        return entry
+
+    def compile_source(entry: Path) -> CompileResult:
+        snapshot = resolve_import_closure({entry: entry.read_text()}, (entry.parent,))
+        config = Config(
+            paths=(entry,),
+            target_version=version,
+            compiler_search_paths=(entry.parent,),
+            source_snapshot=snapshot,
+        )
+        return compile_source_file(entry, config, version)
+
+    def compile_target(entry: Path) -> CompileResult:
+        config = Config(
+            paths=(entry,), target_version=version, compiler_search_paths=(entry.parent,)
+        )
+        sources = {entry: entry.read_text()}
+        with target_overlay(sources, version, (entry.parent,)) as overlay:
+            return compile_target_source(entry, entry.read_text(), config, overlay)
+
+    source_entry = project("source", "left", "right")
+    copy_entry = project("copy", "left", "right")
+    swapped_entry = project("swapped", "right", "left")
+    source = compile_source(source_entry)
+    changed = ("changed storage type definition: ledger.record (Record)",)
+
+    for compile_entry in (compile_source, compile_target):
+        copy = compile_entry(copy_entry)
+        swapped = compile_entry(swapped_entry)
+        assert copy.status == swapped.status == "passed"
+        assert compare_artifact_details(source, copy)[2] == []
+        # The layout names only the struct, so its members come from the module's AST.
+        assert tuple(compare_artifact_details(source, swapped)[2]) == changed
+
+
+def test_module_evidence_requires_the_layout_compile_bytecode(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "ledger.vy").write_text(
+        LEDGER_MODULE.format(version="0.4.3", first="left", second="right")
+    )
+    entry = tmp_path / "main.vy"
+    entry.write_text(LEDGER_ENTRY.format(version="0.4.3"))
+    run = compiler._run_compile_with_formats
+    probes = []
+
+    def change_module_before_probe(command, path, config, formats, *args, **kwargs):
+        if "annotated_ast" not in formats:
+            return run(command, path, config, formats, *args, **kwargs)
+        # A module read live (not captured) changes between the two compiles.
+        module = path.parent / "ledger.vy"
+        module.write_text(module.read_text().replace("left: uint256", "left: uint128"))
+        probe = run(command, path, config, formats, *args, **kwargs)
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(compiler, "_run_compile_with_formats", change_module_before_probe)
+    config = Config(paths=(entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,))
+    with target_overlay({entry: entry.read_text()}, "0.4.3", (tmp_path,)) as overlay:
+        result = compile_target_source(entry, entry.read_text(), config, overlay)
+
+    # The probe itself succeeded with module ASTs; only the bytecode differs.
+    [probe] = probes
+    assert result.status == probe.status == "passed"
+    assert isinstance(probe.artifacts["annotated_ast"].get("imports"), list)
+    assert probe.artifacts["bytecode"] != result.artifacts["bytecode"]
+    assert compiler.STORAGE_TYPE_AST not in result.artifacts

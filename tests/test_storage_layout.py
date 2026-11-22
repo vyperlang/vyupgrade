@@ -8,6 +8,7 @@ from vyupgrade.storage_layout import (
     StorageValue,
     compare_storage_layouts,
     parse_storage_layout,
+    storage_layout_needs_module_types,
 )
 
 
@@ -474,3 +475,178 @@ def test_mapped_struct_unresolved_bound_expression_fails_closed(operator: str, e
     }
     ast = _struct_module([_member("items", _subscript("DynArray", _name("uint256"), bound))])
     assert not _struct_comparison(ast, ast).equal
+
+
+def _import(alias: str, path: str) -> dict[str, object]:
+    return {
+        "ast_type": "Import",
+        "name": alias,
+        "alias": None,
+        "import_info": {"alias": alias, "resolved_path": path},
+    }
+
+
+def _initializes(annotation: dict[str, object]) -> dict[str, object]:
+    return {"ast_type": "InitializesDecl", "annotation": annotation}
+
+
+def _ledger(first: str, second: str, *, type_name: str = "Record") -> dict[str, object]:
+    annotation = (
+        _name(type_name)
+        if type_name == "Record"
+        else _subscript("HashMap", _name("address"), _name("Record"))
+    )
+    return {
+        "ast_type": "Module",
+        "resolved_path": "/project/ledger.vy",
+        "source_sha256sum": f"{first}-{second}",
+        "body": [
+            {
+                "ast_type": "StructDef",
+                "name": "Record",
+                "body": [_member(first, _name("uint256")), _member(second, _name("uint256"))],
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": _name("record"),
+                "annotation": {"ast_type": "Call", "func": _name("public"), "args": [annotation]},
+            },
+        ],
+    }
+
+
+def _module_comparison(
+    source_ast: object,
+    target_ast: object,
+    name: str = "ledger.record",
+    type_name: str = "Record",
+) -> StorageLayoutComparison:
+    *namespace, leaf = name.split(".")
+    width = 2 if type_name == "Record" else 1
+    node: dict[str, object] = {leaf: {"slot": 0, "type": type_name, "n_slots": width}}
+    for key in reversed(namespace):
+        node = {key: node}
+    layout = parse_storage_layout({"storage_layout": node})
+    assert layout is not None
+    return compare_storage_layouts(layout, layout, source_ast=source_ast, target_ast=target_ast)
+
+
+def _entry(*imports: dict[str, object], body: tuple[dict[str, object], ...]) -> dict[str, object]:
+    return {
+        "ast": {"ast_type": "Module", "body": [_import("ledger", "/project/ledger.vy"), *body]},
+        "imports": list(imports),
+    }
+
+
+@pytest.mark.parametrize("type_name", ["Record", "HashMap[address, Record]"])
+def test_initialized_module_struct_member_order_is_compared(type_name: str) -> None:
+    body = (_initializes(_name("ledger")),)
+    source = _entry(_ledger("left", "right", type_name=type_name), body=body)
+    target = _entry(_ledger("right", "left", type_name=type_name), body=body)
+
+    assert _module_comparison(source, source, type_name=type_name).equal
+    assert _module_comparison(source, target, type_name=type_name).differences == (
+        f"changed storage type definition: ledger.record ({type_name})",
+    )
+
+
+def test_module_initialized_through_a_package_is_keyed_by_its_own_alias() -> None:
+    def project(ledger: dict[str, object]) -> dict[str, object]:
+        package = {
+            "ast_type": "Module",
+            "resolved_path": "/project/pkg.vy",
+            "body": [_import("ledger", "/project/ledger.vy")],
+        }
+        attribute = {"ast_type": "Attribute", "value": _name("pkg"), "attr": "ledger"}
+        return {
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    _import("pkg", "/project/pkg.vy"),
+                    _initializes({"ast_type": "Subscript", "value": attribute, "slice": {}}),
+                ],
+            },
+            # The compiler repeats a module once per import request that reached it.
+            "imports": [package, ledger, ledger],
+        }
+
+    source = project(_ledger("left", "right"))
+    target = project(_ledger("right", "left"))
+
+    assert _module_comparison(source, source).equal
+    assert not _module_comparison(source, target).equal
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        {"ast": {"ast_type": "Module", "body": []}},
+        _entry(body=(_initializes(_name("ledger")),)),
+        _entry(_ledger("left", "right"), body=()),
+        _entry(_ledger("left", "right"), _ledger("right", "left"), body=(
+            _initializes(_name("ledger")),
+        )),
+    ],
+)
+def test_unresolved_module_struct_fails_closed(evidence: object) -> None:
+    assert _module_comparison(evidence, evidence).differences == (
+        "unverified storage type definition: ledger.record (Record)",
+    )
+
+
+def test_known_width_module_storage_needs_no_module_evidence() -> None:
+    assert _module_comparison(None, None, "ledger.owner", "address").equal
+
+
+@pytest.mark.parametrize(
+    ("layout", "needed"),
+    [
+        ({"record": {"slot": 0, "type": "Record", "n_slots": 2}}, False),
+        ({"ledger": {"owner": {"slot": 0, "type": "address", "n_slots": 1}}}, False),
+        ({"ledger": {"record": {"slot": 0, "type": "Record", "n_slots": 2}}}, True),
+        ({"ledger": {"records": {"slot": 0, "type": "HashMap[address, Record]"}}}, True),
+    ],
+)
+def test_module_type_evidence_is_needed_only_for_module_owned_unknown_types(
+    layout: dict[str, object], needed: bool
+) -> None:
+    parsed = parse_storage_layout({"storage_layout": layout})
+    assert storage_layout_needs_module_types(parsed) is needed
+
+
+def test_shared_initialized_alias_keeps_the_entry_module_evidence() -> None:
+    def project(first: str, second: str) -> dict[str, object]:
+        attribute = {"ast_type": "Attribute", "value": _name("pkg"), "attr": "ledger"}
+        ledger = _ledger(first, second)
+        return {
+            "ast": {**ledger, "body": [
+                *ledger["body"],
+                _import("ledger", "/project/ledger.vy"),
+                _import("pkg", "/project/pkg.vy"),
+                _initializes(_name("ledger")),
+                _initializes(attribute),
+            ]},
+            "imports": [],
+        }
+
+    source, target = project("left", "right"), project("right", "left")
+
+    assert _module_comparison(source, source, "record").equal
+    assert not _module_comparison(source, target, "record").equal
+    # The shared key resolves to neither module.
+    assert not _module_comparison(source, source).equal
+
+
+def test_vyper_05_import_infos_resolve_initialized_modules() -> None:
+    def project(first: str, second: str) -> dict[str, object]:
+        imported = _import("ledger", "/project/ledger.vy")
+        imported["import_infos"] = [imported.pop("import_info")]
+        return {
+            "ast": {"ast_type": "Module", "body": [imported, _initializes(_name("ledger"))]},
+            "imports": [_ledger(first, second)],
+        }
+
+    source = project("left", "right")
+    assert _module_comparison(source, source).equal
+    assert not _module_comparison(source, project("right", "left")).equal
