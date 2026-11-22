@@ -8,6 +8,7 @@ from vyupgrade.storage_layout import (
     StorageValue,
     compare_storage_layouts,
     parse_storage_layout,
+    storage_layout_needs_module_types,
 )
 
 
@@ -474,3 +475,414 @@ def test_mapped_struct_unresolved_bound_expression_fails_closed(operator: str, e
     }
     ast = _struct_module([_member("items", _subscript("DynArray", _name("uint256"), bound))])
     assert not _struct_comparison(ast, ast).equal
+
+
+def _flag_module(kind: str, *members: str) -> dict[str, object]:
+    return {
+        "ast_type": "Module",
+        "body": [
+            {
+                "ast_type": kind,
+                "name": "Permission",
+                "body": [{"ast_type": "Expr", "value": _name(member)} for member in members],
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": _name("perms"),
+                "annotation": _subscript("HashMap", _name("address"), _name("Permission")),
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("target_members", "equal"),
+    [(("READ", "WRITE"), True), (("WRITE", "READ"), False), (("READ",), False)],
+)
+def test_legacy_enum_matches_flag_only_with_same_member_order(
+    target_members: tuple[str, ...], equal: bool
+) -> None:
+    from vyupgrade.compiler import CompileResult, compare_validation_artifacts
+
+    # Layout shapes as 0.3.10 and 0.4.3 emit them for HashMap[address, Permission].
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "perms": {
+                        "slot": 0,
+                        "type": "HashMap[address, enum Permission('READ','WRITE')]",
+                    }
+                },
+                "code_layout": {},
+            },
+            "ast": _flag_module("EnumDef", "READ", "WRITE"),
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "perms": {"slot": 0, "type": "HashMap[address, Permission]", "n_slots": 1}
+                }
+            },
+            "ast": _flag_module("FlagDef", *target_members),
+        },
+    )
+
+    assert compare_validation_artifacts(source, target).storage_layout.equal is equal
+
+
+def _import(alias: str, path: str) -> dict[str, object]:
+    return {
+        "ast_type": "Import",
+        "name": alias,
+        "alias": None,
+        "import_info": {"alias": alias, "resolved_path": path},
+    }
+
+
+def _initializes(annotation: dict[str, object]) -> dict[str, object]:
+    return {"ast_type": "InitializesDecl", "annotation": annotation}
+
+
+def _ledger(first: str, second: str, *, type_name: str = "Record") -> dict[str, object]:
+    annotation = (
+        _name(type_name)
+        if type_name == "Record"
+        else _subscript("HashMap", _name("address"), _name("Record"))
+    )
+    return {
+        "ast_type": "Module",
+        "resolved_path": "/project/ledger.vy",
+        "source_sha256sum": f"{first}-{second}",
+        "body": [
+            {
+                "ast_type": "StructDef",
+                "name": "Record",
+                "body": [_member(first, _name("uint256")), _member(second, _name("uint256"))],
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": _name("record"),
+                "annotation": {"ast_type": "Call", "func": _name("public"), "args": [annotation]},
+            },
+        ],
+    }
+
+
+def _module_comparison(
+    source_ast: object,
+    target_ast: object,
+    name: str = "ledger.record",
+    type_name: str = "Record",
+) -> StorageLayoutComparison:
+    *namespace, leaf = name.split(".")
+    width = 2 if type_name == "Record" else 1
+    node: dict[str, object] = {leaf: {"slot": 0, "type": type_name, "n_slots": width}}
+    for key in reversed(namespace):
+        node = {key: node}
+    layout = parse_storage_layout({"storage_layout": node})
+    assert layout is not None
+    return compare_storage_layouts(layout, layout, source_ast=source_ast, target_ast=target_ast)
+
+
+def _entry(*imports: dict[str, object], body: tuple[dict[str, object], ...]) -> dict[str, object]:
+    return {
+        "ast": {"ast_type": "Module", "body": [_import("ledger", "/project/ledger.vy"), *body]},
+        "imports": list(imports),
+    }
+
+
+@pytest.mark.parametrize("type_name", ["Record", "HashMap[address, Record]"])
+def test_initialized_module_struct_member_order_is_compared(type_name: str) -> None:
+    body = (_initializes(_name("ledger")),)
+    source = _entry(_ledger("left", "right", type_name=type_name), body=body)
+    target = _entry(_ledger("right", "left", type_name=type_name), body=body)
+
+    assert _module_comparison(source, source, type_name=type_name).equal
+    assert _module_comparison(source, target, type_name=type_name).differences == (
+        f"changed storage type definition: ledger.record ({type_name})",
+    )
+
+
+def test_module_initialized_through_a_package_is_keyed_by_its_own_alias() -> None:
+    def project(ledger: dict[str, object]) -> dict[str, object]:
+        package = {
+            "ast_type": "Module",
+            "resolved_path": "/project/pkg.vy",
+            "body": [_import("ledger", "/project/ledger.vy")],
+        }
+        attribute = {"ast_type": "Attribute", "value": _name("pkg"), "attr": "ledger"}
+        return {
+            "ast": {
+                "ast_type": "Module",
+                "body": [
+                    _import("pkg", "/project/pkg.vy"),
+                    _initializes({"ast_type": "Subscript", "value": attribute, "slice": {}}),
+                ],
+            },
+            # The compiler repeats a module once per import request that reached it.
+            "imports": [package, ledger, ledger],
+        }
+
+    source = project(_ledger("left", "right"))
+    target = project(_ledger("right", "left"))
+
+    assert _module_comparison(source, source).equal
+    assert not _module_comparison(source, target).equal
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        {"ast": {"ast_type": "Module", "body": []}},
+        _entry(body=(_initializes(_name("ledger")),)),
+        _entry(_ledger("left", "right"), body=()),
+        _entry(_ledger("left", "right"), _ledger("right", "left"), body=(
+            _initializes(_name("ledger")),
+        )),
+    ],
+)
+def test_unresolved_module_struct_fails_closed(evidence: object) -> None:
+    assert _module_comparison(evidence, evidence).differences == (
+        "unverified storage type definition: ledger.record (Record)",
+    )
+
+
+def test_known_width_module_storage_needs_no_module_evidence() -> None:
+    assert _module_comparison(None, None, "ledger.owner", "address").equal
+
+
+@pytest.mark.parametrize(
+    ("layout", "needed"),
+    [
+        ({"record": {"slot": 0, "type": "Record", "n_slots": 2}}, False),
+        ({"ledger": {"owner": {"slot": 0, "type": "address", "n_slots": 1}}}, False),
+        ({"ledger": {"record": {"slot": 0, "type": "Record", "n_slots": 2}}}, True),
+        ({"ledger": {"records": {"slot": 0, "type": "HashMap[address, Record]"}}}, True),
+    ],
+)
+def test_module_type_evidence_is_needed_only_for_module_owned_unknown_types(
+    layout: dict[str, object], needed: bool
+) -> None:
+    parsed = parse_storage_layout({"storage_layout": layout})
+    assert storage_layout_needs_module_types(parsed) is needed
+
+
+def _ledger_type(name: str = "Record") -> dict[str, object]:
+    return {"ast_type": "Attribute", "value": _name("ledger"), "attr": name}
+
+
+def _root_storing(
+    annotation: dict[str, object], *imports: dict[str, object], extra: tuple = ()
+) -> dict[str, object]:
+    variable = {"ast_type": "VariableDecl", "target": _name("x"), "annotation": annotation}
+    return _entry(*imports, body=(*extra, variable))
+
+
+def _flag_ledger(*members: str) -> dict[str, object]:
+    return {
+        "ast_type": "Module",
+        "resolved_path": "/project/ledger.vy",
+        "source_sha256sum": "-".join(members),
+        "body": [
+            {
+                "ast_type": "FlagDef",
+                "name": "Permission",
+                "body": [{"ast_type": "Expr", "value": _name(member)} for member in members],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("annotation", "type_name"),
+    [
+        (_ledger_type(), "Record"),
+        ({"ast_type": "Call", "func": _name("public"), "args": [_ledger_type()]}, "Record"),
+        (_subscript("HashMap", _name("address"), _ledger_type()), "HashMap[address, Record]"),
+        (_subscript(_ledger_type(), {"ast_type": "Int", "value": 3}), "Record[3]"),
+    ],
+)
+def test_root_storage_of_an_imported_struct_compares_its_members(
+    annotation: dict[str, object], type_name: str
+) -> None:
+    source = _root_storing(annotation, _ledger("left", "right"))
+    target = _root_storing(annotation, _ledger("right", "left"))
+
+    assert _module_comparison(source, source, "x", type_name).equal
+    assert _module_comparison(source, target, "x", type_name).differences == (
+        f"changed storage type definition: x ({type_name})",
+    )
+
+
+def test_root_storage_of_an_imported_flag_compares_its_members() -> None:
+    annotation = _ledger_type("Permission")
+    source = _root_storing(annotation, _flag_ledger("READ", "WRITE"))
+    target = _root_storing(annotation, _flag_ledger("WRITE", "READ"))
+
+    assert _module_comparison(source, source, "x", "Permission").equal
+    assert not _module_comparison(source, target, "x", "Permission").equal
+
+
+def test_struct_member_of_an_imported_namesake_type_is_compared() -> None:
+    def project(ledger: dict[str, object]) -> dict[str, object]:
+        local = {
+            "ast_type": "StructDef",
+            "name": "Record",
+            "body": [_member("inner", _ledger_type())],
+        }
+        return _root_storing(_name("Record"), ledger, extra=(local,))
+
+    source = project(_ledger("left", "right"))
+    target = project(_ledger("right", "left"))
+
+    assert _module_comparison(source, source, "x").equal
+    assert not _module_comparison(source, target, "x").equal
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [(), (_ledger("left", "right"), _ledger("right", "left"))],
+)
+def test_root_storage_of_an_unresolved_imported_type_fails_closed(
+    imports: tuple[dict[str, object], ...],
+) -> None:
+    evidence = _root_storing(_ledger_type(), *imports)
+    assert _module_comparison(evidence, evidence, "x").differences == (
+        "unverified storage type definition: x (Record)",
+    )
+
+
+@pytest.mark.parametrize(
+    ("annotation", "needed"),
+    [(_ledger_type(), True), (_name("Record"), False), (_name("uint256"), False)],
+)
+def test_root_storage_of_an_imported_type_needs_module_evidence(
+    annotation: dict[str, object], needed: bool
+) -> None:
+    raw_ast = {"ast": {"ast_type": "Module", "body": [
+        {"ast_type": "VariableDecl", "target": _name("x"), "annotation": annotation},
+    ]}}
+    layout = parse_storage_layout({"storage_layout": {"x": {"slot": 0, "type": "Record"}}})
+    assert storage_layout_needs_module_types(layout, raw_ast) is needed
+
+
+@pytest.mark.parametrize(
+    ("field", "needed"),
+    [(_ledger_type(), True), (_ledger_type("__interface__"), False), (_name("uint256"), False)],
+)
+def test_local_struct_with_an_imported_field_needs_module_evidence(
+    field: dict[str, object], needed: bool
+) -> None:
+    raw_ast = {"ast": {"ast_type": "Module", "body": [
+        {"ast_type": "StructDef", "name": "Outer", "body": [_member("inner", field)]},
+        {"ast_type": "VariableDecl", "target": _name("x"), "annotation": _name("Outer")},
+    ]}}
+    layout = parse_storage_layout({"storage_layout": {"x": {"slot": 0, "type": "Outer"}}})
+    assert storage_layout_needs_module_types(layout, raw_ast) is needed
+
+
+def test_local_struct_with_a_module_interface_field_compares_without_module_evidence() -> None:
+    # No imported module is listed: the raw AST is all a probe-free compile has.
+    outer = {
+        "ast_type": "StructDef",
+        "name": "Outer",
+        "body": [_member("i", _ledger_type("__interface__"))],
+    }
+    evidence = _root_storing(_name("Outer"), extra=(outer,))
+    assert _module_comparison(evidence, evidence, "x", "Outer").equal
+
+
+def test_stored_module_interface_keeps_its_layout_type_comparison() -> None:
+    evidence = _root_storing(_ledger_type("__interface__"))
+    assert _module_comparison(evidence, evidence, "x", "/project/ledger.vy").equal
+
+
+def test_beta_import_infos_resolve_imported_types() -> None:
+    # The 0.5 betas list an import's facts under ``import_infos``.
+    def project(ledger: dict[str, object]) -> dict[str, object]:
+        evidence = _root_storing(_ledger_type(), ledger)
+        body = evidence["ast"]["body"]
+        info = body[0].pop("import_info")
+        body[0]["import_infos"] = [info]
+        return evidence
+
+    source = project(_ledger("left", "right"))
+    target = project(_ledger("right", "left"))
+
+    assert _module_comparison(source, source, "x").equal
+    assert not _module_comparison(source, target, "x").equal
+
+
+def test_imported_flag_spelling_a_scalar_name_compares_its_members() -> None:
+    def project(*members: str) -> dict[str, object]:
+        ledger = _flag_ledger(*members)
+        ledger["body"][0]["name"] = "int"
+        return _root_storing(_ledger_type("int"), ledger)
+
+    source = project("READ", "WRITE")
+    target = project("WRITE", "READ")
+
+    assert _module_comparison(source, source, "x", "int").equal
+    assert not _module_comparison(source, target, "x", "int").equal
+
+
+def test_imported_interface_in_a_legacy_layout_stays_comparable() -> None:
+    # 0.4.0 lays out ``x: ledger.I`` as ``interface I`` and its AST has no imports.
+    evidence = _root_storing(_ledger_type("I"))
+    assert _module_comparison(evidence, evidence, "x", "interface I").equal
+
+
+def test_local_struct_spelling_a_scalar_name_compares_its_members() -> None:
+    def project(*members: str) -> dict[str, object]:
+        local = {"ast_type": "StructDef", "name": "int", "body": [
+            _member("f", _ledger_type("Permission")),
+        ]}
+        return _root_storing(_name("int"), _flag_ledger(*members), extra=(local,))
+
+    source = project("READ", "WRITE")
+    target = project("WRITE", "READ")
+
+    assert _module_comparison(source, source, "x", "int").equal
+    assert not _module_comparison(source, target, "x", "int").equal
+
+def test_shared_initialized_alias_keeps_the_entry_module_evidence() -> None:
+    def project(first: str, second: str) -> dict[str, object]:
+        attribute = {"ast_type": "Attribute", "value": _name("pkg"), "attr": "ledger"}
+        ledger = _ledger(first, second)
+        return {
+            "ast": {**ledger, "body": [
+                *ledger["body"],
+                _import("ledger", "/project/ledger.vy"),
+                _import("pkg", "/project/pkg.vy"),
+                _initializes(_name("ledger")),
+                _initializes(attribute),
+            ]},
+            "imports": [],
+        }
+
+    source, target = project("left", "right"), project("right", "left")
+
+    assert _module_comparison(source, source, "record").equal
+    assert not _module_comparison(source, target, "record").equal
+    # The shared key resolves to neither module.
+    assert not _module_comparison(source, source).equal
+
+
+def test_vyper_05_import_infos_resolve_initialized_modules() -> None:
+    def project(first: str, second: str) -> dict[str, object]:
+        imported = _import("ledger", "/project/ledger.vy")
+        imported["import_infos"] = [imported.pop("import_info")]
+        return {
+            "ast": {"ast_type": "Module", "body": [imported, _initializes(_name("ledger"))]},
+            "imports": [_ledger(first, second)],
+        }
+
+    source = project("left", "right")
+    assert _module_comparison(source, source).equal
+    assert not _module_comparison(source, project("right", "left")).equal

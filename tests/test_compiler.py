@@ -26,6 +26,7 @@ from vyupgrade.compiler import (
     _supports_warning_policy,
     _uv_bin,
     _with_interface_ast_paths,
+    _with_original_layout_paths,
     compare_artifact_details,
     compare_artifacts,
     compile_source_ast,
@@ -1081,6 +1082,37 @@ def test_interface_ast_paths_omit_ambiguous_overlay_destinations(tmp_path) -> No
     assert result.artifacts == {
         "annotated_ast": evidence,
         "annotated_ast_source_paths": {str(staged_entry.resolve()): str(entry)},
+    }
+
+
+def test_layout_paths_restore_original_modules_only(tmp_path) -> None:
+    lib = tmp_path / "project" / "lib.vy"
+    first = tmp_path / "first" / "dup.vy"
+    second = tmp_path / "second" / "dup.vy"
+    staged = tmp_path / "overlay"
+    staged_lib = str((staged / "lib.vy").resolve())
+    staged_dup = str((staged / "dup.vy").resolve())
+    layout = {
+        "m": {"type": staged_lib, "slot": 0},
+        "ms": {"type": f"HashMap[address, {staged_lib}]", "slot": 1},
+        "longer": {"type": f"{staged_lib}i", "slot": 2},
+        "dup": {"type": staged_dup, "slot": 3},
+        "lib": {"x": {"type": f"{staged_lib}[2]", "slot": 4}},
+    }
+
+    result = _with_original_layout_paths(
+        CompileResult("passed", artifacts={"layout": layout}),
+        {lib: staged / "lib.vy", first: staged / "dup.vy", second: staged / "dup.vy"},
+    )
+
+    assert result.artifacts == {
+        "layout": {
+            "m": {"type": str(lib), "slot": 0},
+            "ms": {"type": f"HashMap[address, {lib}]", "slot": 1},
+            "longer": {"type": f"{staged_lib}i", "slot": 2},
+            "dup": {"type": staged_dup, "slot": 3},
+            "lib": {"x": {"type": f"{lib}[2]", "slot": 4}},
+        }
     }
 
 
@@ -4470,12 +4502,20 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
         }
 
 
+    def members(*values: str) -> list[dict[str, object]]:
+        return [{"ast_type": "Expr", "value": name(value)} for value in values]
+
+
     ast = {
         "ast_type": "Module",
         "body": [
             {"ast_type": "InterfaceDef", "name": "ERC20"},
-            {"ast_type": "EnumDef", "name": "Epoch"},
-            {"ast_type": "FlagDef", "name": "Permission"},
+            {
+                "ast_type": "EnumDef",
+                "name": "Epoch",
+                "body": members("SLEEP", "COLLECT", "EXCHANGE", "FORWARD"),
+            },
+            {"ast_type": "FlagDef", "name": "Permission", "body": members("READ", "WRITE")},
             {
                 "ast_type": "VariableDecl",
                 "target": name("is_killed"),

@@ -16,9 +16,13 @@ from vyupgrade.ast_facts import iter_nodes, root_ast
 from vyupgrade.cli import main
 from vyupgrade.compiler import (
     CompileResult,
+    compare_artifact_details,
+    compare_artifacts,
     compile_source_ast,
     compile_source_file,
+    compile_target_source,
     resolve_import_closure,
+    target_overlay,
     unavailable_validation_artifacts,
 )
 from vyupgrade.models import Config
@@ -400,3 +404,273 @@ def test_public_error_resolves_to_an_imported_definition(
         assert len(compiler_processes) == 2
         command = compiler_processes[-1].command
         assert command[command.index("-f") + 1] == "annotated_ast"
+
+
+def _captured_source_compile(entry: Path, version: str) -> CompileResult:
+    """Compile a source as validation does, from a snapshot of its imports."""
+    snapshot = resolve_import_closure({entry: entry.read_text()}, (entry.parent,))
+    config = Config(
+        paths=(entry,),
+        target_version=version,
+        compiler_search_paths=(entry.parent,),
+        source_snapshot=snapshot,
+    )
+    return compile_source_file(entry, config, version)
+
+
+def _overlay_target_compile(entry: Path, version: str) -> CompileResult:
+    """Compile a target as validation does, over staged copies of its imports."""
+    config = Config(paths=(entry,), target_version=version, compiler_search_paths=(entry.parent,))
+    sources = {entry: entry.read_text()}
+    with target_overlay(sources, version, (entry.parent,)) as overlay:
+        return compile_target_source(entry, entry.read_text(), config, overlay)
+
+
+LEDGER_ENTRY = """#pragma version {version}
+import ledger
+
+initializes: ledger
+exports: ledger.__interface__
+
+@deploy
+def __init__():
+    ledger.__init__()
+"""
+
+LEDGER_MODULE = """#pragma version {version}
+
+struct Record:
+    {first}: uint256
+    {second}: uint256
+
+record: public(Record)
+
+@deploy
+def __init__():
+    self.record.left = 1
+    self.record.right = 2
+"""
+
+
+@pytest.mark.parametrize("version", ["0.4.3", "0.5.0b2"])
+def test_imported_module_struct_member_order_is_compared(tmp_path: Path, version: str) -> None:
+    def project(name: str, first: str, second: str) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        module = LEDGER_MODULE.format(version=version, first=first, second=second)
+        (root / "ledger.vy").write_text(module)
+        entry = root / "main.vy"
+        entry.write_text(LEDGER_ENTRY.format(version=version))
+        return entry
+
+    source_entry = project("source", "left", "right")
+    copy_entry = project("copy", "left", "right")
+    swapped_entry = project("swapped", "right", "left")
+    source = _captured_source_compile(source_entry, version)
+    changed = ("changed storage type definition: ledger.record (Record)",)
+
+    for compile_entry in (_captured_source_compile, _overlay_target_compile):
+        copy = compile_entry(copy_entry, version)
+        swapped = compile_entry(swapped_entry, version)
+        assert copy.status == swapped.status == "passed"
+        assert compare_artifact_details(source, copy)[2] == []
+        # The layout names only the struct, so its members come from the module's AST.
+        assert tuple(compare_artifact_details(source, swapped)[2]) == changed
+
+
+def test_module_evidence_requires_the_layout_compile_bytecode(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "ledger.vy").write_text(
+        LEDGER_MODULE.format(version="0.4.3", first="left", second="right")
+    )
+    entry = tmp_path / "main.vy"
+    entry.write_text(LEDGER_ENTRY.format(version="0.4.3"))
+    run = compiler._run_compile_with_formats
+    probes = []
+
+    def change_module_before_probe(command, path, config, formats, *args, **kwargs):
+        if "annotated_ast" not in formats:
+            return run(command, path, config, formats, *args, **kwargs)
+        # A module read live (not captured) changes between the two compiles.
+        module = path.parent / "ledger.vy"
+        module.write_text(module.read_text().replace("left: uint256", "left: uint128"))
+        probe = run(command, path, config, formats, *args, **kwargs)
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(compiler, "_run_compile_with_formats", change_module_before_probe)
+    config = Config(paths=(entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,))
+    with target_overlay({entry: entry.read_text()}, "0.4.3", (tmp_path,)) as overlay:
+        result = compile_target_source(entry, entry.read_text(), config, overlay)
+
+    # The probe itself succeeded with module ASTs; only the bytecode differs.
+    [probe] = probes
+    assert result.status == probe.status == "passed"
+    assert isinstance(probe.artifacts["annotated_ast"].get("imports"), list)
+    assert probe.artifacts["bytecode"] != result.artifacts["bytecode"]
+    assert compiler.STORAGE_TYPE_AST not in result.artifacts
+
+
+TYPES_MODULE = """#pragma version 0.4.3
+
+struct Record:
+    {fields}
+
+flag Permission:
+    {members}
+"""
+
+TYPES_ENTRY = """#pragma version 0.4.3
+import types
+
+record: public(types.Record)
+permission: public(types.Permission)
+"""
+
+
+def test_imported_types_stored_by_the_root_compare_member_order(tmp_path: Path) -> None:
+    def project(name: str, fields: str, members: str) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "types.vy").write_text(
+            TYPES_MODULE.format(fields="\n    ".join(fields), members="\n    ".join(members))
+        )
+        entry = root / "main.vy"
+        entry.write_text(TYPES_ENTRY)
+        return entry
+
+    struct = ("left: uint256", "right: uint256")
+    flag = ("READ", "WRITE")
+    source_entry = project("source", struct, flag)
+    variants = {
+        project("copy", struct, flag): [],
+        project("struct", struct[::-1], flag): [
+            "changed storage type definition: record (Record)",
+        ],
+        project("flag", struct, flag[::-1]): [
+            "changed storage type definition: permission (Permission)",
+        ],
+    }
+    source = _captured_source_compile(source_entry, "0.4.3")
+
+    for compile_entry in (_captured_source_compile, _overlay_target_compile):
+        for entry, differences in variants.items():
+            target = compile_entry(entry, "0.4.3")
+            assert target.status == "passed"
+            # The layout names only Record and Permission; their members live in types.vy.
+            assert sorted(compare_artifact_details(source, target)[2]) == differences
+            assert compare_artifacts(source, target)[2] is (not differences)
+
+
+def test_struct_field_of_a_module_interface_stays_comparable(tmp_path: Path) -> None:
+    (tmp_path / "iface.vy").write_text(
+        "#pragma version 0.4.3\n@external\ndef f():\n    pass\n"
+    )
+    types = TYPES_MODULE.format(fields="x: uint256\n    i: iface.__interface__", members="A")
+    # An imported struct's field may itself be a module interface.
+    (tmp_path / "types.vy").write_text(types.replace("\n\n", "\nimport iface\n\n", 1))
+    entry = tmp_path / "main.vy"
+    entry.write_text(TYPES_ENTRY)
+
+    source = _captured_source_compile(entry, "0.4.3")
+    target = _overlay_target_compile(entry, "0.4.3")
+
+    assert source.status == target.status == "passed"
+    assert compare_artifact_details(source, target)[2] == []
+    assert compare_artifacts(source, target)[2] is True
+
+
+def test_struct_field_bounded_by_an_imported_constant_stays_comparable(tmp_path: Path) -> None:
+    (tmp_path / "limits.vy").write_text("#pragma version 0.4.3\nN: constant(uint256) = 3\n")
+    types = TYPES_MODULE.format(fields="x: uint256\n    values: uint256[limits.N]", members="A")
+    # An imported struct's array bound may be another module's constant.
+    (tmp_path / "types.vy").write_text(types.replace("\n\n", "\nimport limits\n\n", 1))
+    entry = tmp_path / "main.vy"
+    entry.write_text(TYPES_ENTRY)
+
+    source = _captured_source_compile(entry, "0.4.3")
+    target = _overlay_target_compile(entry, "0.4.3")
+
+    assert source.status == target.status == "passed"
+    assert compare_artifact_details(source, target)[2] == []
+    assert compare_artifacts(source, target)[2] is True
+
+
+def test_local_struct_with_an_imported_field_compares_its_members(tmp_path: Path) -> None:
+    entry_text = """#pragma version 0.4.3
+import types
+
+struct Outer:
+    inner: types.Record
+
+outer: public(Outer)
+"""
+
+    def project(name: str, fields: tuple[str, ...]) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "types.vy").write_text(
+            TYPES_MODULE.format(fields="\n    ".join(fields), members="A")
+        )
+        entry = root / "main.vy"
+        entry.write_text(entry_text)
+        return entry
+
+    fields = ("left: uint256", "right: uint256")
+    source = _captured_source_compile(project("source", fields), "0.4.3")
+
+    for entry, differences in (
+        (project("copy", fields), []),
+        (project("swapped", fields[::-1]), ["changed storage type definition: outer (Outer)"]),
+    ):
+        target = _overlay_target_compile(entry, "0.4.3")
+        assert source.status == target.status == "passed"
+        assert compare_artifact_details(source, target)[2] == differences
+        assert compare_artifacts(source, target)[2] is (not differences)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    ["HashMap[address, lib.__interface__]", "DynArray[lib.__interface__, 3]", "lib.__interface__[2]"],
+)
+def test_module_interface_in_a_container_stays_comparable(tmp_path: Path, annotation: str) -> None:
+    (tmp_path / "lib.vy").write_text("#pragma version 0.4.3\n@external\ndef f():\n    pass\n")
+    entry = tmp_path / "main.vy"
+    entry.write_text(f"#pragma version 0.4.3\nimport lib\nm: {annotation}\n")
+
+    source = _captured_source_compile(entry, "0.4.3")
+    target = _overlay_target_compile(entry, "0.4.3")
+
+    assert source.status == target.status == "passed"
+    # The layout names the element by lib.vy's path, which no definition binds.
+    assert compare_artifact_details(source, target)[2] == []
+    assert compare_artifacts(source, target)[2] is True
+
+
+@pytest.mark.parametrize("name", ["int", "uint"])
+def test_module_flag_spelling_a_bare_integer_compares_its_members(
+    tmp_path: Path, name: str
+) -> None:
+    def project(label: str, *members: str) -> Path:
+        root = tmp_path / label
+        root.mkdir()
+        (root / "ledger.vy").write_text(
+            f"#pragma version 0.4.3\nflag {name}:\n    "
+            + "\n    ".join(members)
+            + f"\npermission: public({name})\n"
+        )
+        entry = root / "main.vy"
+        entry.write_text(
+            "#pragma version 0.4.3\nimport ledger\ninitializes: ledger\n"
+            "exports: ledger.__interface__\n"
+        )
+        return entry
+
+    source = _captured_source_compile(project("source", "READ", "WRITE"), "0.4.3")
+    copy_entry = project("copy", "READ", "WRITE")
+    swapped_entry = project("swapped", "WRITE", "READ")
+    changed = [f"changed storage type definition: ledger.permission ({name})"]
+
+    for compile_entry in (_captured_source_compile, _overlay_target_compile):
+        # Vyper has no bare int/uint, so the layout's name is the module's flag.
+        assert compare_artifact_details(source, compile_entry(copy_entry, "0.4.3"))[2] == []
+        assert compare_artifact_details(source, compile_entry(swapped_entry, "0.4.3"))[2] == changed

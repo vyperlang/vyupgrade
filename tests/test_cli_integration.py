@@ -419,6 +419,35 @@ permissions: HashMap[address, Permission]
     }
 
 
+def test_real_reordered_flag_members_change_layout(tmp_path: Path) -> None:
+    contract = tmp_path / "flag_reorder.vy"
+    source = """#pragma version 0.4.0
+flag Permission:
+    READ
+    WRITE
+
+permission: Permission
+"""
+    target = """#pragma version 0.4.3
+flag Permission:
+    WRITE
+    READ
+
+permission: Permission
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.0")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, False)
+
+
 def test_real_inline_interface_marker_omission_uses_target_ast(tmp_path: Path) -> None:
     contract = tmp_path / "interface_storage.vy"
     source = """#pragma version 0.4.0
@@ -2992,3 +3021,19 @@ def test_real_compiler_zero_bound_dynarray_storage_validates(tmp_path: Path) -> 
     validation = json.loads(report.read_text())["files"][0]["validation"]
     assert validation["storage_layout_equal"] is True
     assert contract.read_text().startswith("#pragma version 0.5.0b2\n")
+
+
+def test_real_compiler_module_interface_storage_validates(tmp_path: Path) -> None:
+    # 0.4.3 names a stored module interface by the module's absolute path, and
+    # the source and target compiles stage the project in different overlays.
+    (tmp_path / "lib.vy").write_text("#pragma version 0.4.3\n@external\ndef f():\n    pass\n")
+    contract = tmp_path / "main.vy"
+    contract.write_text("#pragma version 0.4.3\nimport lib\nm: lib.__interface__\n")
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--target-version", "0.4.3", "--report-json", str(report)])
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["storage_layout_diff"] == []
+    assert validation["storage_layout_equal"] is True
+    assert validation["decision"]["status"] != "blocked"
+    assert code == 0

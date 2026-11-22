@@ -504,10 +504,28 @@ def _check_shared_target(
             f"cannot export a shared closure for {path}: bytecode differs from the isolated project compile"
         )
     compared = compare_validation_artifacts(isolated, shared)
-    if False in compared.equalities:
+    abi, method_identifiers, storage_layout = compared.equalities
+    storage_conflict = storage_layout is False and not set(
+        compared.storage_layout.differences
+    ) <= _unverified_module_storage(isolated) & _unverified_module_storage(shared)
+    if False in (abi, method_identifiers) or storage_conflict:
         raise OverlayLayoutConflictError(
             f"cannot export a shared closure for {path}: validation artifacts differ from the isolated project compile"
         )
+
+
+def _unverified_module_storage(result: CompileResult) -> set[str]:
+    """Module-owned storage whose type this compile alone can't resolve.
+
+    Missing module evidence on both compiles of one closure means neither can
+    check the type; their bytecode has already matched.
+    """
+    differences = compare_validation_artifacts(result, result).storage_layout.differences
+    return {
+        line
+        for line in differences
+        if line.startswith("unverified ") and "." in line.partition(": ")[2].partition(" (")[0]
+    }
 
 
 def _compile_source(

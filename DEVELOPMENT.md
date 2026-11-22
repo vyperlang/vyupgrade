@@ -143,14 +143,36 @@ independently provable.
 A mapping's one-slot width and a struct's name do not describe its member
 layout. Comparing user-defined types inside mappings or arrays therefore also
 requires source and target compiler AST evidence: each name must resolve through
-the same grammar path in the root variable's annotation to a local definition.
+the same grammar path in the root variable's annotation to its definition. A
+local name resolves in the root module. An imported type such as `lib.Record`,
+whose layout names only `Record`, resolves in its own module through the
+`annotated_ast` imports, which validation requests with an extra compile when a
+storage type needs them.
 Struct members are compared in declaration order, recursively expanding nested
-structs and evaluating bounded integer arithmetic in constants. Integer
-`min_value`/`max_value` calls are normalized.
-Enums, flags and interfaces remain scalar types. Missing, malformed, cyclic or
-imported definitions fail closed and require `--allow-storage-layout-change`.
+structs and evaluating bounded integer arithmetic in constants, an imported
+module's (`lib.N`) included. Integer
+`min_value`/`max_value` calls are normalized. Enum and flag members are compared
+in declaration order, which assigns their bits. Interfaces remain scalar types:
+a module interface such as `lib.__interface__`, which the layout names by the
+module's path, compares by that spelling at its grammar path.
+Missing, malformed or cyclic definitions, and imported ones whose module can't
+be resolved, fail closed and require `--allow-storage-layout-change`.
 Unsupported bound expressions also require this waiver, even when their source
 text is unchanged.
+
+Storage owned by an initialized module is keyed in the layout by that module's
+alias. When such a variable's type has an unknown width (a struct, or a
+container of one), validation compiles of captured sources (a source snapshot
+or a target overlay) add the compiler's `annotated_ast` with its imported
+modules. It comes from a second compile whose bytecode, which embeds a hash of
+every compiled source, must match the first. The type then resolves in the
+declaring module's own AST, found by following each `initializes:` target
+through its import. Without that evidence (for example on Vyper 0.4.0, whose
+`annotated_ast` lists no imports) the variable is reported as unverified and
+requires the same waiver. When a shared
+closure export's isolated and shared compiles have identical bytecode and
+neither can resolve the same module-owned variable, that unverified type doesn't
+block the export.
 
 JSON reports use the existing top-level envelope with `schema_version: 7`.
 Lists shared by many attestations (declared sources, resolved packages) are
