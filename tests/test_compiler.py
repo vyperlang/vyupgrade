@@ -4470,12 +4470,20 @@ def test_compare_artifacts_normalizes_legacy_storage_type_names() -> None:
         }
 
 
+    def members(*values: str) -> list[dict[str, object]]:
+        return [{"ast_type": "Expr", "value": name(value)} for value in values]
+
+
     ast = {
         "ast_type": "Module",
         "body": [
             {"ast_type": "InterfaceDef", "name": "ERC20"},
-            {"ast_type": "EnumDef", "name": "Epoch"},
-            {"ast_type": "FlagDef", "name": "Permission"},
+            {
+                "ast_type": "EnumDef",
+                "name": "Epoch",
+                "body": members("SLEEP", "COLLECT", "EXCHANGE", "FORWARD"),
+            },
+            {"ast_type": "FlagDef", "name": "Permission", "body": members("READ", "WRITE")},
             {
                 "ast_type": "VariableDecl",
                 "target": name("is_killed"),

@@ -474,3 +474,61 @@ def test_mapped_struct_unresolved_bound_expression_fails_closed(operator: str, e
     }
     ast = _struct_module([_member("items", _subscript("DynArray", _name("uint256"), bound))])
     assert not _struct_comparison(ast, ast).equal
+
+
+def _flag_module(kind: str, *members: str) -> dict[str, object]:
+    return {
+        "ast_type": "Module",
+        "body": [
+            {
+                "ast_type": kind,
+                "name": "Permission",
+                "body": [{"ast_type": "Expr", "value": _name(member)} for member in members],
+            },
+            {
+                "ast_type": "VariableDecl",
+                "target": _name("perms"),
+                "annotation": _subscript("HashMap", _name("address"), _name("Permission")),
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("target_members", "equal"),
+    [(("READ", "WRITE"), True), (("WRITE", "READ"), False), (("READ",), False)],
+)
+def test_legacy_enum_matches_flag_only_with_same_member_order(
+    target_members: tuple[str, ...], equal: bool
+) -> None:
+    from vyupgrade.compiler import CompileResult, compare_validation_artifacts
+
+    # Layout shapes as 0.3.10 and 0.4.3 emit them for HashMap[address, Permission].
+    source = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "perms": {
+                        "slot": 0,
+                        "type": "HashMap[address, enum Permission('READ','WRITE')]",
+                    }
+                },
+                "code_layout": {},
+            },
+            "ast": _flag_module("EnumDef", "READ", "WRITE"),
+        },
+    )
+    target = CompileResult(
+        "passed",
+        artifacts={
+            "layout": {
+                "storage_layout": {
+                    "perms": {"slot": 0, "type": "HashMap[address, Permission]", "n_slots": 1}
+                }
+            },
+            "ast": _flag_module("FlagDef", *target_members),
+        },
+    )
+
+    assert compare_validation_artifacts(source, target).storage_layout.equal is equal

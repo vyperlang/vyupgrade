@@ -419,6 +419,35 @@ permissions: HashMap[address, Permission]
     }
 
 
+def test_real_reordered_flag_members_change_layout(tmp_path: Path) -> None:
+    contract = tmp_path / "flag_reorder.vy"
+    source = """#pragma version 0.4.0
+flag Permission:
+    READ
+    WRITE
+
+permission: Permission
+"""
+    target = """#pragma version 0.4.3
+flag Permission:
+    WRITE
+    READ
+
+permission: Permission
+"""
+    contract.write_text(source, encoding="utf-8")
+    config = Config(paths=(contract,), target_version="0.4.3")
+
+    source_compile = compile_source_file(contract, config, "0.4.0")
+    target_compile = compile_target_source(contract, target, config)
+
+    assert source_compile.status == "passed"
+    assert target_compile.status == "passed"
+    assert unavailable_validation_artifacts(source_compile) == []
+    assert unavailable_validation_artifacts(target_compile) == []
+    assert compare_artifacts(source_compile, target_compile) == (True, True, False)
+
+
 def test_real_inline_interface_marker_omission_uses_target_ast(tmp_path: Path) -> None:
     contract = tmp_path / "interface_storage.vy"
     source = """#pragma version 0.4.0
