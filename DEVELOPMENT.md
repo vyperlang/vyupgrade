@@ -149,7 +149,8 @@ whose layout names only `Record`, resolves in its own module through the
 `annotated_ast` imports, which validation requests with an extra compile when a
 storage type needs them.
 Struct members are compared in declaration order, recursively expanding nested
-structs and evaluating bounded integer arithmetic in constants. Integer
+structs and evaluating bounded integer arithmetic in constants, an imported
+module's (`lib.N`) included. Integer
 `min_value`/`max_value` calls are normalized. Enum and flag members are compared
 in declaration order, which assigns their bits. Interfaces remain scalar types.
 Missing, malformed or cyclic definitions, and imported ones whose module can't

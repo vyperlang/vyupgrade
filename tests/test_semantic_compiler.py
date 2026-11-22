@@ -579,6 +579,22 @@ def test_struct_field_of_a_module_interface_stays_comparable(tmp_path: Path) -> 
     assert compare_artifacts(source, target)[2] is True
 
 
+def test_struct_field_bounded_by_an_imported_constant_stays_comparable(tmp_path: Path) -> None:
+    (tmp_path / "limits.vy").write_text("#pragma version 0.4.3\nN: constant(uint256) = 3\n")
+    types = TYPES_MODULE.format(fields="x: uint256\n    values: uint256[limits.N]", members="A")
+    # An imported struct's array bound may be another module's constant.
+    (tmp_path / "types.vy").write_text(types.replace("\n\n", "\nimport limits\n\n", 1))
+    entry = tmp_path / "main.vy"
+    entry.write_text(TYPES_ENTRY)
+
+    source = _captured_source_compile(entry, "0.4.3")
+    target = _overlay_target_compile(entry, "0.4.3")
+
+    assert source.status == target.status == "passed"
+    assert compare_artifact_details(source, target)[2] == []
+    assert compare_artifacts(source, target)[2] is True
+
+
 def test_local_struct_with_an_imported_field_compares_its_members(tmp_path: Path) -> None:
     entry_text = """#pragma version 0.4.3
 import types

@@ -565,20 +565,24 @@ class _StorageTypeEvidence:
             module = self.modules.get(path) if path is not None else None
         return path if module is not None else None
 
-    def _imported_definition_profile(
-        self, qualified: str, seen: frozenset[str]
+    def _imported_profile(
+        self, qualified: str, seen: frozenset[str], budget: Iterator[int] | None = None
     ) -> object | None:
+        """Profile an imported type or constant, such as ``lib.Record`` or ``lib.N``."""
         *chain, name = qualified.split(".")
         path = self._imported_path(tuple(chain))
         module = self.modules.get(path) if path is not None else None
-        if module is None or name not in module.definitions:
-            # An imported type is only checked against its own module's definition.
-            return None
         key = f"{path}:{name}"
-        if key in seen:
+        if module is None or key in seen:
+            # An imported name is only checked against its own module's declaration.
             return None
         # Bare names in ``seen`` belong to this module, not the imported one.
-        return module._definition_profile(name, frozenset(s for s in seen if ":" in s) | {key})
+        seen = frozenset(s for s in seen if ":" in s) | {key}
+        if name in module.definitions:
+            return module._definition_profile(name, seen)
+        if name in module.constants:
+            return module._annotation_profile(module.constants[name], seen, budget)
+        return None
 
     def _layout_profile(
         self,
@@ -617,7 +621,7 @@ class _StorageTypeEvidence:
             (qualified,) = imported
             if qualified.rpartition(".")[2] != type_name:
                 return None
-            return self._imported_definition_profile(qualified, frozenset())
+            return self._imported_profile(qualified, frozenset())
         if (path, type_name) in bindings and type_name in self.definitions:
             # So may a local definition bound at this path.
             return self._definition_profile(type_name, frozenset())
@@ -693,7 +697,7 @@ class _StorageTypeEvidence:
             chain = _imported_type_chain(node)
             if chain is None:
                 return None
-            return self._imported_definition_profile(".".join(chain), seen)
+            return self._imported_profile(".".join(chain), seen, budget)
         if ast_type in {"Int", "Num"}:
             value = node.get("value") if ast_type == "Int" else node.get("n")
             return ("int", value) if type(value) is int else None
