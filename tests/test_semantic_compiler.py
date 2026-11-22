@@ -406,6 +406,26 @@ def test_public_error_resolves_to_an_imported_definition(
         assert command[command.index("-f") + 1] == "annotated_ast"
 
 
+def _captured_source_compile(entry: Path, version: str) -> CompileResult:
+    """Compile a source as validation does, from a snapshot of its imports."""
+    snapshot = resolve_import_closure({entry: entry.read_text()}, (entry.parent,))
+    config = Config(
+        paths=(entry,),
+        target_version=version,
+        compiler_search_paths=(entry.parent,),
+        source_snapshot=snapshot,
+    )
+    return compile_source_file(entry, config, version)
+
+
+def _overlay_target_compile(entry: Path, version: str) -> CompileResult:
+    """Compile a target as validation does, over staged copies of its imports."""
+    config = Config(paths=(entry,), target_version=version, compiler_search_paths=(entry.parent,))
+    sources = {entry: entry.read_text()}
+    with target_overlay(sources, version, (entry.parent,)) as overlay:
+        return compile_target_source(entry, entry.read_text(), config, overlay)
+
+
 LEDGER_ENTRY = """#pragma version {version}
 import ledger
 
@@ -443,33 +463,15 @@ def test_imported_module_struct_member_order_is_compared(tmp_path: Path, version
         entry.write_text(LEDGER_ENTRY.format(version=version))
         return entry
 
-    def compile_source(entry: Path) -> CompileResult:
-        snapshot = resolve_import_closure({entry: entry.read_text()}, (entry.parent,))
-        config = Config(
-            paths=(entry,),
-            target_version=version,
-            compiler_search_paths=(entry.parent,),
-            source_snapshot=snapshot,
-        )
-        return compile_source_file(entry, config, version)
-
-    def compile_target(entry: Path) -> CompileResult:
-        config = Config(
-            paths=(entry,), target_version=version, compiler_search_paths=(entry.parent,)
-        )
-        sources = {entry: entry.read_text()}
-        with target_overlay(sources, version, (entry.parent,)) as overlay:
-            return compile_target_source(entry, entry.read_text(), config, overlay)
-
     source_entry = project("source", "left", "right")
     copy_entry = project("copy", "left", "right")
     swapped_entry = project("swapped", "right", "left")
-    source = compile_source(source_entry)
+    source = _captured_source_compile(source_entry, version)
     changed = ("changed storage type definition: ledger.record (Record)",)
 
-    for compile_entry in (compile_source, compile_target):
-        copy = compile_entry(copy_entry)
-        swapped = compile_entry(swapped_entry)
+    for compile_entry in (_captured_source_compile, _overlay_target_compile):
+        copy = compile_entry(copy_entry, version)
+        swapped = compile_entry(swapped_entry, version)
         assert copy.status == swapped.status == "passed"
         assert compare_artifact_details(source, copy)[2] == []
         # The layout names only the struct, so its members come from the module's AST.
@@ -548,24 +550,18 @@ def test_imported_types_stored_by_the_root_compare_member_order(tmp_path: Path) 
             "changed storage type definition: permission (Permission)",
         ],
     }
-    config = Config(
-        paths=(source_entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,)
-    )
-    source = compile_source_file(source_entry, config, "0.4.3")
+    source = _captured_source_compile(source_entry, "0.4.3")
 
-    for compile_entry in (
-        lambda entry: compile_source_file(entry, config, "0.4.3"),
-        lambda entry: compile_target_source(entry, entry.read_text(), config),
-    ):
+    for compile_entry in (_captured_source_compile, _overlay_target_compile):
         for entry, differences in variants.items():
-            target = compile_entry(entry)
+            target = compile_entry(entry, "0.4.3")
             assert target.status == "passed"
             # The layout names only Record and Permission; their members live in types.vy.
             assert sorted(compare_artifact_details(source, target)[2]) == differences
             assert compare_artifacts(source, target)[2] is (not differences)
 
 
-def test_stored_module_interface_stays_comparable(tmp_path: Path) -> None:
+def test_struct_field_of_a_module_interface_stays_comparable(tmp_path: Path) -> None:
     (tmp_path / "iface.vy").write_text(
         "#pragma version 0.4.3\n@external\ndef f():\n    pass\n"
     )
@@ -573,14 +569,12 @@ def test_stored_module_interface_stays_comparable(tmp_path: Path) -> None:
     # An imported struct's field may itself be a module interface.
     (tmp_path / "types.vy").write_text(types.replace("\n\n", "\nimport iface\n\n", 1))
     entry = tmp_path / "main.vy"
-    entry.write_text(f"{TYPES_ENTRY}module: types.__interface__\n")
-    config = Config(paths=(entry,), target_version="0.4.3")
+    entry.write_text(TYPES_ENTRY)
 
-    source = compile_source_file(entry, config, "0.4.3")
-    target = compile_target_source(entry, entry.read_text(), config)
+    source = _captured_source_compile(entry, "0.4.3")
+    target = _overlay_target_compile(entry, "0.4.3")
 
     assert source.status == target.status == "passed"
-    # The layout types ``module`` as the module's path, not as a definition.
     assert compare_artifact_details(source, target)[2] == []
     assert compare_artifacts(source, target)[2] is True
 
@@ -606,17 +600,13 @@ outer: public(Outer)
         return entry
 
     fields = ("left: uint256", "right: uint256")
-    source_entry = project("source", fields)
-    config = Config(
-        paths=(source_entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,)
-    )
-    source = compile_source_file(source_entry, config, "0.4.3")
+    source = _captured_source_compile(project("source", fields), "0.4.3")
 
     for entry, differences in (
         (project("copy", fields), []),
         (project("swapped", fields[::-1]), ["changed storage type definition: outer (Outer)"]),
     ):
-        target = compile_target_source(entry, entry.read_text(), config)
+        target = _overlay_target_compile(entry, "0.4.3")
         assert source.status == target.status == "passed"
         assert compare_artifact_details(source, target)[2] == differences
         assert compare_artifacts(source, target)[2] is (not differences)
