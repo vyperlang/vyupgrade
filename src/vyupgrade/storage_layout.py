@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -23,6 +23,7 @@ __all__ = (
     "StorageValue",
     "compare_storage_layouts",
     "parse_storage_layout",
+    "storage_layout_needs_module_types",
 )
 
 
@@ -382,12 +383,28 @@ def _ast_subscript_args(slice_node: object) -> list[object]:
     if slice_node.get("ast_type") == "Index":
         return _ast_subscript_args(slice_node.get("value"))
     if slice_node.get("ast_type") == "Tuple":
-        for field in ("elements", "elts"):
-            values = slice_node.get(field)
+        for key in ("elements", "elts"):
+            values = slice_node.get(key)
             if isinstance(values, list):
                 return values
         return []
     return [slice_node]
+
+
+def _initialized_alias_chain(annotation: object) -> tuple[str, ...] | None:
+    if isinstance(annotation, dict) and annotation.get("ast_type") == "Subscript":
+        annotation = annotation.get("value")
+    chain: list[str] = []
+    while isinstance(annotation, dict) and annotation.get("ast_type") == "Attribute":
+        attr = annotation.get("attr")
+        if not _nonempty_string(attr):
+            return None
+        chain.append(attr)
+        annotation = annotation.get("value")
+    name = _ast_name(annotation)
+    if name is None:
+        return None
+    return (name, *reversed(chain))
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +412,12 @@ class _StorageTypeEvidence:
     definitions: dict[str, dict[str, object]]
     variables: dict[str, object]
     constants: dict[str, object]
+    # Import alias -> compiler ``resolved_path``.
+    imports: dict[str, str] = field(default_factory=dict)
+    # Layout namespace key -> alias chain of the ``initializes:`` target.
+    initializes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Imported module evidence by ``resolved_path``, from ``annotated_ast``.
+    modules: dict[str, _StorageTypeEvidence] = field(default_factory=dict)
 
     @classmethod
     def from_ast(cls, ast: object) -> _StorageTypeEvidence:
@@ -404,12 +427,38 @@ class _StorageTypeEvidence:
             root = root_ast(ast)
         except TypeError:
             return cls({}, {}, {})
+        evidence = cls._from_module(root)
+        imports = ast.get("imports")
+        if not isinstance(imports, list):
+            return evidence
+        modules: dict[str, _StorageTypeEvidence] = {}
+        digests: dict[str, object] = {}
+        for module in imports:
+            if not isinstance(module, dict) or module.get("ast_type") != "Module":
+                continue
+            path = module.get("resolved_path")
+            digest = module.get("source_sha256sum")
+            if not isinstance(path, str) or not path:
+                continue
+            if path in digests:
+                # Vyper lists a module once per import request that reached it.
+                if digests[path] != digest:
+                    return evidence
+                continue
+            digests[path] = digest
+            modules[path] = cls._from_module(module)
+        return replace(evidence, modules=modules)
+
+    @classmethod
+    def _from_module(cls, root: dict[str, object]) -> _StorageTypeEvidence:
         body = root.get("body")
         if root.get("ast_type") != "Module" or not isinstance(body, list):
             return cls({}, {}, {})
         definitions: dict[str, dict[str, object]] = {}
         variables: dict[str, object] = {}
         constants: dict[str, object] = {}
+        imports: dict[str, str] = {}
+        initializes: dict[str, tuple[str, ...]] = {}
         for node in body:
             if not isinstance(node, dict):
                 continue
@@ -426,13 +475,52 @@ class _StorageTypeEvidence:
                 variables[name] = annotation
                 if node.get("is_constant") is True or _constant_annotation(annotation):
                     constants[name] = node.get("value")
-        return cls(definitions, variables, constants)
+            elif node.get("ast_type") in {"Import", "ImportFrom"}:
+                info = node.get("import_info")
+                if not isinstance(info, dict):
+                    continue
+                alias = info.get("alias")
+                path = info.get("resolved_path")
+                if not _nonempty_string(alias) or not _nonempty_string(path):
+                    continue
+                if alias in imports:
+                    return cls({}, {}, {})
+                imports[alias] = path
+            elif node.get("ast_type") == "InitializesDecl":
+                chain = _initialized_alias_chain(node.get("annotation"))
+                if chain is None or chain[-1] in initializes:
+                    return cls({}, {}, {})
+                # Vyper keys a module's layout by its alias where it was imported.
+                initializes[chain[-1]] = chain
+        return cls(definitions, variables, constants, imports, initializes)
 
     def profile(self, type_name: str, variable: str) -> object | None:
+        *namespace, name = variable.split(".")
+        owner: _StorageTypeEvidence | None = self
+        for key in namespace:
+            owner = self._initialized_module(owner, key) if owner is not None else None
+        if owner is None:
+            owner = _StorageTypeEvidence({}, {}, {})
         bindings = _target_annotation_interface_markers(
-            self.variables.get(variable), frozenset(self.definitions)
+            owner.variables.get(name), frozenset(owner.definitions)
         )
-        return self._layout_profile(type_name, bindings, (), nested=False)
+        profile = owner._layout_profile(type_name, bindings, (), nested=False)
+        if namespace and isinstance(profile, tuple) and profile[0] == "opaque":
+            # Name and width alone never prove a module's own type layout.
+            return None
+        return profile
+
+    def _initialized_module(
+        self, owner: _StorageTypeEvidence, key: str
+    ) -> _StorageTypeEvidence | None:
+        chain = owner.initializes.get(key)
+        if chain is None:
+            return None
+        module: _StorageTypeEvidence | None = owner
+        for alias in chain:
+            path = module.imports.get(alias) if module is not None else None
+            module = self.modules.get(path) if path is not None else None
+        return module
 
     def _layout_profile(
         self,
@@ -924,6 +1012,18 @@ def _matching_square_bracket(value: str, open_index: int) -> int | None:
             if depth == 0:
                 return index
     return None
+
+
+def storage_layout_needs_module_types(layout: StorageLayout | None) -> bool:
+    """Whether a module's storage type can only be checked with that module's AST."""
+    if layout is None:
+        return False
+    unresolved = _StorageTypeEvidence({}, {}, {})
+    return any(
+        "." in name and unresolved.profile(value.type_name, name) is None
+        for namespace in (layout.persistent, layout.transient)
+        for name, value in namespace.items()
+    )
 
 
 def compare_storage_layouts(

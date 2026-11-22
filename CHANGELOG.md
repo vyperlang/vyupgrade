@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Compare struct member definitions of storage declared in an initialized
+  module. A module's storage type that can't be resolved from its own AST
+  is now reported as unverified instead of matching on name and width.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into
