@@ -16,8 +16,10 @@ from vyupgrade.ast_facts import iter_nodes, root_ast
 from vyupgrade.cli import main
 from vyupgrade.compiler import (
     CompileResult,
+    compare_artifact_details,
     compile_source_ast,
     compile_source_file,
+    compile_target_source,
     resolve_import_closure,
     unavailable_validation_artifacts,
 )
@@ -400,3 +402,59 @@ def test_public_error_resolves_to_an_imported_definition(
         assert len(compiler_processes) == 2
         command = compiler_processes[-1].command
         assert command[command.index("-f") + 1] == "annotated_ast"
+
+
+LEDGER_ENTRY = """#pragma version 0.4.3
+import ledger
+
+initializes: ledger
+exports: ledger.__interface__
+
+@deploy
+def __init__():
+    ledger.__init__()
+"""
+
+LEDGER_MODULE = """#pragma version 0.4.3
+
+struct Record:
+    {first}: uint256
+    {second}: uint256
+
+record: public(Record)
+
+@deploy
+def __init__():
+    self.record.left = 1
+    self.record.right = 2
+"""
+
+
+def test_imported_module_struct_member_order_is_compared(tmp_path: Path) -> None:
+    def project(name: str, first: str, second: str) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "ledger.vy").write_text(LEDGER_MODULE.format(first=first, second=second))
+        entry = root / "main.vy"
+        entry.write_text(LEDGER_ENTRY)
+        return entry
+
+    source_entry = project("source", "left", "right")
+    copy_entry = project("copy", "left", "right")
+    swapped_entry = project("swapped", "right", "left")
+    config = Config(
+        paths=(source_entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,)
+    )
+    source = compile_source_file(source_entry, config, "0.4.3")
+    changed = ("changed storage type definition: ledger.record (Record)",)
+
+    for compile_entry in (
+        lambda entry: compile_source_file(entry, config, "0.4.3"),
+        lambda entry: compile_target_source(entry, entry.read_text(), config),
+    ):
+        copy = compile_entry(copy_entry)
+        swapped = compile_entry(swapped_entry)
+        assert copy.status == swapped.status == "passed"
+        assert compare_artifact_details(source, copy)[2] == []
+        # The layout names only the struct, so its members come from the module's AST.
+        assert tuple(compare_artifact_details(source, swapped)[2]) == changed
