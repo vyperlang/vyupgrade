@@ -143,12 +143,17 @@ independently provable.
 A mapping's one-slot width and a struct's name do not describe its member
 layout. Comparing user-defined types inside mappings or arrays therefore also
 requires source and target compiler AST evidence: each name must resolve through
-the same grammar path in the root variable's annotation to a local definition.
+the same grammar path in the root variable's annotation to its definition. A
+local name resolves in the root module. An imported type such as `lib.Record`,
+whose layout names only `Record`, resolves in its own module through the
+`annotated_ast` imports, which validation requests with an extra compile when a
+storage type needs them.
 Struct members are compared in declaration order, recursively expanding nested
 structs and evaluating bounded integer arithmetic in constants. Integer
-`min_value`/`max_value` calls are normalized.
-Enums, flags and interfaces remain scalar types. Missing, malformed, cyclic or
-imported definitions fail closed and require `--allow-storage-layout-change`.
+`min_value`/`max_value` calls are normalized. Enum and flag members are compared
+in declaration order, which assigns their bits. Interfaces remain scalar types.
+Missing, malformed or cyclic definitions, and imported ones whose module can't
+be resolved, fail closed and require `--allow-storage-layout-change`.
 Unsupported bound expressions also require this waiver, even when their source
 text is unchanged.
 

@@ -770,3 +770,23 @@ def test_root_storage_of_an_imported_type_needs_module_evidence(
     ]}}
     layout = parse_storage_layout({"storage_layout": {"x": {"slot": 0, "type": "Record"}}})
     assert storage_layout_needs_module_types(layout, raw_ast) is needed
+
+
+@pytest.mark.parametrize(
+    ("field", "needed"),
+    [(_ledger_type(), True), (_ledger_type("__interface__"), False), (_name("uint256"), False)],
+)
+def test_local_struct_with_an_imported_field_needs_module_evidence(
+    field: dict[str, object], needed: bool
+) -> None:
+    raw_ast = {"ast": {"ast_type": "Module", "body": [
+        {"ast_type": "StructDef", "name": "Outer", "body": [_member("inner", field)]},
+        {"ast_type": "VariableDecl", "target": _name("x"), "annotation": _name("Outer")},
+    ]}}
+    layout = parse_storage_layout({"storage_layout": {"x": {"slot": 0, "type": "Outer"}}})
+    assert storage_layout_needs_module_types(layout, raw_ast) is needed
+
+
+def test_stored_module_interface_keeps_its_layout_type_comparison() -> None:
+    evidence = _root_storing(_ledger_type("__interface__"))
+    assert _module_comparison(evidence, evidence, "x", "/project/ledger.vy").equal

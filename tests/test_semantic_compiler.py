@@ -514,3 +514,51 @@ def test_imported_types_stored_by_the_root_compare_member_order(tmp_path: Path) 
             assert target.status == "passed"
             # The layout names only Record and Permission; their members live in types.vy.
             assert sorted(compare_artifact_details(source, target)[2]) == differences
+
+
+def test_stored_module_interface_stays_comparable(tmp_path: Path) -> None:
+    (tmp_path / "types.vy").write_text(TYPES_MODULE.format(fields="x: uint256", members="A"))
+    entry = tmp_path / "main.vy"
+    entry.write_text(f"{TYPES_ENTRY}module: types.__interface__\n")
+    config = Config(paths=(entry,), target_version="0.4.3")
+
+    source = compile_source_file(entry, config, "0.4.3")
+    target = compile_target_source(entry, entry.read_text(), config)
+
+    # The layout types ``module`` as the module's path, not as a definition.
+    assert compare_artifact_details(source, target)[2] == []
+
+
+def test_local_struct_with_an_imported_field_compares_its_members(tmp_path: Path) -> None:
+    entry_text = """#pragma version 0.4.3
+import types
+
+struct Outer:
+    inner: types.Record
+
+outer: public(Outer)
+"""
+
+    def project(name: str, fields: tuple[str, ...]) -> Path:
+        root = tmp_path / name
+        root.mkdir()
+        (root / "types.vy").write_text(
+            TYPES_MODULE.format(fields="\n    ".join(fields), members="A")
+        )
+        entry = root / "main.vy"
+        entry.write_text(entry_text)
+        return entry
+
+    fields = ("left: uint256", "right: uint256")
+    source_entry = project("source", fields)
+    config = Config(
+        paths=(source_entry,), target_version="0.4.3", compiler_search_paths=(tmp_path,)
+    )
+    source = compile_source_file(source_entry, config, "0.4.3")
+
+    for entry, differences in (
+        (project("copy", fields), []),
+        (project("swapped", fields[::-1]), ["changed storage type definition: outer (Outer)"]),
+    ):
+        target = compile_target_source(entry, entry.read_text(), config)
+        assert compare_artifact_details(source, target)[2] == differences

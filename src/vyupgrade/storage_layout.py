@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import NamedTuple
 
-from .ast_facts import root_ast
+from .ast_facts import iter_nodes, root_ast
 from .constant_evaluation import eval_integer_binary
 
 
@@ -345,7 +345,7 @@ def _target_annotation_interface_markers(
             return frozenset({((), name)})
         return frozenset()
     if ast_type == "Attribute":
-        chain = _initialized_alias_chain(annotation) if namespaced else None
+        chain = _imported_type_chain(annotation) if namespaced else None
         return frozenset({((), ".".join(chain))}) if chain is not None else frozenset()
     if ast_type == "Call":
         wrapper = _ast_name(annotation.get("func"))
@@ -421,6 +421,17 @@ def _initialized_alias_chain(annotation: object) -> tuple[str, ...] | None:
     if name is None:
         return None
     return (name, *reversed(chain))
+
+
+def _imported_type_chain(node: object) -> tuple[str, ...] | None:
+    """The alias chain and name of an imported type such as ``lib.Record``."""
+    if not isinstance(node, dict) or node.get("ast_type") != "Attribute":
+        return None
+    chain = _initialized_alias_chain(node)
+    # ``lib.__interface__`` is laid out as the module's path, not a definition.
+    if chain is None or chain[-1] == "__interface__":
+        return None
+    return chain
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,8 +675,8 @@ class _StorageTypeEvidence:
                 return ("atom", name)
             return None
         if ast_type == "Attribute":
-            chain = _initialized_alias_chain(node)
-            if chain is None or len(chain) < 2:
+            chain = _imported_type_chain(node)
+            if chain is None:
                 return None
             return self._imported_definition_profile(".".join(chain), seen)
         if ast_type in {"Int", "Num"}:
@@ -1071,11 +1082,19 @@ def storage_layout_needs_module_types(layout: StorageLayout | None, ast: object 
         return False
     root = _StorageTypeEvidence.from_ast(ast)
     unresolved = _StorageTypeEvidence({}, {}, {})
-    return any(
+    if any(
         ("." in name and unresolved.profile(value.type_name, name) is None)
         or any("." in bound for _, bound in root._bindings(name))
         for namespace in (layout.persistent, layout.transient)
         for name, value in namespace.items()
+    ):
+        return True
+    # A local struct may hold an imported type in one of its fields.
+    return any(
+        _imported_type_chain(node) is not None
+        for definition in root.definitions.values()
+        if definition.get("ast_type") == "StructDef"
+        for node in iter_nodes(definition, "Attribute")
     )
 
 
