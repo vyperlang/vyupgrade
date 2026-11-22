@@ -3021,3 +3021,19 @@ def test_real_compiler_zero_bound_dynarray_storage_validates(tmp_path: Path) -> 
     validation = json.loads(report.read_text())["files"][0]["validation"]
     assert validation["storage_layout_equal"] is True
     assert contract.read_text().startswith("#pragma version 0.5.0b2\n")
+
+
+def test_real_compiler_module_interface_storage_validates(tmp_path: Path) -> None:
+    # 0.4.3 names a stored module interface by the module's absolute path, and
+    # the source and target compiles stage the project in different overlays.
+    (tmp_path / "lib.vy").write_text("#pragma version 0.4.3\n@external\ndef f():\n    pass\n")
+    contract = tmp_path / "main.vy"
+    contract.write_text("#pragma version 0.4.3\nimport lib\nm: lib.__interface__\n")
+    report = tmp_path / "report.json"
+
+    code = main([str(contract), "--target-version", "0.4.3", "--report-json", str(report)])
+    validation = json.loads(report.read_text())["files"][0]["validation"]
+    assert validation["storage_layout_diff"] == []
+    assert validation["storage_layout_equal"] is True
+    assert validation["decision"]["status"] != "blocked"
+    assert code == 0

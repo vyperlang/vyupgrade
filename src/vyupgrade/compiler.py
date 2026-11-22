@@ -445,6 +445,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
                 result, command, staged, compile_config, (), suppress_warnings,
                 project_compiler=True, environment_path=path,
             )
+        result = _with_original_layout_paths(result, paths)
         return _restore_compile_error_paths(result, paths, path)
 
 
@@ -493,6 +494,7 @@ def compile_target_source(
                 result, command, tmp_path, compile_config, (), suppress_warnings,
                 project_compiler=False, environment_path=path,
             )
+        result = _with_original_layout_paths(result, overlay.paths)
         return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
@@ -1343,6 +1345,46 @@ def _with_interface_ast_paths(
     artifacts["annotated_ast"] = evidence
     artifacts["annotated_ast_source_paths"] = source_paths
     return replace(result, artifacts=artifacts)
+
+
+def _with_original_layout_paths(
+    result: CompileResult, original_paths: Mapping[Path, Path]
+) -> CompileResult:
+    """Name modules in layout types by their original paths, not the overlay's.
+
+    Source and target compiles stage the project in different temporary
+    overlays, and Vyper types a stored module interface by its absolute path.
+    """
+    layout = (result.artifacts or {}).get("layout")
+    if not isinstance(layout, dict):
+        return result
+    originals: dict[str, str | None] = {}
+    for original, staged in original_paths.items():
+        for spelling in {str(staged.absolute()), str(staged.resolve())}:
+            known = originals.get(spelling, str(original))
+            # Two same-content sources can share one staged destination; the
+            # path cannot attest which of them the compiler resolved.
+            originals[spelling] = known if known == str(original) else None
+    originals = {staged: original for staged, original in originals.items() if original is not None}
+    if not originals:
+        return result
+    pattern = re.compile(
+        r"(?<![^\s,\[(])(?:"
+        + "|".join(re.escape(staged) for staged in sorted(originals, key=len, reverse=True))
+        + r")(?=$|[\s,\[\])])"
+    )
+
+    def restore(node: object) -> object:
+        if not isinstance(node, dict):
+            return node
+        return {
+            key: pattern.sub(lambda match: originals[match.group()], value)
+            if key == "type" and isinstance(value, str)
+            else restore(value)
+            for key, value in node.items()
+        }
+
+    return replace(result, artifacts={**(result.artifacts or {}), "layout": restore(layout)})
 
 
 def _needs_public_error_evidence(result: CompileResult, config: Config, *, ast=None) -> bool:
