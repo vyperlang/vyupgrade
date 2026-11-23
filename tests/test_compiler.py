@@ -1460,6 +1460,23 @@ def test_resolve_import_closure_tracks_each_dependency_consumer(tmp_path: Path) 
     }
 
 
+def test_resolve_import_closure_tracks_consumers_of_imported_roots(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    main_contract = project / "main.vy"
+    module = project / "module.vy"
+    project.mkdir()
+    sources = {
+        main_contract: "#pragma version 0.4.3\nfrom . import module\n",
+        module: "#pragma version 0.4.3\n",
+    }
+    for path, source in sources.items():
+        path.write_text(source, encoding="utf-8")
+
+    closure = resolve_import_closure(sources, (project,))
+
+    assert closure.consumers == {module.resolve(): (main_contract.resolve(),)}
+
+
 @pytest.mark.parametrize(
     "documentation",
     [

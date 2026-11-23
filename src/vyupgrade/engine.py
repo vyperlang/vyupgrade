@@ -181,6 +181,8 @@ def prepare_migrations(
         attempt, source_compile = _compile_source(request, config)
         source_version = attempt.rule_version if attempt is not None else request.source_version
         compilations.append((request, attempt, source_version, source_compile))
+    if snapshot is not None:
+        compilations = _validate_library_modules_through_consumers(compilations, snapshot, config)
     wildcard_plans = {}
     if snapshot is not None and any(
         _rule_enabled(code, None, config) for code in ("VY125", "VYD022", "VYD023")
@@ -195,7 +197,7 @@ def prepare_migrations(
         )
     files: list[MigrationFile] = []
     for request, attempt, source_version, source_compile in compilations:
-        contextual_validation = request.role == "dependency"
+        contextual_validation = request.role == "dependency" or bool(request.consumer_roots)
         source_compiler = source_compile.resolved_compiler or (
             attempt.compiler_label if attempt is not None else None
         )
@@ -296,6 +298,53 @@ def prepare_migrations(
     return MigrationBatch(files, generated, snapshot)
 
 
+_Compilation = tuple[MigrationRequest, SourceCompileAttempt | None, str | None, CompileResult]
+
+
+def _validate_library_modules_through_consumers(
+    compilations: list[_Compilation], snapshot: ImportClosure, config: Config
+) -> list[_Compilation]:
+    """Validate a project module that only a consumer root can initialize through those roots.
+
+    Vyper rejects a module with ``uses:`` as a compilation target, so its standalone compile fails
+    with ``InitializerException``; it is valid source wherever an importer initializes it. Such a
+    module takes its rewrite facts from the AST, which needs no compilation target, and its
+    validation from the project roots in the batch that import it and compile directly. With no
+    such root, it keeps the standalone failure.
+    """
+
+    def is_library_module(compilation: _Compilation) -> bool:
+        request, _attempt, _version, source_compile = compilation
+        return (
+            request.role == "project"
+            and request.path.suffix == ".vy"
+            and source_compile.status == "failed"
+            and source_compile.error_type == "InitializerException"
+        )
+
+    direct_roots = {
+        request.path.resolve()
+        for compilation in compilations
+        if (request := compilation[0]).role == "project" and not is_library_module(compilation)
+    }
+    validated: list[_Compilation] = []
+    for compilation in compilations:
+        request, attempt, source_version, source_compile = compilation
+        consumers = tuple(
+            root for root in snapshot.consumers.get(request.path.resolve(), ()) if root in direct_roots
+        )
+        if attempt is None or not consumers or not is_library_module(compilation):
+            validated.append(compilation)
+            continue
+        ast_config = replace(config, source_version=attempt.rule_version, source_ast=None)
+        ast_compile = compile_source_ast(request.path, ast_config, attempt.compile_version)
+        if ast_compile.status == "passed":
+            request = replace(request, consumer_roots=consumers)
+            source_compile = ast_compile
+        validated.append((request, attempt, source_version, source_compile))
+    return validated
+
+
 def _target_scopes(
     batch: MigrationBatch,
     target_sources: dict[Path, str],
@@ -309,17 +358,24 @@ def _target_scopes(
         return
 
     projects: dict[Path, list[MigrationFile]] = {}
+    # Generated files go with their origin's project; a module validated through its consumers
+    # goes with its first consumer's, whose closure stages it.
+    origin_projects: dict[Path, Path] = {}
     for migration in batch.files:
         if migration.report.validation_mode != "consumer-roots":
             root = snapshot.layout_root(migration.path)
             projects.setdefault(root, []).append(migration)
+            origin_projects[migration.path] = root
+        elif migration.request.role == "project":
+            origin_projects[migration.path] = snapshot.layout_root(migration.request.consumer_roots[0])
 
-    for files in projects.values():
+    for root, files in projects.items():
         entry = snapshot.captured_path(files[0].path)
         assert entry is not None
         scope = _entry_closure(snapshot, entry)
-        entries = {migration.path for migration in files}
-        generated = [migration for migration in batch.generated if migration.origin in entries]
+        generated = [
+            migration for migration in batch.generated if origin_projects.get(migration.origin) == root
+        ]
         generated_paths = {
             migration.file.path for migration in batch.generated
             if scope.captured_path(migration.origin) is not None

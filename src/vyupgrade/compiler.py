@@ -705,8 +705,9 @@ def resolve_import_closure(
     dependencies = set(members) - resolved_sources.keys()
     consumers: dict[Path, list[Path]] = {path: [] for path in sorted(dependencies)}
     for root in sorted(resolved_sources):
-        for path in _reachable_imports((root,), imports_by_source) & dependencies:
-            consumers[path].append(root)
+        # Roots imported by other roots get consumers too: a library module is validated through them.
+        for path in _reachable_imports((root,), imports_by_source) - {root}:
+            consumers.setdefault(path, []).append(root)
     return ImportClosure(
         roots=tuple(sorted(resolved_sources)),
         dependencies=tuple(sorted(dependencies)),

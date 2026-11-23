@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Validate a project module that `uses:` another module through the project
+  contracts that import and initialize it (`consumer-roots`), as dependencies
+  already are. Vyper refuses such a module as a compilation target, so its
+  standalone source compile failed with `InitializerException` and blocked the
+  run. With no initializing contract among the inputs it still fails.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into
