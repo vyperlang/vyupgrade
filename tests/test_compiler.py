@@ -2,6 +2,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -26,6 +27,7 @@ from vyupgrade.compiler import (
     _supports_warning_policy,
     _uv_bin,
     _with_interface_ast_paths,
+    _with_original_loaded_sources,
     compare_artifact_details,
     compare_artifacts,
     compile_source_ast,
@@ -37,7 +39,7 @@ from vyupgrade.compiler import (
     target_overlay,
     unavailable_validation_artifacts,
 )
-from vyupgrade.compiler_runner import _compiler_coherence_error
+from vyupgrade.compiler_runner import _compiler_coherence_error, _completed_worker_result
 from vyupgrade.models import Config, ContentIdentity, DependencyContext, FailureOrigin
 from vyupgrade.versions import KNOWN_VERSIONS, parse_version
 
@@ -1458,6 +1460,61 @@ def test_resolve_import_closure_tracks_each_dependency_consumer(tmp_path: Path) 
         first_only.resolve(): (first.resolve(),),
         shared.resolve(): (first.resolve(), second.resolve()),
     }
+
+
+def test_loaded_sources_name_originals_and_withhold_a_shared_staged_file(tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    for name in ("main.vy", "shared.vy"):
+        (staging / name).write_text("")
+    outside = tmp_path / "site" / "lib.vy"
+    result = CompileResult(
+        "passed",
+        loaded_sources=frozenset({staging / "main.vy", staging / "shared.vy", outside}),
+    )
+    paths = {
+        tmp_path / "main.vy": staging / "main.vy",
+        # Two byte-identical sources staged once: the compiler can't say which it loaded.
+        tmp_path / "a" / "copy.vy": staging / "shared.vy",
+        tmp_path / "b" / "copy.vy": staging / "shared.vy",
+    }
+
+    loaded = _with_original_loaded_sources(result, paths).loaded_sources
+
+    assert loaded == frozenset({(tmp_path / "main.vy").resolve(), outside})
+    assert _with_original_loaded_sources(CompileResult("passed"), paths).loaded_sources is None
+
+
+def test_worker_result_reads_loaded_sources_without_rewrite_evidence() -> None:
+    required = {
+        "completion_status": "completed",
+        "returncode": 0,
+        "stdout": "0x00\n",
+        "stderr": "",
+        "failure_origin": None,
+    }
+    output = json.dumps(required) + "\n" + json.dumps({"loaded_sources": ["/p/main.vy", "/p/token.vy"]}) + "\n"
+
+    result = _completed_worker_result(output, None)
+
+    assert result == {**required, "loaded_sources": ["/p/main.vy", "/p/token.vy"]}
+
+
+def test_resolve_import_closure_tracks_consumers_of_imported_roots(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    main_contract = project / "main.vy"
+    module = project / "module.vy"
+    project.mkdir()
+    sources = {
+        main_contract: "#pragma version 0.4.3\nfrom . import module\n",
+        module: "#pragma version 0.4.3\n",
+    }
+    for path, source in sources.items():
+        path.write_text(source, encoding="utf-8")
+
+    closure = resolve_import_closure(sources, (project,))
+
+    assert closure.consumers == {module.resolve(): (main_contract.resolve(),)}
 
 
 @pytest.mark.parametrize(

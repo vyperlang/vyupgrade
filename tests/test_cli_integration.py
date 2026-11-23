@@ -1296,6 +1296,241 @@ def __init__():
     assert (output / "token.vy").is_file()
 
 
+def _write_library_module_project(project: Path, *, token_extra: str = "") -> tuple[Path, Path, Path]:
+    """A root that initializes ``token``, a module that ``uses: ownable`` and so can't compile alone."""
+    project.mkdir()
+    root = project / "main.vy"
+    ownable = project / "ownable.vy"
+    token = project / "token.vy"
+    ownable.write_text(
+        """# pragma version 0.4.1
+
+owner: public(address)
+
+@deploy
+def __init__():
+    self.owner = msg.sender
+""",
+        encoding="utf-8",
+    )
+    token.write_text(
+        f"""# pragma version 0.4.1
+
+from . import ownable
+uses: ownable
+{token_extra}
+@external
+@view
+def get_owner() -> address:
+    return ownable.owner
+""",
+        encoding="utf-8",
+    )
+    root.write_text(
+        """# pragma version 0.4.1
+
+from . import ownable
+initializes: ownable
+
+from . import token
+initializes: token[ownable := ownable]
+exports: token.get_owner
+
+@deploy
+def __init__():
+    ownable.__init__()
+""",
+        encoding="utf-8",
+    )
+    return root, ownable, token
+
+
+def _project_files(report: Path) -> dict[Path, dict]:
+    return {Path(file["path"]): file for file in json.loads(report.read_text())["files"]}
+
+
+@pytest.mark.parametrize(
+    ("ownable_is_dependency", "source_version", "token_pinned"),
+    [(False, "0.4.1", True), (True, "0.4.1", True), (False, "0.4.0", True), (False, "0.4.0", False)],
+)
+def test_real_project_library_module_validates_through_its_project_consumer(
+    tmp_path: Path, ownable_is_dependency: bool, source_version: str, token_pinned: bool
+) -> None:
+    project = tmp_path / "project"
+    root, ownable, token = _write_library_module_project(project)
+    # 0.4.0's annotated AST has no `imports` list, only each import node's resolved path.
+    for path in (root, ownable, token):
+        path.write_text(path.read_text().replace("# pragma version 0.4.1", f"# pragma version {source_version}"))
+    # An unversioned module is still compiled by its consumer's compiler, not the default one.
+    version_args = [] if token_pinned else ["--source-version", source_version]
+    if not token_pinned:
+        token.write_text(token.read_text().replace(f"# pragma version {source_version}\n", ""))
+    search_paths = [str(project)]
+    if ownable_is_dependency:
+        library = tmp_path / "library"
+        library.mkdir()
+        ownable = ownable.rename(library / "ownable.vy")
+        for path in (root, token):
+            path.write_text(path.read_text().replace("from . import ownable", "import ownable"))
+        search_paths.append(str(library))
+    output = tmp_path / "output"
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(project),
+            "--target-version",
+            "0.4.3",
+            *version_args,
+            "--include-dependencies",
+            "--compiler-search-paths",
+            *search_paths,
+            "--closure-output",
+            str(output),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    files = _project_files(report)
+    if ownable_is_dependency:
+        ownable_report = files[ownable.resolve()]
+        assert ownable_report["role"] == "dependency"
+        assert ownable_report["validation"]["consumer_roots"] == [str(root.resolve()), str(token.resolve())]
+        assert ownable_report["validation"]["decision"]["status"] == "passed"
+    token_report = files[token.resolve()]
+    assert token_report["role"] == "project"
+    assert token_report["validation"]["mode"] == "consumer-roots"
+    assert token_report["validation"]["consumer_roots"] == [str(root.resolve())]
+    assert token_report["validation"]["source_compile"] == "passed"
+    assert token_report["validation"]["target_compile"] == "passed"
+    assert token_report["validation"]["decision"]["status"] == "passed"
+    assert "0.4.3" in next(output.rglob("token.vy")).read_text()
+
+
+def test_real_project_library_module_interfaces_split_in_its_consumer_scope(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    _write_library_module_project(
+        project,
+        token_extra="""
+interface IOracle:
+    def price() -> uint256: view
+""",
+    )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            str(project),
+            "--target-version",
+            "0.4.3",
+            "--split-interfaces",
+            "--compiler-search-paths",
+            str(project),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 0
+    interface_report = _project_files(report)[project / "IOracle.vyi"]
+    assert interface_report["validation"]["target_compile"] == "passed"
+
+
+_PLAIN_MODULE = """# pragma version 0.4.1
+
+@internal
+@pure
+def value() -> uint256:
+    return 1
+"""
+_PLAIN_IMPORTER = """# pragma version 0.4.1
+
+{import_line}
+
+@external
+@pure
+def get() -> uint256:
+    return token.value()
+"""
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no_consumer",
+        "skipped_consumer",
+        "builtin_shadowed_name",
+        "unselected_absolute_candidate",
+        "unselected_package_candidate",
+    ],
+)
+def test_real_project_library_module_without_a_validated_consumer_still_fails_source_compile(
+    tmp_path: Path, case: str
+) -> None:
+    project = tmp_path / "project"
+    root, ownable, module = _write_library_module_project(project)
+    inputs = [str(project)]
+    target_version = "0.4.3"
+    if case == "no_consumer":
+        inputs = [str(ownable), str(module)]
+    elif case == "skipped_consumer":
+        # A root newer than the target gets no source compile, so it validates nothing.
+        root.write_text(root.read_text().replace("# pragma version 0.4.1", "# pragma version 0.4.3"))
+        target_version = "0.4.2"
+    elif case == "unselected_absolute_candidate":
+        # `import token` from `sub/` loads `sub/token.vy`, never the project root's `token.vy`.
+        root.unlink()
+        sub = project / "sub"
+        sub.mkdir()
+        (sub / "token.vy").write_text(_PLAIN_MODULE, encoding="utf-8")
+        (sub / "main.vy").write_text(_PLAIN_IMPORTER.format(import_line="import token"), encoding="utf-8")
+    elif case == "unselected_package_candidate":
+        # `from .token import child` loads `token/child.vy`, never the sibling `token.vy`.
+        root.unlink()
+        (project / "token").mkdir()
+        (project / "token" / "child.vy").write_text(_PLAIN_MODULE, encoding="utf-8")
+        (project / "main.vy").write_text(
+            _PLAIN_IMPORTER.format(import_line="from .token import child").replace("token.value()", "child.value()"),
+            encoding="utf-8",
+        )
+    else:
+        # `import math` binds Vyper's builtin module, so the root never compiles the local `math.vy`.
+        module = module.rename(project / "math.vy")
+        root.write_text(
+            """# pragma version 0.4.1
+
+import math
+
+@external
+@pure
+def root(x: uint256) -> uint256:
+    return math.isqrt(x)
+""",
+            encoding="utf-8",
+        )
+    report = tmp_path / "report.json"
+
+    code = main(
+        [
+            *inputs,
+            "--target-version",
+            target_version,
+            "--compiler-search-paths",
+            str(project),
+            "--report-json",
+            str(report),
+        ]
+    )
+
+    assert code == 2
+    module_report = _project_files(report)[module.resolve()]
+    assert module_report["validation"]["mode"] == "direct"
+    assert module_report["validation"]["source_compile"] == "failed"
+    assert module_report["source_error_type"] == "InitializerException"
+
+
 @pytest.mark.parametrize("strip_pragma", [False, True])
 def test_real_compiler_closure_output_tree_compiles_standalone(
     tmp_path: Path,

@@ -150,6 +150,8 @@ class CompileResult:
     completion_status: CompletionStatus = "not-started"
     exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
     validated_sources: tuple[ContentIdentity, ...] = ()
+    # Every file a passed managed compile loaded, by resolved path; None when not reported.
+    loaded_sources: frozenset[Path] | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,7 @@ class _CompilerProcess:
     exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
     validated_sources: tuple[ContentIdentity, ...] = ()
     rewrite_evidence: object = None
+    loaded_sources: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -434,7 +437,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         evidence = (result.artifacts or {}).get(INTERFACE_AST_FORMAT)
         if isinstance(evidence, dict):
             result = _with_interface_ast_paths(result, evidence, paths)
-        return _restore_compile_error_paths(result, paths, path)
+        return _restore_compile_error_paths(_with_original_loaded_sources(result, paths), paths, path)
 
 
 def compile_target_source(
@@ -477,6 +480,7 @@ def compile_target_source(
                 suppress_warnings=suppress_warnings,
                 environment_path=path,
             )
+        result = _with_original_loaded_sources(result, overlay.paths)
         return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
@@ -705,8 +709,9 @@ def resolve_import_closure(
     dependencies = set(members) - resolved_sources.keys()
     consumers: dict[Path, list[Path]] = {path: [] for path in sorted(dependencies)}
     for root in sorted(resolved_sources):
-        for path in _reachable_imports((root,), imports_by_source) & dependencies:
-            consumers[path].append(root)
+        # Roots imported by other roots get consumers too: a library module is validated through them.
+        for path in _reachable_imports((root,), imports_by_source) - {root}:
+            consumers.setdefault(path, []).append(root)
     return ImportClosure(
         roots=tuple(sorted(resolved_sources)),
         dependencies=tuple(sorted(dependencies)),
@@ -1327,6 +1332,26 @@ def _with_interface_ast_paths(
     artifacts["annotated_ast"] = evidence
     artifacts["annotated_ast_source_paths"] = source_paths
     return replace(result, artifacts=artifacts)
+
+
+def _with_original_loaded_sources(result: CompileResult, original_paths: Mapping[Path, Path]) -> CompileResult:
+    """Name the staged files a compile loaded by their originals, while the staging is live.
+
+    A file outside the staging keeps its own path. A staged file that two same-content originals
+    share names neither, as the compiler can't say which one it loaded.
+    """
+    if result.loaded_sources is None:
+        return result
+    originals: dict[Path, Path | None] = {}
+    for original, staged in original_paths.items():
+        resolved = staged.resolve()
+        originals[resolved] = None if resolved in originals else original.resolve()
+    loaded = frozenset(
+        original
+        for path in result.loaded_sources
+        if (original := originals.get(path, path)) is not None
+    )
+    return replace(result, loaded_sources=loaded)
 
 
 def _needs_public_error_evidence(result: CompileResult, config: Config, *, ast=None) -> bool:
@@ -2005,6 +2030,7 @@ def _run_compile_with_formats(
         completion_status=process.completion_status,
         exit_status=process.exit_status,
         validated_sources=process.validated_sources,
+        loaded_sources=None if process.loaded_sources is None else frozenset(map(Path, process.loaded_sources)),
     )
     if result.status == "passed" and isinstance(process.rewrite_evidence, dict):
         for name in requested_evidence:
@@ -2545,6 +2571,7 @@ def _compiler_process_from_payload(
     return _CompilerProcess(
         command=command,
         rewrite_evidence=payload.get("rewrite_evidence"),
+        loaded_sources=_payload_paths(payload, "loaded_sources"),
         context=_context_with_resolved_packages(context, payload),
         returncode=returncode,
         stdout=_payload_string(payload, "stdout") or "",
@@ -2570,6 +2597,13 @@ def _payload_string(payload: dict[str, object] | None, key: str) -> str | None:
         return None
     value = payload.get(key)
     return value if isinstance(value, str) else None
+
+
+def _payload_paths(payload: dict[str, object], key: str) -> tuple[str, ...] | None:
+    value = payload.get(key)
+    if isinstance(value, list) and all(isinstance(path, str) for path in value):
+        return tuple(value)
+    return None
 
 
 def _payload_compiler_identity(
