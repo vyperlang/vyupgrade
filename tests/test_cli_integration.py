@@ -1350,16 +1350,21 @@ def _project_files(report: Path) -> dict[Path, dict]:
 
 
 @pytest.mark.parametrize(
-    ("ownable_is_dependency", "source_version"), [(False, "0.4.1"), (True, "0.4.1"), (False, "0.4.0")]
+    ("ownable_is_dependency", "source_version", "token_pinned"),
+    [(False, "0.4.1", True), (True, "0.4.1", True), (False, "0.4.0", True), (False, "0.4.0", False)],
 )
 def test_real_project_library_module_validates_through_its_project_consumer(
-    tmp_path: Path, ownable_is_dependency: bool, source_version: str
+    tmp_path: Path, ownable_is_dependency: bool, source_version: str, token_pinned: bool
 ) -> None:
     project = tmp_path / "project"
     root, ownable, token = _write_library_module_project(project)
     # 0.4.0's annotated AST has no `imports` list, only each import node's resolved path.
     for path in (root, ownable, token):
         path.write_text(path.read_text().replace("# pragma version 0.4.1", f"# pragma version {source_version}"))
+    # An unversioned module is still compiled by its consumer's compiler, not the default one.
+    version_args = [] if token_pinned else ["--source-version", source_version]
+    if not token_pinned:
+        token.write_text(token.read_text().replace(f"# pragma version {source_version}\n", ""))
     search_paths = [str(project)]
     if ownable_is_dependency:
         library = tmp_path / "library"
@@ -1376,6 +1381,7 @@ def test_real_project_library_module_validates_through_its_project_consumer(
             str(project),
             "--target-version",
             "0.4.3",
+            *version_args,
             "--include-dependencies",
             "--compiler-search-paths",
             *search_paths,

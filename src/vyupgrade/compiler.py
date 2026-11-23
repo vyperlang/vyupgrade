@@ -1278,18 +1278,18 @@ def compiled_imports(path: Path, config: Config, source_version: str | None) -> 
 
     Read from the annotated AST, which names each module by its resolved path: from 0.4.1 its
     ``imports`` list holds every loaded module; 0.4.0 has only each import node's ``import_info``,
-    so each imported ``.vy`` module's own compile gives the next level. None when a compile fails.
+    so each imported ``.vy`` module's compile, with ``path``'s compiler as Vyper compiles a whole
+    import graph with one, gives the next level. None when a compile fails.
     """
     loaded: set[Path] = set()
-    pending = [(path, source_version)]
+    pending = [path]
     while pending:
-        current, version = pending.pop()
-        found = _annotated_ast_imports(current, config, version)
+        found = _annotated_ast_imports(pending.pop(), config, source_version)
         if found is None:
             return None
         imports, transitive = found
         if not transitive:
-            pending.extend((module, None) for module in imports - loaded - {path} if module.suffix == ".vy")
+            pending.extend(module for module in imports - loaded - {path} if module.suffix == ".vy")
         loaded |= imports
     return frozenset(loaded)
 
