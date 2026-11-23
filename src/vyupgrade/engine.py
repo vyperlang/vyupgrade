@@ -16,6 +16,7 @@ from .compiler import (
     resolve_import_closure,
     compare_validation_artifacts,
     compile_source_ast,
+    compiled_imports,
     compile_source_file,
     compile_target_source,
     target_overlay,
@@ -309,9 +310,9 @@ def _validate_library_modules_through_consumers(
     Vyper rejects a module with ``uses:`` as a compilation target, so its standalone compile fails
     with ``InitializerException``; it is valid source wherever an importer initializes it. Such a
     module takes its rewrite facts from the AST, which needs no compilation target, and its
-    validation from the project roots in the batch that import it and compile directly. With no
-    such root, it keeps the standalone failure. So does a module whose import path Vyper binds to
-    one of its builtin modules, since the import scan can't tell whether a consumer reached it.
+    validation from the project roots in the batch that compile directly and whose compile loaded
+    it. The import scan only proposes those roots: it can't tell which of several candidate files
+    the compiler picks. With no such root, the module keeps its standalone failure.
     """
 
     def is_library_module(compilation: _Compilation) -> bool:
@@ -324,44 +325,43 @@ def _validate_library_modules_through_consumers(
         )
 
     direct_roots = {
-        request.path.resolve()
+        request.path.resolve(): compilation
         for compilation in compilations
         if (request := compilation[0]).role == "project"
+        and compilation[1] is not None
         and compilation[3].status != "skipped"
         and not is_library_module(compilation)
     }
+    loaded: dict[Path, frozenset[Path]] = {}
+
+    def loads(root: Path, module: Path) -> bool:
+        if root not in loaded:
+            request, attempt, _version, _compile = direct_roots[root]
+            assert attempt is not None
+            root_config = replace(config, source_version=attempt.rule_version, source_ast=None)
+            loaded[root] = compiled_imports(request.path, root_config, attempt.compile_version) or frozenset()
+        return module in loaded[root]
+
     validated: list[_Compilation] = []
     for compilation in compilations:
         request, attempt, source_version, source_compile = compilation
-        consumers = tuple(
-            root for root in snapshot.consumers.get(request.path.resolve(), ()) if root in direct_roots
-        )
-        if (
-            attempt is None
-            or not consumers
-            or not is_library_module(compilation)
-            or _shadowed_by_builtin_module(request.path.resolve(), snapshot)
-        ):
+        module = request.path.resolve()
+        if attempt is None or not is_library_module(compilation):
             validated.append(compilation)
             continue
-        ast_config = replace(config, source_version=attempt.rule_version, source_ast=None)
-        ast_compile = compile_source_ast(request.path, ast_config, attempt.compile_version)
-        if ast_compile.status == "passed":
-            request = replace(request, consumer_roots=consumers)
-            source_compile = ast_compile
+        consumers = tuple(
+            root
+            for root in snapshot.consumers.get(module, ())
+            if root in direct_roots and loads(root, module)
+        )
+        if consumers:
+            ast_config = replace(config, source_version=attempt.rule_version, source_ast=None)
+            ast_compile = compile_source_ast(request.path, ast_config, attempt.compile_version)
+            if ast_compile.status == "passed":
+                request = replace(request, consumer_roots=consumers)
+                source_compile = ast_compile
         validated.append((request, attempt, source_version, source_compile))
     return validated
-
-
-# Vyper resolves an absolute import whose name starts with one of these to its builtin module.
-_VYPER_BUILTIN_MODULE_PREFIXES = ("math", "ethereum.ercs")
-
-
-def _shadowed_by_builtin_module(path: Path, snapshot: ImportClosure) -> bool:
-    layout = snapshot.layouts.get(path)
-    return layout is None or ".".join(layout.with_suffix("").parts).startswith(
-        _VYPER_BUILTIN_MODULE_PREFIXES
-    )
 
 
 def _target_scopes(

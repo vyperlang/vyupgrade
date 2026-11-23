@@ -1427,7 +1427,34 @@ interface IOracle:
     assert interface_report["validation"]["target_compile"] == "passed"
 
 
-@pytest.mark.parametrize("case", ["no_consumer", "skipped_consumer", "builtin_shadowed_name"])
+_PLAIN_MODULE = """# pragma version 0.4.1
+
+@internal
+@pure
+def value() -> uint256:
+    return 1
+"""
+_PLAIN_IMPORTER = """# pragma version 0.4.1
+
+{import_line}
+
+@external
+@pure
+def get() -> uint256:
+    return token.value()
+"""
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "no_consumer",
+        "skipped_consumer",
+        "builtin_shadowed_name",
+        "unselected_absolute_candidate",
+        "unselected_package_candidate",
+    ],
+)
 def test_real_project_library_module_without_a_validated_consumer_still_fails_source_compile(
     tmp_path: Path, case: str
 ) -> None:
@@ -1441,6 +1468,22 @@ def test_real_project_library_module_without_a_validated_consumer_still_fails_so
         # A root newer than the target gets no source compile, so it validates nothing.
         root.write_text(root.read_text().replace("# pragma version 0.4.1", "# pragma version 0.4.3"))
         target_version = "0.4.2"
+    elif case == "unselected_absolute_candidate":
+        # `import token` from `sub/` loads `sub/token.vy`, never the project root's `token.vy`.
+        root.unlink()
+        sub = project / "sub"
+        sub.mkdir()
+        (sub / "token.vy").write_text(_PLAIN_MODULE, encoding="utf-8")
+        (sub / "main.vy").write_text(_PLAIN_IMPORTER.format(import_line="import token"), encoding="utf-8")
+    elif case == "unselected_package_candidate":
+        # `from .token import child` loads `token/child.vy`, never the sibling `token.vy`.
+        root.unlink()
+        (project / "token").mkdir()
+        (project / "token" / "child.vy").write_text(_PLAIN_MODULE, encoding="utf-8")
+        (project / "main.vy").write_text(
+            _PLAIN_IMPORTER.format(import_line="from .token import child").replace("token.value()", "child.value()"),
+            encoding="utf-8",
+        )
     else:
         # `import math` binds Vyper's builtin module, so the root never compiles the local `math.vy`.
         module = module.rename(project / "math.vy")

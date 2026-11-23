@@ -1273,6 +1273,40 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         return _restore_compile_error_paths(result, paths, path)
 
 
+def compiled_imports(path: Path, config: Config, source_version: str | None) -> frozenset[Path] | None:
+    """The captured sources the compiler loaded as ``path``'s imports, transitively.
+
+    Read from the annotated AST's ``imports``, which name each module by its resolved path. None
+    when the compile fails or its compiler lists no imports (before 0.4.1).
+    """
+    with _source_compile_path(path, config) as (staged, compile_config, paths):
+        command, suppress_warnings = _prepare_command(
+            config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
+        )
+        result = _run_compile_with_formats(
+            command,
+            staged,
+            compile_config,
+            ("annotated_ast",),
+            (),
+            suppress_warnings,
+            allow_unsupported_formats=True,
+            project_compiler=True,
+            environment_path=path,
+        )
+        artifact = (result.artifacts or {}).get("annotated_ast")
+        imports = artifact.get("imports") if result.status == "passed" and isinstance(artifact, dict) else None
+        if not isinstance(imports, list):
+            return None
+        originals = {str(staged_path.resolve()): original for original, staged_path in paths.items()}
+        return frozenset(
+            original
+            for module in imports
+            if isinstance(module, dict)
+            and (original := originals.get(str(module.get("resolved_path")))) is not None
+        )
+
+
 def _source_evidence_formats(config: Config) -> tuple[str, ...]:
     target = parse_version(compiler_version_for_spec(config.target_version))
     if target is None:
