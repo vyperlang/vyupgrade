@@ -310,7 +310,8 @@ def _validate_library_modules_through_consumers(
     with ``InitializerException``; it is valid source wherever an importer initializes it. Such a
     module takes its rewrite facts from the AST, which needs no compilation target, and its
     validation from the project roots in the batch that import it and compile directly. With no
-    such root, it keeps the standalone failure.
+    such root, it keeps the standalone failure. So does a module whose import path Vyper binds to
+    one of its builtin modules, since the import scan can't tell whether a consumer reached it.
     """
 
     def is_library_module(compilation: _Compilation) -> bool:
@@ -325,7 +326,9 @@ def _validate_library_modules_through_consumers(
     direct_roots = {
         request.path.resolve()
         for compilation in compilations
-        if (request := compilation[0]).role == "project" and not is_library_module(compilation)
+        if (request := compilation[0]).role == "project"
+        and compilation[3].status != "skipped"
+        and not is_library_module(compilation)
     }
     validated: list[_Compilation] = []
     for compilation in compilations:
@@ -333,7 +336,12 @@ def _validate_library_modules_through_consumers(
         consumers = tuple(
             root for root in snapshot.consumers.get(request.path.resolve(), ()) if root in direct_roots
         )
-        if attempt is None or not consumers or not is_library_module(compilation):
+        if (
+            attempt is None
+            or not consumers
+            or not is_library_module(compilation)
+            or _shadowed_by_builtin_module(request.path.resolve(), snapshot)
+        ):
             validated.append(compilation)
             continue
         ast_config = replace(config, source_version=attempt.rule_version, source_ast=None)
@@ -343,6 +351,17 @@ def _validate_library_modules_through_consumers(
             source_compile = ast_compile
         validated.append((request, attempt, source_version, source_compile))
     return validated
+
+
+# Vyper resolves an absolute import whose name starts with one of these to its builtin module.
+_VYPER_BUILTIN_MODULE_PREFIXES = ("math", "ethereum.ercs")
+
+
+def _shadowed_by_builtin_module(path: Path, snapshot: ImportClosure) -> bool:
+    layout = snapshot.layouts.get(path)
+    return layout is None or ".".join(layout.with_suffix("").parts).startswith(
+        _VYPER_BUILTIN_MODULE_PREFIXES
+    )
 
 
 def _target_scopes(

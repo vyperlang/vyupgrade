@@ -174,7 +174,10 @@ return codes remain available in each source or target attestation's
 `exit_status.code`. Version `5` distinguishes direct contract validation from
 dependency validation attributed through one or more consumer roots. Dependency
 reports list those roots and summarize their compile outcomes without claiming
-standalone compiler attestations. Version `4` provides producer identity plus
+standalone compiler attestations. A `project` file can carry the same
+`consumer-roots` validation: a module that `uses:` another cannot be a
+compilation target, so it is validated through the project contracts in the run
+that import it, and is still rewritten in place. Version `4` provides producer identity plus
 separate source and target validation attestations. Each attestation records the
 declared source snapshot and compiler declarations, compiler authority and
 identity, dependency context, process completion and exit status, validated

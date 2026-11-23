@@ -1427,19 +1427,42 @@ interface IOracle:
     assert interface_report["validation"]["target_compile"] == "passed"
 
 
-def test_real_project_library_module_without_a_consumer_still_fails_source_compile(
-    tmp_path: Path,
+@pytest.mark.parametrize("case", ["no_consumer", "skipped_consumer", "builtin_shadowed_name"])
+def test_real_project_library_module_without_a_validated_consumer_still_fails_source_compile(
+    tmp_path: Path, case: str
 ) -> None:
     project = tmp_path / "project"
-    _root, ownable, token = _write_library_module_project(project)
+    root, ownable, module = _write_library_module_project(project)
+    inputs = [str(project)]
+    target_version = "0.4.3"
+    if case == "no_consumer":
+        inputs = [str(ownable), str(module)]
+    elif case == "skipped_consumer":
+        # A root newer than the target gets no source compile, so it validates nothing.
+        root.write_text(root.read_text().replace("# pragma version 0.4.1", "# pragma version 0.4.3"))
+        target_version = "0.4.2"
+    else:
+        # `import math` binds Vyper's builtin module, so the root never compiles the local `math.vy`.
+        module = module.rename(project / "math.vy")
+        root.write_text(
+            """# pragma version 0.4.1
+
+import math
+
+@external
+@pure
+def root(x: uint256) -> uint256:
+    return math.isqrt(x)
+""",
+            encoding="utf-8",
+        )
     report = tmp_path / "report.json"
 
     code = main(
         [
-            str(ownable),
-            str(token),
+            *inputs,
             "--target-version",
-            "0.4.3",
+            target_version,
             "--compiler-search-paths",
             str(project),
             "--report-json",
@@ -1448,10 +1471,10 @@ def test_real_project_library_module_without_a_consumer_still_fails_source_compi
     )
 
     assert code == 2
-    token_report = _project_files(report)[token.resolve()]
-    assert token_report["validation"]["mode"] == "direct"
-    assert token_report["validation"]["source_compile"] == "failed"
-    assert token_report["source_error_type"] == "InitializerException"
+    module_report = _project_files(report)[module.resolve()]
+    assert module_report["validation"]["mode"] == "direct"
+    assert module_report["validation"]["source_compile"] == "failed"
+    assert module_report["source_error_type"] == "InitializerException"
 
 
 @pytest.mark.parametrize("strip_pragma", [False, True])
