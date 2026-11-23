@@ -16,7 +16,6 @@ from .compiler import (
     resolve_import_closure,
     compare_validation_artifacts,
     compile_source_ast,
-    compiled_imports,
     compile_source_file,
     compile_target_source,
     target_overlay,
@@ -310,8 +309,8 @@ def _validate_library_modules_through_consumers(
     Vyper rejects a module with ``uses:`` as a compilation target, so its standalone compile fails
     with ``InitializerException``; it is valid source wherever an importer initializes it. Such a
     module takes its rewrite facts from the AST, which needs no compilation target, and its
-    validation from the project roots in the batch that compile directly and whose compile loaded
-    it. The import scan only proposes those roots: it can't tell which of several candidate files
+    validation from the project roots in the batch whose own source compile passed and loaded it.
+    The import scan only proposes those roots: it can't tell which of several candidate files
     the compiler picks. With no such root, the module keeps its standalone failure.
     """
 
@@ -324,23 +323,11 @@ def _validate_library_modules_through_consumers(
             and source_compile.error_type == "InitializerException"
         )
 
-    direct_roots = {
-        request.path.resolve(): compilation
-        for compilation in compilations
-        if (request := compilation[0]).role == "project"
-        and compilation[1] is not None
-        and compilation[3].status != "skipped"
-        and not is_library_module(compilation)
+    loaded_by_root = {
+        request.path.resolve(): source_compile.loaded_sources
+        for request, _attempt, _version, source_compile in compilations
+        if request.role == "project" and source_compile.status == "passed"
     }
-    loaded: dict[Path, frozenset[Path]] = {}
-
-    def loads(root: Path, module: Path) -> bool:
-        if root not in loaded:
-            request, attempt, _version, _compile = direct_roots[root]
-            assert attempt is not None
-            root_config = replace(config, source_version=attempt.rule_version, source_ast=None)
-            loaded[root] = compiled_imports(request.path, root_config, attempt.compile_version) or frozenset()
-        return module in loaded[root]
 
     validated: list[_Compilation] = []
     for compilation in compilations:
@@ -352,7 +339,7 @@ def _validate_library_modules_through_consumers(
         consumers = tuple(
             root
             for root in snapshot.consumers.get(module, ())
-            if root in direct_roots and loads(root, module)
+            if module in (loaded_by_root.get(root) or ())
         )
         if consumers:
             ast_config = replace(config, source_version=attempt.rule_version, source_ast=None)
@@ -449,7 +436,28 @@ def validate_migrations(
             _validate_target_scope(
                 files, generated, sources, snapshot, config, has_dependencies, shared_overlay
             )
+    _keep_consumers_that_load_their_module(batch.files)
     return decide_run_validation(batch.reports, config)
+
+
+def _keep_consumers_that_load_their_module(files: list[MigrationFile]) -> None:
+    """Drop a project module's consumer root whose target compile reports it didn't load the module.
+
+    The candidates can change the imports, so the source compile's evidence no longer holds there.
+    """
+    target_compiles = {migration.path.resolve(): migration.target_compile for migration in files}
+    for migration in files:
+        if migration.request.role != "project" or migration.report.validation_mode != "consumer-roots":
+            continue
+        module = migration.path.resolve()
+        migration.report.consumer_roots = tuple(
+            root
+            for root in (path.resolve() for path in migration.request.consumer_roots)
+            if (target := target_compiles.get(root)) is None
+            or target.status != "passed"
+            or target.loaded_sources is None
+            or module in target.loaded_sources
+        )
 
 
 def _validate_target_scope(

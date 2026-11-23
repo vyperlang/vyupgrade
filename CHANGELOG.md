@@ -6,7 +6,9 @@
   contracts that import and initialize it (`consumer-roots`), as dependencies
   already are. Vyper refuses such a module as a compilation target, so its
   standalone source compile failed with `InitializerException` and blocked the
-  run. With no initializing contract among the inputs it still fails.
+  run. A contract counts when its own source compile passed and the compiler
+  loaded the module, which only managed compilers report: with no such
+  contract among the inputs, or with `--source-vyper`, it still fails.
 
 ## 0.11.0 - 2026-11-18
 

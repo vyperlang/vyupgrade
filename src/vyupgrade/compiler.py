@@ -150,6 +150,8 @@ class CompileResult:
     completion_status: CompletionStatus = "not-started"
     exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
     validated_sources: tuple[ContentIdentity, ...] = ()
+    # Every file a passed managed compile loaded, by resolved path; None when not reported.
+    loaded_sources: frozenset[Path] | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,7 @@ class _CompilerProcess:
     exit_status: ExitStatus = dataclass_field(default_factory=lambda: ExitStatus(None))
     validated_sources: tuple[ContentIdentity, ...] = ()
     rewrite_evidence: object = None
+    loaded_sources: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -434,7 +437,7 @@ def compile_source_file(path: Path, config: Config, source_version: str | None) 
         evidence = (result.artifacts or {}).get(INTERFACE_AST_FORMAT)
         if isinstance(evidence, dict):
             result = _with_interface_ast_paths(result, evidence, paths)
-        return _restore_compile_error_paths(result, paths, path)
+        return _restore_compile_error_paths(_with_original_loaded_sources(result, paths), paths, path)
 
 
 def compile_target_source(
@@ -477,6 +480,7 @@ def compile_target_source(
                 suppress_warnings=suppress_warnings,
                 environment_path=path,
             )
+        result = _with_original_loaded_sources(result, overlay.paths)
         return _restore_compile_error_paths(result, overlay.paths, path)
     command, suppress_warnings = _prepare_command(
         config.target_vyper, config.target_version, config.target_python
@@ -1273,66 +1277,6 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
         return _restore_compile_error_paths(result, paths, path)
 
 
-def compiled_imports(path: Path, config: Config, source_version: str | None) -> frozenset[Path] | None:
-    """The captured sources the compiler loaded as ``path``'s imports, transitively.
-
-    Read from the annotated AST, which names each module by its resolved path: from 0.4.1 its
-    ``imports`` list holds every loaded module; 0.4.0 has only each import node's ``import_info``,
-    so each imported ``.vy`` module's compile, with ``path``'s compiler as Vyper compiles a whole
-    import graph with one, gives the next level. None when a compile fails.
-    """
-    loaded: set[Path] = set()
-    pending = [path]
-    while pending:
-        found = _annotated_ast_imports(pending.pop(), config, source_version)
-        if found is None:
-            return None
-        imports, transitive = found
-        if not transitive:
-            pending.extend(module for module in imports - loaded - {path} if module.suffix == ".vy")
-        loaded |= imports
-    return frozenset(loaded)
-
-
-def _annotated_ast_imports(
-    path: Path, config: Config, source_version: str | None
-) -> tuple[frozenset[Path], bool] | None:
-    """The captured sources ``path``'s annotated AST names as imports, and whether they are transitive."""
-    with _source_compile_path(path, config) as (staged, compile_config, paths):
-        command, suppress_warnings = _prepare_command(
-            config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
-        )
-        result = _run_compile_with_formats(
-            command,
-            staged,
-            compile_config,
-            ("annotated_ast",),
-            (),
-            suppress_warnings,
-            allow_unsupported_formats=True,
-            project_compiler=True,
-            environment_path=path,
-        )
-        artifact = (result.artifacts or {}).get("annotated_ast")
-        if result.status != "passed" or not isinstance(artifact, dict):
-            return None
-        imports = artifact.get("imports")
-        transitive = isinstance(imports, list)
-        ast = artifact.get("ast")
-        modules = imports if transitive else [
-            node.get("import_info")
-            for node in (iter_nodes(ast) if isinstance(ast, dict) else ())
-            if node.get("ast_type") in {"Import", "ImportFrom"}
-        ]
-        originals = {str(staged_path.resolve()): original for original, staged_path in paths.items()}
-        return frozenset(
-            original
-            for module in modules
-            if isinstance(module, dict)
-            and (original := originals.get(str(module.get("resolved_path")))) is not None
-        ), transitive
-
-
 def _source_evidence_formats(config: Config) -> tuple[str, ...]:
     target = parse_version(compiler_version_for_spec(config.target_version))
     if target is None:
@@ -1388,6 +1332,26 @@ def _with_interface_ast_paths(
     artifacts["annotated_ast"] = evidence
     artifacts["annotated_ast_source_paths"] = source_paths
     return replace(result, artifacts=artifacts)
+
+
+def _with_original_loaded_sources(result: CompileResult, original_paths: Mapping[Path, Path]) -> CompileResult:
+    """Name the staged files a compile loaded by their originals, while the staging is live.
+
+    A file outside the staging keeps its own path. A staged file that two same-content originals
+    share names neither, as the compiler can't say which one it loaded.
+    """
+    if result.loaded_sources is None:
+        return result
+    originals: dict[Path, Path | None] = {}
+    for original, staged in original_paths.items():
+        resolved = staged.resolve()
+        originals[resolved] = None if resolved in originals else original.resolve()
+    loaded = frozenset(
+        original
+        for path in result.loaded_sources
+        if (original := originals.get(path, path)) is not None
+    )
+    return replace(result, loaded_sources=loaded)
 
 
 def _needs_public_error_evidence(result: CompileResult, config: Config, *, ast=None) -> bool:
@@ -2066,6 +2030,7 @@ def _run_compile_with_formats(
         completion_status=process.completion_status,
         exit_status=process.exit_status,
         validated_sources=process.validated_sources,
+        loaded_sources=None if process.loaded_sources is None else frozenset(map(Path, process.loaded_sources)),
     )
     if result.status == "passed" and isinstance(process.rewrite_evidence, dict):
         for name in requested_evidence:
@@ -2606,6 +2571,7 @@ def _compiler_process_from_payload(
     return _CompilerProcess(
         command=command,
         rewrite_evidence=payload.get("rewrite_evidence"),
+        loaded_sources=_payload_paths(payload, "loaded_sources"),
         context=_context_with_resolved_packages(context, payload),
         returncode=returncode,
         stdout=_payload_string(payload, "stdout") or "",
@@ -2631,6 +2597,13 @@ def _payload_string(payload: dict[str, object] | None, key: str) -> str | None:
         return None
     value = payload.get(key)
     return value if isinstance(value, str) else None
+
+
+def _payload_paths(payload: dict[str, object], key: str) -> tuple[str, ...] | None:
+    value = payload.get(key)
+    if isinstance(value, list) and all(isinstance(path, str) for path in value):
+        return tuple(value)
+    return None
 
 
 def _payload_compiler_identity(

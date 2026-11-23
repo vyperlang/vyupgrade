@@ -135,6 +135,7 @@ def main() -> None:
             "stdout": process["stdout"],
             "stderr": process["stderr"],
             "rewrite_evidence": process.get("rewrite_evidence"),
+            "loaded_sources": process.get("loaded_sources"),
             **evidence,
         },
     )
@@ -174,15 +175,13 @@ def _run_managed_compiler(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        if evidence_format:
-            checkpoint = _completed_worker_result(_timeout_text(exc.stdout), evidence_format)
-            if checkpoint is not None:
-                return checkpoint
-        raise
-    if evidence_format:
-        checkpoint = _completed_worker_result(process.stdout, evidence_format)
+        checkpoint = _completed_worker_result(_timeout_text(exc.stdout), evidence_format)
         if checkpoint is not None:
             return checkpoint
+        raise
+    checkpoint = _completed_worker_result(process.stdout, evidence_format)
+    if checkpoint is not None:
+        return checkpoint
     if process.returncode != 0:
         signaled = process.returncode < 0
         return {
@@ -213,7 +212,7 @@ def _run_managed_compiler(
     return result
 
 
-def _completed_worker_result(output: str, evidence_format: str) -> dict | None:
+def _completed_worker_result(output: str, evidence_format: str | None) -> dict | None:
     required_line, newline, optional_line = output.partition("\n")
     if not newline:
         return None
@@ -232,37 +231,48 @@ def _completed_worker_result(output: str, evidence_format: str) -> dict | None:
         return None
     if result.get("returncode") == 0 and optional_line.endswith("\n"):
         try:
-            evidence = json.loads(optional_line)
+            metadata = json.loads(optional_line)
         except ValueError:
             return result
-        if isinstance(evidence, dict):
+        if not isinstance(metadata, dict):
+            return result
+        evidence = metadata.get("evidence")
+        if evidence_format and isinstance(evidence, dict):
             result["rewrite_evidence"] = {evidence_format: evidence}
+        loaded = metadata.get("loaded_sources")
+        if isinstance(loaded, list) and all(isinstance(path, str) for path in loaded):
+            result["loaded_sources"] = loaded
     return result
 
 
 def _managed_compiler_worker(command: list[str], evidence_format: str | None) -> None:
-    captured = [] if evidence_format else None
+    captured = []
     required = _managed_compiler_result(command, captured)
     print(json.dumps(required), flush=True)
-    if not captured or len(captured) != 1 or required["returncode"] != 0:
+    if len(captured) != 1 or required["returncode"] != 0:
         return
-    try:
-        # Optional printers must never leak diagnostics into the required CLI
-        # output or the worker's two JSON records.
-        with contextlib.redirect_stdout(sys.stderr):
-            evidence = _collect_source_evidence(captured[0], evidence_format)
-        if evidence is not None:
-            print(json.dumps(evidence), flush=True)
-    except Exception:
-        # Compiler internals vary. The first record is already complete.
-        pass
+    metadata = {}
+    # Every file the compile loaded, the entry and its imports. Before 0.4 there is no input bundle.
+    source_ids = getattr(getattr(captured[0], "input_bundle", None), "_source_ids", None)
+    if isinstance(source_ids, dict):
+        metadata["loaded_sources"] = sorted(str(Path(path).resolve()) for path in source_ids)
+    if evidence_format:
+        try:
+            # Optional printers must never leak diagnostics into the required CLI
+            # output or the worker's two JSON records.
+            with contextlib.redirect_stdout(sys.stderr):
+                evidence = _collect_source_evidence(captured[0], evidence_format)
+            if evidence is not None:
+                metadata["evidence"] = evidence
+        except Exception:
+            # Compiler internals vary. The first record is already complete.
+            pass
+    if metadata:
+        print(json.dumps(metadata), flush=True)
 
 
 @contextlib.contextmanager
 def _capture_compiler_data(captured):
-    if captured is None:
-        yield
-        return
     try:
         formats = importlib.import_module("vyper.compiler").OUTPUT_FORMATS
         original = formats["ast_dict"]
@@ -282,7 +292,7 @@ def _capture_compiler_data(captured):
         formats["ast_dict"] = original
 
 
-def _managed_compiler_result(command: list[str], captured=None) -> dict[str, object]:
+def _managed_compiler_result(command: list[str], captured: list) -> dict[str, object]:
     with tempfile.TemporaryFile("w+", encoding="utf-8") as stdout, tempfile.TemporaryFile(
         "w+", encoding="utf-8"
     ) as stderr:

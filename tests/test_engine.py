@@ -423,6 +423,89 @@ def test_dependency_validation_fails_closed_without_consumer_roots(
     assert validation_exit_code(decision) == 3
 
 
+_LIBRARY_ROOT = "# pragma version 0.4.3\nfrom . import token\ninitializes: token\n"
+_LIBRARY_MODULE = "# pragma version 0.4.3\nfrom . import ownable\nuses: ownable\n"
+
+
+def _library_module_batch(monkeypatch, tmp_path: Path, root_compile: CompileResult, root_target: CompileResult):
+    root = tmp_path / "main.vy"
+    module = tmp_path / "token.vy"
+    root.write_text(_LIBRARY_ROOT)
+    module.write_text(_LIBRARY_MODULE)
+
+    def compile_source(path, config, source_version):
+        if path == module:
+            return CompileResult("failed", stderr="uses ownable", error_type="InitializerException")
+        return root_compile
+
+    @contextmanager
+    def overlay(_sources, _target_version, _search_paths, *, include_dependencies=False, snapshot=None):
+        yield object()
+
+    monkeypatch.setattr(engine, "compile_source_file", compile_source)
+    monkeypatch.setattr(
+        engine, "compile_source_ast", lambda *_args: CompileResult("passed", artifacts=SOURCE_ARTIFACTS)
+    )
+    monkeypatch.setattr(engine, "apply_rules", _unchanged_rewrite)
+    monkeypatch.setattr(engine, "target_overlay", overlay)
+    monkeypatch.setattr(engine, "compile_target_source", lambda *_args: root_target)
+    config = _config(tmp_path)
+    requests = tuple(
+        MigrationRequest(path, path.read_text(), "0.4.3", (SourceCompileAttempt("0.4.3", "0.4.3"),))
+        for path in (root, module)
+    )
+    batch = engine.prepare_migrations(requests, config)
+    return batch, engine.validate_migrations(batch, config), root.resolve(), module.resolve()
+
+
+@pytest.mark.parametrize("case", ["root_failed", "root_loaded_nothing", "root_did_not_report"])
+def test_library_module_counts_only_a_passed_root_compile_that_loaded_it(
+    monkeypatch, tmp_path: Path, case: str
+) -> None:
+    module = (tmp_path / "token.vy").resolve()
+    root_compile = {
+        "root_failed": CompileResult(
+            "failed", stderr="later stage", error_type="CodegenPanic", loaded_sources=frozenset({module})
+        ),
+        "root_loaded_nothing": CompileResult("passed", artifacts=SOURCE_ARTIFACTS, loaded_sources=frozenset()),
+        "root_did_not_report": CompileResult("passed", artifacts=SOURCE_ARTIFACTS),
+    }[case]
+    target = CompileResult("passed", artifacts=VALIDATION_ARTIFACTS)
+
+    batch, _decision, _root, module = _library_module_batch(monkeypatch, tmp_path, root_compile, target)
+    report = batch.files[1].report
+
+    assert report.validation_mode == "direct"
+    assert report.consumer_roots == ()
+    assert report.source_compile == "failed"
+    assert report.source_error_type == "InitializerException"
+
+
+@pytest.mark.parametrize("target_loads_module", [True, False])
+def test_library_module_keeps_only_consumers_whose_target_compile_loaded_it(
+    monkeypatch, tmp_path: Path, target_loads_module: bool
+) -> None:
+    module = (tmp_path / "token.vy").resolve()
+    root_compile = CompileResult("passed", artifacts=SOURCE_ARTIFACTS, loaded_sources=frozenset({module}))
+    target = CompileResult(
+        "passed",
+        artifacts=VALIDATION_ARTIFACTS,
+        loaded_sources=frozenset({module}) if target_loads_module else frozenset(),
+    )
+
+    batch, decision, root, _module = _library_module_batch(monkeypatch, tmp_path, root_compile, target)
+    report = batch.files[1].report
+
+    assert report.validation_mode == "consumer-roots"
+    if target_loads_module:
+        assert report.consumer_roots == (root,)
+        assert decision.status == "passed"
+    else:
+        assert report.consumer_roots == ()
+        assert decision.status == "blocked"
+        assert [issue.code for issue in decision.blockers] == ["consumer_roots_unavailable"]
+
+
 def test_validation_rejects_duplicate_resolved_destinations(monkeypatch, tmp_path: Path) -> None:
     first = tmp_path / "First.vy"
     second = tmp_path / "Second.vy"
