@@ -1349,12 +1349,17 @@ def _project_files(report: Path) -> dict[Path, dict]:
     return {Path(file["path"]): file for file in json.loads(report.read_text())["files"]}
 
 
-@pytest.mark.parametrize("ownable_is_dependency", [False, True])
+@pytest.mark.parametrize(
+    ("ownable_is_dependency", "source_version"), [(False, "0.4.1"), (True, "0.4.1"), (False, "0.4.0")]
+)
 def test_real_project_library_module_validates_through_its_project_consumer(
-    tmp_path: Path, ownable_is_dependency: bool
+    tmp_path: Path, ownable_is_dependency: bool, source_version: str
 ) -> None:
     project = tmp_path / "project"
     root, ownable, token = _write_library_module_project(project)
+    # 0.4.0's annotated AST has no `imports` list, only each import node's resolved path.
+    for path in (root, ownable, token):
+        path.write_text(path.read_text().replace("# pragma version 0.4.1", f"# pragma version {source_version}"))
     search_paths = [str(project)]
     if ownable_is_dependency:
         library = tmp_path / "library"

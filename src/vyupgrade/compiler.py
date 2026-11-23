@@ -1276,9 +1276,28 @@ def compile_source_ast(path: Path, config: Config, source_version: str | None) -
 def compiled_imports(path: Path, config: Config, source_version: str | None) -> frozenset[Path] | None:
     """The captured sources the compiler loaded as ``path``'s imports, transitively.
 
-    Read from the annotated AST's ``imports``, which name each module by its resolved path. None
-    when the compile fails or its compiler lists no imports (before 0.4.1).
+    Read from the annotated AST, which names each module by its resolved path: from 0.4.1 its
+    ``imports`` list holds every loaded module; 0.4.0 has only each import node's ``import_info``,
+    so each imported ``.vy`` module's own compile gives the next level. None when a compile fails.
     """
+    loaded: set[Path] = set()
+    pending = [(path, source_version)]
+    while pending:
+        current, version = pending.pop()
+        found = _annotated_ast_imports(current, config, version)
+        if found is None:
+            return None
+        imports, transitive = found
+        if not transitive:
+            pending.extend((module, None) for module in imports - loaded - {path} if module.suffix == ".vy")
+        loaded |= imports
+    return frozenset(loaded)
+
+
+def _annotated_ast_imports(
+    path: Path, config: Config, source_version: str | None
+) -> tuple[frozenset[Path], bool] | None:
+    """The captured sources ``path``'s annotated AST names as imports, and whether they are transitive."""
     with _source_compile_path(path, config) as (staged, compile_config, paths):
         command, suppress_warnings = _prepare_command(
             config.source_vyper, source_version or infer_pragma(staged.read_text()), config.source_python
@@ -1295,16 +1314,23 @@ def compiled_imports(path: Path, config: Config, source_version: str | None) -> 
             environment_path=path,
         )
         artifact = (result.artifacts or {}).get("annotated_ast")
-        imports = artifact.get("imports") if result.status == "passed" and isinstance(artifact, dict) else None
-        if not isinstance(imports, list):
+        if result.status != "passed" or not isinstance(artifact, dict):
             return None
+        imports = artifact.get("imports")
+        transitive = isinstance(imports, list)
+        ast = artifact.get("ast")
+        modules = imports if transitive else [
+            node.get("import_info")
+            for node in (iter_nodes(ast) if isinstance(ast, dict) else ())
+            if node.get("ast_type") in {"Import", "ImportFrom"}
+        ]
         originals = {str(staged_path.resolve()): original for original, staged_path in paths.items()}
         return frozenset(
             original
-            for module in imports
+            for module in modules
             if isinstance(module, dict)
             and (original := originals.get(str(module.get("resolved_path")))) is not None
-        )
+        ), transitive
 
 
 def _source_evidence_formats(config: Config) -> tuple[str, ...]:
