@@ -862,18 +862,17 @@ def _signed_convert_unsafe_literal_casts(
     new_expr = expr
     for start, end, _arg, replacement in sorted(replacements, reverse=True):
         new_expr = new_expr[:start] + replacement + new_expr[end:]
+    outer_replacement = _unwrapped_cast(source, expr_start + len(expr), new_expr, False)
     fixes = [
         Fix(
             "VY052",
             line_no,
             "converted unsafe arithmetic literal to enclosing signed type",
             source[convert_start:convert_end],
-            new_expr,
+            outer_replacement,
         )
     ]
-    return [
-        TextEdit(convert_start, convert_end, _unwrapped_cast(source, expr_start + len(expr), new_expr, False))
-    ], fixes
+    return [TextEdit(convert_start, convert_end, outer_replacement)], fixes
 
 
 def _code_text(text: str, mask: list[bool], start: int) -> str:
@@ -888,7 +887,7 @@ def _code_text(text: str, mask: list[bool], start: int) -> str:
 def _unwrapped_cast(source: str, expr_end: int, new_expr: str, wrap: bool) -> str:
     """Return the text replacing a removed cast whose argument ends at ``expr_end``."""
     trailing = re.match(r"\s*", source[expr_end:]).group()
-    if "\n" in trailing:
+    if "\n" in trailing or "\r" in trailing:
         # The argument may end in a comment: keep the line break before the closing parenthesis.
         return f"({new_expr}{trailing})"
     return f"({new_expr})" if wrap else new_expr

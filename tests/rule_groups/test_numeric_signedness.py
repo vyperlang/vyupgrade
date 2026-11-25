@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vyupgrade.rules import apply_rules
 
 
@@ -1304,18 +1306,31 @@ def f(s: int128, b: uint256) -> int128:
     assert 'return convert(len(b"a") + convert(s, uint256), int128)' in result.source
 
 
-def test_signed_convert_keeps_line_break_after_trailing_comment(config) -> None:
-    source = '''# @version 0.3.10
-
-@external
-def f(s: int128, u: uint256) -> int128:
-    return convert(len("x") + (u if s > 0 else 0)  # keep
-        , int128)
-'''
+@pytest.mark.parametrize("line_break", ["\n", "\r"])
+def test_signed_convert_keeps_line_break_after_trailing_comment(config, line_break) -> None:
+    source = (
+        "# @version 0.3.10\n\n@external\ndef f(s: int128, u: uint256) -> int128:\n"
+        f'    return convert(len("x") + (u if s > 0 else 0)  # keep{line_break}        , int128)\n'
+    )
 
     result = apply_rules(source, config(source_version="0.3.10"))
 
     assert (
-        'return (len("x") + (convert(u, int128) if s > 0 else 0)  # keep\n        )'
+        f'return (len("x") + (convert(u, int128) if s > 0 else 0)  # keep{line_break}        )'
         in result.source
     )
+
+
+def test_unsafe_literal_cast_reports_replacement_kept_after_trailing_comment(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> int256:
+    return convert(unsafe_mul(10**32, 3)  # keep
+        , int256) + 1
+"""
+
+    result = apply_rules(source, config())
+
+    replacement = "(unsafe_mul(10**32, convert(3, int256))  # keep\n        )"
+    assert f"return {replacement} + 1" in result.source
+    assert [fix.after for fix in result.fixes if fix.rule == "VY052"] == [replacement]
