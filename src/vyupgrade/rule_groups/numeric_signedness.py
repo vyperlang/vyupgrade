@@ -334,6 +334,8 @@ def _mixed_signed_unsigned_arithmetic(
                 )
         offset += len(raw_line)
     for match in re.finditer(r"\bconvert\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
         close = find_matching(source, match.end() - 1)
         if close is None:
             continue
@@ -344,11 +346,17 @@ def _mixed_signed_unsigned_arithmetic(
         _target_start, _target_end, target_type = arg_spans[1]
         if not _is_signed_integer_type(target_type):
             continue
+        absolute_expr_start = match.end() + expr_start
+        # Blank strings and comments so names inside them are not taken as operands.
+        code_expr = "".join(
+            char if mask[absolute_expr_start + i] else " " for i, char in enumerate(expr)
+        )
         line_no = line_number(source, match.start())
         vars_for_line = facts.vars_at_line(line_no)
         mixed_edits, mixed_fixes = _signed_convert_mixed_integer_casts(
             source,
             expr,
+            code_expr,
             match.start(),
             close + 1,
             match.end() + expr_start,
@@ -372,15 +380,14 @@ def _mixed_signed_unsigned_arithmetic(
         )
         edits.extend(unsafe_edits)
         fixes.extend(unsafe_fixes)
-        if not _has_unsigned_context(expr, vars_for_line):
+        if not _has_unsigned_context(code_expr, vars_for_line):
             continue
-        absolute_expr_start = match.end() + expr_start
         for name, type_name in sorted(
             vars_for_line.items(), key=lambda item: len(item[0]), reverse=True
         ):
             if not (_is_signed_integer_type(type_name) and name in facts.global_vars):
                 continue
-            for name_match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+            for name_match in re.finditer(rf"\b{re.escape(name)}\b", code_expr):
                 start = absolute_expr_start + name_match.start()
                 end = absolute_expr_start + name_match.end()
                 if (
@@ -766,6 +773,7 @@ def _is_unsigned_integer_expression(
 def _signed_convert_mixed_integer_casts(
     source: str,
     expr: str,
+    code_expr: str,
     convert_start: int,
     convert_end: int,
     expr_start: int,
@@ -774,13 +782,13 @@ def _signed_convert_mixed_integer_casts(
     vars_for_line: dict[str, str],
     facts: SourceFacts,
 ) -> tuple[list[TextEdit], list[Fix]]:
-    if not _expression_has_signed_integer(expr, vars_for_line, facts):
+    if not _expression_has_signed_integer(code_expr, vars_for_line, facts):
         return [], []
     replacements: list[tuple[int, int, str, str]] = []
     for name, type_name in sorted(vars_for_line.items(), key=lambda item: len(item[0]), reverse=True):
         if not _is_unsigned_integer_type(type_name):
             continue
-        for match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+        for match in re.finditer(rf"\b{re.escape(name)}\b", code_expr):
             start = expr_start + match.start()
             end = expr_start + match.end()
             if _inside_nested_convert_call(source, start, expr_start - 1) or _inside_type_subscript(

@@ -582,3 +582,15 @@ def ping():
     migrated = _deploy(path, result.source, "0.5.0b2")
     assert _call(original, "probe()") == 0
     assert _call(migrated, "probe()") == 0
+
+
+def test_signed_convert_keeps_string_literal_contents(tmp_path):
+    source = """# @version 0.3.10
+@external
+@view
+def f(s: int128, u: uint256) -> bool:
+    return convert(len("s u"), int128) == 3
+"""
+    original, migrated = _migration_pair(tmp_path, source)
+
+    assert _call(original, "f(int128,uint256)", 0, 0) == _call(migrated, "f(int128,uint256)", 0, 0) == 1

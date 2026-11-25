@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Ignore strings and comments inside `convert(..., <signed type>)` when
+  converting mixed-signedness operands (`VY052`). Names inside a string literal
+  were rewritten as if they were operands, changing the string's contents.
+
 ## 0.11.0 - 2026-11-18
 
 - JSON report schema `7` moves declared sources and resolved packages into

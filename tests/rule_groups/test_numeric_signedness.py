@@ -1247,3 +1247,45 @@ def f(x: int256) -> int256:
 
     assert "for i: uint256 in range(1, 50):" in result.source
     assert "term //= (convert(i, int256) + 1)" in result.source
+
+
+def test_signed_convert_leaves_names_in_string_literals(config) -> None:
+    source = '''# @version 0.3.10
+
+@external
+def f(prefix: String[8], s: int128, u: uint256) -> bool:
+    return convert(len(concat(prefix, "s u")), int128) == 3
+'''
+
+    result = apply_rules(source, config(source_version="0.3.10"))
+
+    assert 'return convert(len(concat(prefix, "s u")), int128) == 3' in result.source
+
+
+def test_signed_convert_leaves_signed_constant_in_string_literal(config) -> None:
+    source = '''# @version 0.3.10
+SIGNED: constant(int128) = 1
+
+@external
+def f(prefix: String[8], u: uint256) -> int128:
+    return convert(len(concat(prefix, "SIGNED")) + u, int128)
+'''
+
+    result = apply_rules(source, config(source_version="0.3.10"))
+
+    assert '"SIGNED"' in result.source
+    assert '"convert(SIGNED, uint256)"' not in result.source
+
+
+def test_signed_convert_leaves_names_in_comments(config) -> None:
+    source = '''# @version 0.3.10
+
+@external
+def f(s: int128, u: uint256) -> int128:
+    return convert(s + 1  # u
+        , int128)
+'''
+
+    result = apply_rules(source, config(source_version="0.3.10"))
+
+    assert "return convert(s + 1  # u\n        , int128)" in result.source
