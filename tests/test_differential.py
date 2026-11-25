@@ -594,3 +594,15 @@ def f(s: int128, u: uint256) -> bool:
     original, migrated = _migration_pair(tmp_path, source)
 
     assert _call(original, "f(int128,uint256)", 0, 0) == _call(migrated, "f(int128,uint256)", 0, 0) == 1
+
+
+def test_unsafe_literal_cast_removal_keeps_argument_grouping(tmp_path):
+    source = """# @version 0.3.10
+@external
+@view
+def f() -> int256:
+    return convert(unsafe_mul(10**32, 3) + 1, int256) * 2
+"""
+    original, migrated = _migration_pair(tmp_path, source)
+
+    assert _call(original, "f()") == _call(migrated, "f()") == (3 * 10**32 + 1) * 2

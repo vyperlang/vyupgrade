@@ -6,7 +6,8 @@
   `convert(..., <signed type>)` when converting mixed-signedness operands
   (`VY052`). Names inside a string literal were rewritten as if they were
   operands, changing the string's contents. Removing such a cast now keeps the
-  line break after an argument that ends in a comment.
+  argument's grouping and the line break after an argument that ends in a
+  comment.
 
 ## 0.11.0 - 2026-11-18
 

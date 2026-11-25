@@ -16,6 +16,7 @@ from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
     lhs_assigned_type as _lhs_assigned_type,
     lhs_declared_type as _lhs_declared_type,
+    operator_operand,
 )
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
@@ -890,7 +891,9 @@ def _unwrapped_cast(source: str, expr_end: int, new_expr: str, wrap: bool) -> st
     if "\n" in trailing or "\r" in trailing:
         # The argument may end in a comment: keep the line break before the closing parenthesis.
         return f"({new_expr}{trailing})"
-    return f"({new_expr})" if wrap else new_expr
+    if wrap or "\n" in new_expr or "\r" in new_expr:
+        return f"({new_expr})"
+    return operator_operand(new_expr)
 
 
 def _integer_expression_suggests_wide_type(expr: str) -> bool:

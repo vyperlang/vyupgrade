@@ -1334,3 +1334,28 @@ def f() -> int256:
     replacement = "(unsafe_mul(10**32, convert(3, int256))  # keep\n        )"
     assert f"return {replacement} + 1" in result.source
     assert [fix.after for fix in result.fixes if fix.rule == "VY052"] == [replacement]
+
+
+def test_unsafe_literal_cast_keeps_argument_grouping(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> int256:
+    return convert(unsafe_mul(10**32, 3) + 1, int256) * 2
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return (unsafe_mul(10**32, convert(3, int256)) + 1) * 2" in result.source
+
+
+def test_unsafe_literal_cast_keeps_argument_with_inner_comment_together(config) -> None:
+    source = """# @version 0.3.10
+@external
+def f() -> int256:
+    return convert(unsafe_mul(10**32, 3)  # keep
+        + 1, int256)
+"""
+
+    result = apply_rules(source, config())
+
+    assert "return (unsafe_mul(10**32, convert(3, int256))  # keep\n        + 1)" in result.source
