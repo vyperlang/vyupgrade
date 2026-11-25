@@ -16,6 +16,7 @@ from ..rule_helpers import (
     innermost_non_overlapping as _innermost_non_overlapping,
     lhs_assigned_type as _lhs_assigned_type,
     lhs_declared_type as _lhs_declared_type,
+    operator_operand,
 )
 from ..rule_registry import Rule, RuleContext, crossing
 from ..source import (
@@ -53,9 +54,7 @@ def _mixed_signed_unsigned_arithmetic(
         code_line = raw_line.rstrip("\r\n")
         if any(char in code_line for char in "'\"#"):
             # Keep source columns while excluding strings and comments from type evidence.
-            code_line = "".join(
-                char if mask[offset + i] else " " for i, char in enumerate(code_line)
-            ).rstrip()
+            code_line = _code_text(code_line, mask, offset).rstrip()
         if not code_line.startswith((" ", "\t")) or not (
             re.search(r"[-+*/%<>]=?|==|!=", code_line)
             or re.search(r":\s*[^=]+=", code_line)
@@ -334,6 +333,8 @@ def _mixed_signed_unsigned_arithmetic(
                 )
         offset += len(raw_line)
     for match in re.finditer(r"\bconvert\s*\(", source):
+        if not span_is_code(mask, match.start(), match.end()):
+            continue
         close = find_matching(source, match.end() - 1)
         if close is None:
             continue
@@ -344,11 +345,14 @@ def _mixed_signed_unsigned_arithmetic(
         _target_start, _target_end, target_type = arg_spans[1]
         if not _is_signed_integer_type(target_type):
             continue
+        absolute_expr_start = match.end() + expr_start
+        code_expr = _code_text(expr, mask, absolute_expr_start)
         line_no = line_number(source, match.start())
         vars_for_line = facts.vars_at_line(line_no)
         mixed_edits, mixed_fixes = _signed_convert_mixed_integer_casts(
             source,
             expr,
+            code_expr,
             match.start(),
             close + 1,
             match.end() + expr_start,
@@ -372,15 +376,14 @@ def _mixed_signed_unsigned_arithmetic(
         )
         edits.extend(unsafe_edits)
         fixes.extend(unsafe_fixes)
-        if not _has_unsigned_context(expr, vars_for_line):
+        if not _has_unsigned_context(code_expr, vars_for_line):
             continue
-        absolute_expr_start = match.end() + expr_start
         for name, type_name in sorted(
             vars_for_line.items(), key=lambda item: len(item[0]), reverse=True
         ):
             if not (_is_signed_integer_type(type_name) and name in facts.global_vars):
                 continue
-            for name_match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+            for name_match in re.finditer(rf"\b{re.escape(name)}\b", code_expr):
                 start = absolute_expr_start + name_match.start()
                 end = absolute_expr_start + name_match.end()
                 if (
@@ -766,6 +769,7 @@ def _is_unsigned_integer_expression(
 def _signed_convert_mixed_integer_casts(
     source: str,
     expr: str,
+    code_expr: str,
     convert_start: int,
     convert_end: int,
     expr_start: int,
@@ -774,13 +778,13 @@ def _signed_convert_mixed_integer_casts(
     vars_for_line: dict[str, str],
     facts: SourceFacts,
 ) -> tuple[list[TextEdit], list[Fix]]:
-    if not _expression_has_signed_integer(expr, vars_for_line, facts):
+    if not _expression_has_signed_integer(code_expr, vars_for_line, facts):
         return [], []
     replacements: list[tuple[int, int, str, str]] = []
     for name, type_name in sorted(vars_for_line.items(), key=lambda item: len(item[0]), reverse=True):
         if not _is_unsigned_integer_type(type_name):
             continue
-        for match in re.finditer(rf"\b{re.escape(name)}\b", expr):
+        for match in re.finditer(rf"\b{re.escape(name)}\b", code_expr):
             start = expr_start + match.start()
             end = expr_start + match.end()
             if _inside_nested_convert_call(source, start, expr_start - 1) or _inside_type_subscript(
@@ -798,7 +802,9 @@ def _signed_convert_mixed_integer_casts(
     new_expr = expr
     for start, end, _name, replacement in sorted(replacements, reverse=True):
         new_expr = new_expr[:start] + replacement + new_expr[end:]
-    outer_replacement = f"({new_expr})" if re.search(r"[-+*/%<>=|&]", new_expr) else new_expr
+    outer_replacement = _unwrapped_cast(
+        source, expr_start + len(expr), new_expr, bool(re.search(r"[-+*/%<>=|&]", new_expr))
+    )
     fixes = [
         Fix(
             "VY052",
@@ -857,16 +863,37 @@ def _signed_convert_unsafe_literal_casts(
     new_expr = expr
     for start, end, _arg, replacement in sorted(replacements, reverse=True):
         new_expr = new_expr[:start] + replacement + new_expr[end:]
+    outer_replacement = _unwrapped_cast(source, expr_start + len(expr), new_expr, False)
     fixes = [
         Fix(
             "VY052",
             line_no,
             "converted unsafe arithmetic literal to enclosing signed type",
             source[convert_start:convert_end],
-            new_expr,
+            outer_replacement,
         )
     ]
-    return [TextEdit(convert_start, convert_end, new_expr)], fixes
+    return [TextEdit(convert_start, convert_end, outer_replacement)], fixes
+
+
+def _code_text(text: str, mask: list[bool], start: int) -> str:
+    """Blank strings, comments and string prefixes in ``text``, which starts at ``start``."""
+    chars = [char if mask[start + i] else " " for i, char in enumerate(text)]
+    for prefix in re.finditer(r"[A-Za-z]+(?=['\"])", text):
+        if not mask[start + prefix.end()]:
+            chars[prefix.start() : prefix.end()] = " " * len(prefix.group())
+    return "".join(chars)
+
+
+def _unwrapped_cast(source: str, expr_end: int, new_expr: str, wrap: bool) -> str:
+    """Return the text replacing a removed cast whose argument ends at ``expr_end``."""
+    trailing = re.match(r"\s*", source[expr_end:]).group()
+    if "\n" in trailing or "\r" in trailing:
+        # The argument may end in a comment: keep the line break before the closing parenthesis.
+        return f"({new_expr}{trailing})"
+    if wrap or "\n" in new_expr or "\r" in new_expr:
+        return f"({new_expr})"
+    return operator_operand(new_expr)
 
 
 def _integer_expression_suggests_wide_type(expr: str) -> bool:
