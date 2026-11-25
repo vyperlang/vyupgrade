@@ -1289,3 +1289,33 @@ def f(s: int128, u: uint256) -> int128:
     result = apply_rules(source, config(source_version="0.3.10"))
 
     assert "return convert(s + 1  # u\n        , int128)" in result.source
+
+
+def test_signed_convert_leaves_byte_string_prefix(config) -> None:
+    source = '''# @version 0.3.10
+
+@external
+def f(s: int128, b: uint256) -> int128:
+    return convert(len(b"a") + convert(s, uint256), int128)
+'''
+
+    result = apply_rules(source, config(source_version="0.3.10"))
+
+    assert 'return convert(len(b"a") + convert(s, uint256), int128)' in result.source
+
+
+def test_signed_convert_keeps_line_break_after_trailing_comment(config) -> None:
+    source = '''# @version 0.3.10
+
+@external
+def f(s: int128, u: uint256) -> int128:
+    return convert(len("x") + (u if s > 0 else 0)  # keep
+        , int128)
+'''
+
+    result = apply_rules(source, config(source_version="0.3.10"))
+
+    assert (
+        'return (len("x") + (convert(u, int128) if s > 0 else 0)  # keep\n        )'
+        in result.source
+    )

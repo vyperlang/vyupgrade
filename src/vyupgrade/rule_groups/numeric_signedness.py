@@ -53,9 +53,7 @@ def _mixed_signed_unsigned_arithmetic(
         code_line = raw_line.rstrip("\r\n")
         if any(char in code_line for char in "'\"#"):
             # Keep source columns while excluding strings and comments from type evidence.
-            code_line = "".join(
-                char if mask[offset + i] else " " for i, char in enumerate(code_line)
-            ).rstrip()
+            code_line = _code_text(code_line, mask, offset).rstrip()
         if not code_line.startswith((" ", "\t")) or not (
             re.search(r"[-+*/%<>]=?|==|!=", code_line)
             or re.search(r":\s*[^=]+=", code_line)
@@ -347,10 +345,7 @@ def _mixed_signed_unsigned_arithmetic(
         if not _is_signed_integer_type(target_type):
             continue
         absolute_expr_start = match.end() + expr_start
-        # Blank strings and comments so names inside them are not taken as operands.
-        code_expr = "".join(
-            char if mask[absolute_expr_start + i] else " " for i, char in enumerate(expr)
-        )
+        code_expr = _code_text(expr, mask, absolute_expr_start)
         line_no = line_number(source, match.start())
         vars_for_line = facts.vars_at_line(line_no)
         mixed_edits, mixed_fixes = _signed_convert_mixed_integer_casts(
@@ -806,7 +801,9 @@ def _signed_convert_mixed_integer_casts(
     new_expr = expr
     for start, end, _name, replacement in sorted(replacements, reverse=True):
         new_expr = new_expr[:start] + replacement + new_expr[end:]
-    outer_replacement = f"({new_expr})" if re.search(r"[-+*/%<>=|&]", new_expr) else new_expr
+    outer_replacement = _unwrapped_cast(
+        source, expr_start + len(expr), new_expr, bool(re.search(r"[-+*/%<>=|&]", new_expr))
+    )
     fixes = [
         Fix(
             "VY052",
@@ -874,7 +871,27 @@ def _signed_convert_unsafe_literal_casts(
             new_expr,
         )
     ]
-    return [TextEdit(convert_start, convert_end, new_expr)], fixes
+    return [
+        TextEdit(convert_start, convert_end, _unwrapped_cast(source, expr_start + len(expr), new_expr, False))
+    ], fixes
+
+
+def _code_text(text: str, mask: list[bool], start: int) -> str:
+    """Blank strings, comments and string prefixes in ``text``, which starts at ``start``."""
+    chars = [char if mask[start + i] else " " for i, char in enumerate(text)]
+    for prefix in re.finditer(r"[A-Za-z]+(?=['\"])", text):
+        if not mask[start + prefix.end()]:
+            chars[prefix.start() : prefix.end()] = " " * len(prefix.group())
+    return "".join(chars)
+
+
+def _unwrapped_cast(source: str, expr_end: int, new_expr: str, wrap: bool) -> str:
+    """Return the text replacing a removed cast whose argument ends at ``expr_end``."""
+    trailing = re.match(r"\s*", source[expr_end:]).group()
+    if "\n" in trailing:
+        # The argument may end in a comment: keep the line break before the closing parenthesis.
+        return f"({new_expr}{trailing})"
+    return f"({new_expr})" if wrap else new_expr
 
 
 def _integer_expression_suggests_wide_type(expr: str) -> bool:
