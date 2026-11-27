@@ -231,8 +231,9 @@ modern Python interpreter.
   complex indexed operands once, including in short-circuit expressions.
 - Signed constants in unsigned arithmetic: `VY052` converts known signed global
   constants, such as old `N_COINS: constant(int128)` values, inside `uint256`
-  arithmetic expressions. It also casts signed operands of `unsafe_sub(...)`
-  when the call is used as an unsigned array index.
+  arithmetic expressions. When a signed `unsafe_sub(...)` is a whole unsigned
+  array index, it converts the call's result rather than its operands, so a
+  negative operand still selects the element the old index did.
 - Dynamic `Bytes[N]` declarations and call arguments initialized from hex byte
   literals: `VY053` rewrites the literal to a byte string form accepted by
   modern Vyper.

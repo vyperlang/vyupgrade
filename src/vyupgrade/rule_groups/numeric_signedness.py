@@ -30,6 +30,7 @@ from ..source import (
     span_is_code,
 )
 from .numeric_casts import inside_convert_call
+from .numeric_context_casts import whole_unsafe_sub_indexes
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -417,6 +418,7 @@ def _mixed_signed_unsigned_arithmetic(
     subscript_convert_edits, subscript_convert_fixes = _unsigned_subscript_signed_convert_casts(
         source, facts, mask
     )
+    index_cast_start = len(edits)
     edits.extend(subscript_convert_edits)
     fixes.extend(subscript_convert_fixes)
     for bracket in re.finditer(r"\[", source):
@@ -459,7 +461,22 @@ def _mixed_signed_unsigned_arithmetic(
                         replacement,
                     )
                 )
-    selected_edits, selected_fixes = _innermost_non_overlapping(edits, fixes)
+    # The unsafe_sub index rule converts these calls' results or keeps them signed,
+    # so keep index-context edits out of them: the subscript convert removals and
+    # index casts above, and casts of a whole operand.
+    whole_indexes = whole_unsafe_sub_indexes(source, facts, mask)
+    kept = [
+        (edit, fix)
+        for position, (edit, fix) in enumerate(zip(edits, fixes, strict=True))
+        if not any(
+            index.encloses(edit.start, edit.end)
+            and (position >= index_cast_start or index.is_operand(edit.start, edit.end))
+            for index in whole_indexes
+        )
+    ]
+    selected_edits, selected_fixes = _innermost_non_overlapping(
+        [edit for edit, _ in kept], [fix for _, fix in kept]
+    )
     current = apply_edits(source, selected_edits)
     cleanup_edits, cleanup_fixes = _signed_loop_comparison_convert_cleanup(
         current, parse_source_facts(current), code_mask(current)

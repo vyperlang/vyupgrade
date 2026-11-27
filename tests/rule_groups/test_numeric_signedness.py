@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vyupgrade.rules import apply_rules
 
 
@@ -1145,7 +1147,7 @@ def f(amounts: uint256[N_COINS], deposit: bool):
     assert "for k: uint256 in range(convert(N_COINS, uint256)-1, bound=2):" in result.source
 
 
-def test_unsafe_sub_array_index_operands_cast_to_unsigned_context(config) -> None:
+def test_signed_unsafe_sub_array_index_converts_result_to_unsigned_context(config) -> None:
     source = """# @version 0.3.10
 MAX_TICKS: constant(int256) = 5
 MAX_TICKS_UINT: constant(uint256) = 5
@@ -1164,8 +1166,59 @@ def f(n_diff: int256) -> uint256:
 
     result = apply_rules(source, config())
 
-    assert "out.ticks_in[unsafe_sub(convert(n_diff, uint256), convert(k, uint256))]" in result.source
+    assert "out.ticks_in[convert(unsafe_sub(n_diff, k), uint256)]" in result.source
+    assert apply_rules(result.source, config(source_version="0.3.10")).source == result.source
 
+
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [
+        ("self.items[(unsafe_sub(a, b))]", "self.items[(convert(unsafe_sub(a, b), uint256))]"),
+        ("self.items[unsafe_sub(a, b + 0)]", "self.items[convert(unsafe_sub(a, b + 0), uint256)]"),
+        ("self.items[unsafe_sub(1, b)]", "self.items[convert(unsafe_sub(1, b), uint256)]"),
+        ("self.items[unsafe_sub((1), b)]", "self.items[convert(unsafe_sub((1), b), uint256)]"),
+        (
+            "self.items[unsafe_sub(a, b)  # note\n    ]",
+            "self.items[convert(unsafe_sub(a, b), uint256)  # note\n    ]",
+        ),
+        ("self.items[unsafe_sub(a + 0, b + 0)]", "self.items[unsafe_sub(a + 0, b + 0)]"),
+        ("self.items[unsafe_sub(self.x, self.y) + 0]", "self.items[unsafe_sub(self.x, self.y) + 0]"),
+        (
+            "self.items[convert(                              unsafe_sub(a, b), uint256)]",
+            "self.items[convert(                              unsafe_sub(a, b), uint256)]",
+        ),
+        ("self.m[unsafe_sub(a, b)]", "self.m[unsafe_sub(a, b)]"),
+        ("self.pm[unsafe_sub(self.x, self.y)]", "self.pm[unsafe_sub(self.x, self.y)]"),
+        (
+            "self.items[unsafe_sub(a, convert(u, int256) + 1)]",
+            "self.items[convert(unsafe_sub(a, convert(u, int256) + 1), uint256)]",
+        ),
+        (
+            "self.items[unsafe_sub(self.z, convert(u + (C + 0), int128))]",
+            "self.items[convert(unsafe_sub(self.z, convert(u + (convert(C, uint256) + 0), int128)), uint256)]",
+        ),
+    ],
+)
+def test_signed_unsafe_sub_index_shapes_keep_operands_signed(config, index, expected) -> None:
+    source = f"""# @version 0.3.10
+C: constant(int256) = 1
+items: uint256[2]
+m: HashMap[int256, uint256]
+pm: (HashMap[int256, uint256])
+x: int256
+y: int256
+z: int128
+
+@external
+@view
+def get(a: int256, b: int256, u: uint256) -> uint256:
+    return {index}
+"""
+
+    result = apply_rules(source, config())
+
+    assert f"    return {expected}\n" in result.source
+    assert apply_rules(result.source, config(source_version="0.3.10")).source == result.source
 
 def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name(config) -> None:
     source = """# @version 0.2.4

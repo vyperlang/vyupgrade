@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from ..analysis import (
     SourceFacts,
@@ -346,10 +347,30 @@ def _unsafe_subscript_index_arguments(
     fixes: list[Fix] = []
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
-    for _match, open_index, _close, raw_args in iter_calls(source, "unsafe_sub", mask):
+    whole_indexes = {index.start: index for index in whole_unsafe_sub_indexes(source, facts, mask)}
+    for match, open_index, _close, raw_args in iter_calls(source, "unsafe_sub", mask):
         line_no = line_number(source, open_index)
+        whole_index = whole_indexes.get(match.start())
+        if whole_index is not None:
+            if whole_index.converted or not whole_index.signed:
+                continue
+            call = source[whole_index.start : whole_index.end]
+            replacement = f"convert({call}, {whole_index.target_type})"
+            edits.append(TextEdit(whole_index.start, whole_index.end, replacement))
+            fixes.append(
+                Fix(
+                    "VY052",
+                    line_no,
+                    "converted signed unsafe_sub array index to unsigned type",
+                    call,
+                    replacement,
+                )
+            )
+            continue
         vars_for_line = facts.vars_at_line(line_no)
-        target_type = _unsigned_subscript_index_type(source, open_index, vars_for_line, facts)
+        target_type = _unsigned_subscript_index_type(
+            source, open_index, vars_for_line, facts, preserve_shape=False
+        )
         if target_type is None:
             continue
         arg_spans = split_top_level_arg_spans(raw_args)
@@ -376,8 +397,113 @@ def _unsafe_subscript_index_arguments(
     return apply_edits(source, selected_edits), selected_fixes, []
 
 
+_INDEX_OPEN = re.compile(r"\[(?P<groups>[\s(]*?)(?P<convert>convert\s*\(\s*)?$")
+_INDEX_GAP = r"(?:\s|#[^\n]*)*"
+_INTEGER_LITERAL = re.compile(r"[\s(]*-?\s*\d(?:_?\d)*[\s)]*")
+
+
+@dataclass(frozen=True)
+class UnsafeSubIndex:
+    """An `unsafe_sub` call that forms a whole unsigned array index."""
+
+    start: int
+    end: int
+    target_type: str
+    converted: bool
+    signed: bool
+    operands: tuple[tuple[int, int], ...]
+
+    def encloses(self, start: int, end: int) -> bool:
+        return self.start < start and end < self.end
+
+    def is_operand(self, start: int, end: int) -> bool:
+        """Whether `start:end` is a whole operand, ignoring grouping parentheses."""
+        return (start, end) in self.operands
+
+
+def whole_unsafe_sub_indexes(
+    source: str, facts: SourceFacts, mask: list[bool]
+) -> list[UnsafeSubIndex]:
+    """Find `unsafe_sub` calls with no known unsigned operand that form a whole unsigned index.
+
+    The call may be grouped in parentheses or already sit in a uint `convert`.
+    Vyper gives both operands one type, so a known signed operand makes the call
+    `signed`. Only its result may be converted: converting a negative operand
+    reverts even when the difference is a valid index. A call whose operands are
+    untyped is left alone, since Vyper accepts a signed index unchanged.
+    """
+    calls: list[UnsafeSubIndex] = []
+    for match, open_index, close, raw_args in iter_calls(source, "unsafe_sub", mask):
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        index_open = _INDEX_OPEN.search(source[line_start : match.start()])
+        if index_open is None:
+            continue
+        converted = index_open.group("convert") is not None
+        index_close = (
+            _INDEX_GAP
+            + (r",\s*uint\d*\s*\)" + _INDEX_GAP if converted else "")
+            + (r"\)" + _INDEX_GAP) * index_open.group("groups").count("(")
+            + r"\]"
+        )
+        if re.compile(index_close).match(source, close + 1) is None:
+            continue
+        arg_spans = split_top_level_arg_spans(raw_args)
+        if arg_spans is None or len(arg_spans) != 2:
+            continue
+        vars_for_line = facts.vars_at_line(line_number(source, open_index))
+        operand_types = [
+            infer_expr_type(arg, vars_for_line, facts)
+            for _start, _end, arg in arg_spans
+            if _INTEGER_LITERAL.fullmatch(arg) is None
+        ]
+        if any(_is_unsigned_integer_type(t) for t in operand_types):
+            continue
+        target_type = _unsigned_subscript_index_type(
+            source, open_index, vars_for_line, facts, preserve_shape=True
+        )
+        if target_type is not None:
+            signed = any(_is_signed_integer_type(t) for t in operand_types)
+            operands = tuple(
+                _ungrouped_span(source, open_index + 1 + start, open_index + 1 + end)
+                for start, end, _arg in arg_spans
+            )
+            calls.append(
+                UnsafeSubIndex(match.start(), close + 1, target_type, converted, signed, operands)
+            )
+    return calls
+
+
+def _ungrouped_span(source: str, start: int, end: int) -> tuple[int, int]:
+    while True:
+        while start < end and source[start].isspace():
+            start += 1
+        while end > start and source[end - 1].isspace():
+            end -= 1
+        if source[start : start + 1] != "(" or find_matching(source, start) != end - 1:
+            return start, end
+        start, end = start + 1, end - 1
+
+
+def _ungrouped_type(type_name: str | None) -> str | None:
+    while (
+        type_name is not None
+        and type_name.startswith("(")
+        and find_matching(type_name, 0) == len(type_name) - 1
+    ):
+        inner = type_name[1:-1].strip()
+        if inner.endswith(",") or len(split_top_level_args(inner) or []) != 1:
+            return type_name  # a tuple type
+        type_name = inner
+    return type_name
+
+
 def _unsigned_subscript_index_type(
-    source: str, index: int, vars_for_line: dict[str, str], facts: SourceFacts
+    source: str,
+    index: int,
+    vars_for_line: dict[str, str],
+    facts: SourceFacts,
+    *,
+    preserve_shape: bool,
 ) -> str | None:
     line_start = source.rfind("\n", 0, index) + 1
     open_index = source.rfind("[", line_start, index)
@@ -393,10 +519,12 @@ def _unsigned_subscript_index_type(
     if root_match is None:
         return None
     root = root_match.group(1)
-    root_type = infer_expr_type(root, vars_for_line, facts)
+    root_type = _ungrouped_type(
+        infer_expr_type(root, vars_for_line, facts, preserve_shape=preserve_shape)
+    )
     key_type = indexed_key_type(root_type)
-    if _is_unsigned_integer_type(key_type):
-        return normalize_type(key_type)
+    if key_type is not None:
+        return normalize_type(key_type) if _is_unsigned_integer_type(key_type) else None
     if indexed_value_type(root_type) is not None:
         return "uint256"
     return None
