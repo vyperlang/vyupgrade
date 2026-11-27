@@ -418,9 +418,9 @@ def _mixed_signed_unsigned_arithmetic(
     subscript_convert_edits, subscript_convert_fixes = _unsigned_subscript_signed_convert_casts(
         source, facts, mask
     )
+    index_cast_start = len(edits)
     edits.extend(subscript_convert_edits)
     fixes.extend(subscript_convert_fixes)
-    index_cast_start = len(edits)
     for bracket in re.finditer(r"\[", source):
         if not span_is_code(mask, bracket.start(), bracket.end()):
             continue
@@ -462,8 +462,8 @@ def _mixed_signed_unsigned_arithmetic(
                     )
                 )
     # The unsafe_sub index rule converts these calls' results or keeps them signed,
-    # so keep index-context casts out of them: every cast from the index loop above,
-    # and casts of a whole operand.
+    # so keep index-context edits out of them: the subscript convert removals and
+    # index casts above, and casts of a whole operand.
     whole_indexes = whole_unsafe_sub_indexes(source, facts, mask)
     kept = [
         (edit, fix)

@@ -1190,6 +1190,10 @@ def f(n_diff: int256) -> uint256:
         ("self.m[unsafe_sub(a, b)]", "self.m[unsafe_sub(a, b)]"),
         ("self.pm[unsafe_sub(self.x, self.y)]", "self.pm[unsafe_sub(self.x, self.y)]"),
         (
+            "self.items[unsafe_sub(a, convert(u, int256) + 1)]",
+            "self.items[convert(unsafe_sub(a, convert(u, int256) + 1), uint256)]",
+        ),
+        (
             "self.items[unsafe_sub(self.z, convert(u + (C + 0), int128))]",
             "self.items[convert(unsafe_sub(self.z, convert(u + (convert(C, uint256) + 0), int128)), uint256)]",
         ),
