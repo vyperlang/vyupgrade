@@ -30,7 +30,7 @@ from ..source import (
     span_is_code,
 )
 from .numeric_casts import inside_convert_call
-from .numeric_context_casts import signed_unsafe_sub_indexes
+from .numeric_context_casts import whole_unsafe_sub_indexes
 from .numeric_types import (
     is_signed_integer_type as _is_signed_integer_type,
     is_unsigned_integer_type as _is_unsigned_integer_type,
@@ -460,12 +460,12 @@ def _mixed_signed_unsigned_arithmetic(
                         replacement,
                     )
                 )
-    # The unsafe_sub index rule converts these calls' results instead.
-    signed_indexes = signed_unsafe_sub_indexes(source, facts, mask)
+    # The unsafe_sub index rule converts these calls' results or keeps them signed.
+    whole_indexes = whole_unsafe_sub_indexes(source, facts, mask)
     kept = [
         (edit, fix)
         for edit, fix in zip(edits, fixes, strict=True)
-        if not any(index.start < edit.start and edit.end < index.end for index in signed_indexes)
+        if not any(index.start < edit.start and edit.end < index.end for index in whole_indexes)
     ]
     selected_edits, selected_fixes = _innermost_non_overlapping(
         [edit for edit, _ in kept], [fix for _, fix in kept]
