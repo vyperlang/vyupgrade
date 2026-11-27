@@ -465,7 +465,7 @@ def _mixed_signed_unsigned_arithmetic(
     kept = [
         (edit, fix)
         for edit, fix in zip(edits, fixes, strict=True)
-        if not any(start < edit.start and edit.end < end for start, end, _ in signed_indexes)
+        if not any(index.start < edit.start and edit.end < index.end for index in signed_indexes)
     ]
     selected_edits, selected_fixes = _innermost_non_overlapping(
         [edit for edit, _ in kept], [fix for _, fix in kept]

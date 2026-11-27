@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vyupgrade.rules import apply_rules
 
 
@@ -1167,6 +1169,35 @@ def f(n_diff: int256) -> uint256:
     assert "out.ticks_in[convert(unsafe_sub(n_diff, k), uint256)]" in result.source
     assert apply_rules(result.source, config(source_version="0.3.10")).source == result.source
 
+
+@pytest.mark.parametrize(
+    ("index", "expected"),
+    [
+        ("self.items[(unsafe_sub(a, b))]", "self.items[(convert(unsafe_sub(a, b), uint256))]"),
+        ("self.items[unsafe_sub(a, b + 0)]", "self.items[convert(unsafe_sub(a, b + 0), uint256)]"),
+        ("self.items[unsafe_sub(1, b)]", "self.items[convert(unsafe_sub(1, b), uint256)]"),
+        (
+            "self.items[convert(                              unsafe_sub(a, b), uint256)]",
+            "self.items[convert(                              unsafe_sub(a, b), uint256)]",
+        ),
+        ("self.m[unsafe_sub(a, b)]", "self.m[unsafe_sub(a, b)]"),
+    ],
+)
+def test_signed_unsafe_sub_index_shapes_keep_operands_signed(config, index, expected) -> None:
+    source = f"""# @version 0.3.10
+items: uint256[2]
+m: HashMap[int256, uint256]
+
+@external
+@view
+def get(a: int256, b: int256) -> uint256:
+    return {index}
+"""
+
+    result = apply_rules(source, config())
+
+    assert f"    return {expected}\n" in result.source
+    assert apply_rules(result.source, config(source_version="0.3.10")).source == result.source
 
 def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name(config) -> None:
     source = """# @version 0.2.4

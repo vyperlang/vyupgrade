@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from ..analysis import (
     SourceFacts,
@@ -347,18 +348,17 @@ def _unsafe_subscript_index_arguments(
     edits: list[TextEdit] = []
     mask = rule_context.code_mask
     signed_indexes = {
-        start: (end, target_type)
-        for start, end, target_type in signed_unsafe_sub_indexes(source, facts, mask)
+        index.start: index for index in signed_unsafe_sub_indexes(source, facts, mask)
     }
     for match, open_index, _close, raw_args in iter_calls(source, "unsafe_sub", mask):
         line_no = line_number(source, open_index)
-        if match.start() in signed_indexes:
-            end, target_type = signed_indexes[match.start()]
-            if inside_convert_call(source, match.start()):
+        signed_index = signed_indexes.get(match.start())
+        if signed_index is not None:
+            if signed_index.converted:
                 continue
-            call = source[match.start() : end]
-            replacement = f"convert({call}, {target_type})"
-            edits.append(TextEdit(match.start(), end, replacement))
+            call = source[signed_index.start : signed_index.end]
+            replacement = f"convert({call}, {signed_index.target_type})"
+            edits.append(TextEdit(signed_index.start, signed_index.end, replacement))
             fixes.append(
                 Fix(
                     "VY052",
@@ -397,41 +397,62 @@ def _unsafe_subscript_index_arguments(
     return apply_edits(source, selected_edits), selected_fixes, []
 
 
-_INDEX_OPEN = re.compile(r"\[\s*(?:convert\s*\(\s*)?$")
-_INDEX_CLOSE = re.compile(r"\s*(?:,\s*uint\d*\s*\)\s*)?\]")
+_INDEX_OPEN = re.compile(r"\[(?P<groups>[\s(]*?)(?P<convert>convert\s*\(\s*)?$")
 _INTEGER_LITERAL = re.compile(r"-?\s*\d(?:_?\d)*")
+
+
+@dataclass(frozen=True)
+class SignedUnsafeSubIndex:
+    """A signed `unsafe_sub` call that forms a whole unsigned array index."""
+
+    start: int
+    end: int
+    target_type: str
+    converted: bool
 
 
 def signed_unsafe_sub_indexes(
     source: str, facts: SourceFacts, mask: list[bool]
-) -> list[tuple[int, int, str]]:
-    """Find `unsafe_sub` calls with signed operands that form a whole unsigned array index.
+) -> list[SignedUnsafeSubIndex]:
+    """Find `unsafe_sub` calls with a signed operand that form a whole unsigned array index.
 
-    Returns each call's span, which may already sit in a uint `convert`, and the
-    index type. The call's result must be converted, not its operands: converting
-    a negative operand reverts even when the difference is a valid index.
+    The call may be grouped in parentheses or already sit in a uint `convert`.
+    Vyper gives both operands one type, so a known signed operand with no known
+    unsigned one makes the call signed. Its result must be converted, not its
+    operands: converting a negative operand reverts even when the difference is
+    a valid index.
     """
-    calls: list[tuple[int, int, str]] = []
+    calls: list[SignedUnsafeSubIndex] = []
     for match, open_index, close, raw_args in iter_calls(source, "unsafe_sub", mask):
         line_start = source.rfind("\n", 0, match.start()) + 1
-        if (
-            _INDEX_OPEN.search(source[line_start : match.start()]) is None
-            or _INDEX_CLOSE.match(source, close + 1) is None
-        ):
+        index_open = _INDEX_OPEN.search(source[line_start : match.start()])
+        if index_open is None:
+            continue
+        converted = index_open.group("convert") is not None
+        index_close = (
+            r"\s*"
+            + (r",\s*uint\d*\s*\)\s*" if converted else "")
+            + r"\)\s*" * index_open.group("groups").count("(")
+            + r"\]"
+        )
+        if re.compile(index_close).match(source, close + 1) is None:
             continue
         args = split_top_level_args(raw_args)
         if args is None or len(args) != 2:
             continue
         vars_for_line = facts.vars_at_line(line_number(source, open_index))
-        operands = [arg for arg in args if _INTEGER_LITERAL.fullmatch(arg.strip()) is None]
-        if not operands or not all(
-            _is_signed_integer_type(infer_expr_type(arg, vars_for_line, facts))
-            for arg in operands
+        operand_types = [
+            infer_expr_type(arg, vars_for_line, facts)
+            for arg in args
+            if _INTEGER_LITERAL.fullmatch(arg.strip()) is None
+        ]
+        if any(_is_unsigned_integer_type(t) for t in operand_types) or not any(
+            _is_signed_integer_type(t) for t in operand_types
         ):
             continue
         target_type = _unsigned_subscript_index_type(source, open_index, vars_for_line, facts)
         if target_type is not None:
-            calls.append((match.start(), close + 1, target_type))
+            calls.append(SignedUnsafeSubIndex(match.start(), close + 1, target_type, converted))
     return calls
 
 
@@ -454,8 +475,8 @@ def _unsigned_subscript_index_type(
     root = root_match.group(1)
     root_type = infer_expr_type(root, vars_for_line, facts, preserve_shape=True)
     key_type = indexed_key_type(root_type)
-    if _is_unsigned_integer_type(key_type):
-        return normalize_type(key_type)
+    if key_type is not None:
+        return normalize_type(key_type) if _is_unsigned_integer_type(key_type) else None
     if indexed_value_type(root_type) is not None:
         return "uint256"
     return None
