@@ -1145,7 +1145,7 @@ def f(amounts: uint256[N_COINS], deposit: bool):
     assert "for k: uint256 in range(convert(N_COINS, uint256)-1, bound=2):" in result.source
 
 
-def test_unsafe_sub_array_index_operands_cast_to_unsigned_context(config) -> None:
+def test_signed_unsafe_sub_array_index_converts_result_to_unsigned_context(config) -> None:
     source = """# @version 0.3.10
 MAX_TICKS: constant(int256) = 5
 MAX_TICKS_UINT: constant(uint256) = 5
@@ -1164,7 +1164,8 @@ def f(n_diff: int256) -> uint256:
 
     result = apply_rules(source, config())
 
-    assert "out.ticks_in[unsafe_sub(convert(n_diff, uint256), convert(k, uint256))]" in result.source
+    assert "out.ticks_in[convert(unsafe_sub(n_diff, k), uint256)]" in result.source
+    assert apply_rules(result.source, config(source_version="0.3.10")).source == result.source
 
 
 def test_signed_loop_type_is_not_overwritten_by_later_loop_same_name(config) -> None:
