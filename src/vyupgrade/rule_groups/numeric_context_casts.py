@@ -411,6 +411,14 @@ class UnsafeSubIndex:
     target_type: str
     converted: bool
     signed: bool
+    operands: tuple[tuple[int, int], ...]
+
+    def encloses(self, start: int, end: int) -> bool:
+        return self.start < start and end < self.end
+
+    def is_operand(self, start: int, end: int) -> bool:
+        """Whether `start:end` is a whole operand, ignoring grouping parentheses."""
+        return (start, end) in self.operands
 
 
 def whole_unsafe_sub_indexes(
@@ -439,13 +447,13 @@ def whole_unsafe_sub_indexes(
         )
         if re.compile(index_close).match(source, close + 1) is None:
             continue
-        args = split_top_level_args(raw_args)
-        if args is None or len(args) != 2:
+        arg_spans = split_top_level_arg_spans(raw_args)
+        if arg_spans is None or len(arg_spans) != 2:
             continue
         vars_for_line = facts.vars_at_line(line_number(source, open_index))
         operand_types = [
             infer_expr_type(arg, vars_for_line, facts)
-            for arg in args
+            for _start, _end, arg in arg_spans
             if _INTEGER_LITERAL.fullmatch(arg) is None
         ]
         if any(_is_unsigned_integer_type(t) for t in operand_types):
@@ -455,8 +463,38 @@ def whole_unsafe_sub_indexes(
         )
         if target_type is not None:
             signed = any(_is_signed_integer_type(t) for t in operand_types)
-            calls.append(UnsafeSubIndex(match.start(), close + 1, target_type, converted, signed))
+            operands = tuple(
+                _ungrouped_span(source, open_index + 1 + start, open_index + 1 + end)
+                for start, end, _arg in arg_spans
+            )
+            calls.append(
+                UnsafeSubIndex(match.start(), close + 1, target_type, converted, signed, operands)
+            )
     return calls
+
+
+def _ungrouped_span(source: str, start: int, end: int) -> tuple[int, int]:
+    while True:
+        while start < end and source[start].isspace():
+            start += 1
+        while end > start and source[end - 1].isspace():
+            end -= 1
+        if source[start : start + 1] != "(" or find_matching(source, start) != end - 1:
+            return start, end
+        start, end = start + 1, end - 1
+
+
+def _ungrouped_type(type_name: str | None) -> str | None:
+    while (
+        type_name is not None
+        and type_name.startswith("(")
+        and find_matching(type_name, 0) == len(type_name) - 1
+    ):
+        inner = type_name[1:-1].strip()
+        if inner.endswith(",") or len(split_top_level_args(inner) or []) != 1:
+            return type_name  # a tuple type
+        type_name = inner
+    return type_name
 
 
 def _unsigned_subscript_index_type(
@@ -481,7 +519,9 @@ def _unsigned_subscript_index_type(
     if root_match is None:
         return None
     root = root_match.group(1)
-    root_type = infer_expr_type(root, vars_for_line, facts, preserve_shape=preserve_shape)
+    root_type = _ungrouped_type(
+        infer_expr_type(root, vars_for_line, facts, preserve_shape=preserve_shape)
+    )
     key_type = indexed_key_type(root_type)
     if key_type is not None:
         return normalize_type(key_type) if _is_unsigned_integer_type(key_type) else None

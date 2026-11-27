@@ -1188,18 +1188,26 @@ def f(n_diff: int256) -> uint256:
             "self.items[convert(                              unsafe_sub(a, b), uint256)]",
         ),
         ("self.m[unsafe_sub(a, b)]", "self.m[unsafe_sub(a, b)]"),
+        ("self.pm[unsafe_sub(self.x, self.y)]", "self.pm[unsafe_sub(self.x, self.y)]"),
+        (
+            "self.items[unsafe_sub(self.z, convert(u + (C + 0), int128))]",
+            "self.items[convert(unsafe_sub(self.z, convert(u + (convert(C, uint256) + 0), int128)), uint256)]",
+        ),
     ],
 )
 def test_signed_unsafe_sub_index_shapes_keep_operands_signed(config, index, expected) -> None:
     source = f"""# @version 0.3.10
+C: constant(int256) = 1
 items: uint256[2]
 m: HashMap[int256, uint256]
+pm: (HashMap[int256, uint256])
 x: int256
 y: int256
+z: int128
 
 @external
 @view
-def get(a: int256, b: int256) -> uint256:
+def get(a: int256, b: int256, u: uint256) -> uint256:
     return {index}
 """
 
