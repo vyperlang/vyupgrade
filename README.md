@@ -107,9 +107,10 @@ formatted bytes are read back into the migration plan, compiled again under the
 target compiler, and compared before any destination is changed. Formatter
 failure leaves every original untouched.
 
-Writes recheck all planned inputs, reject generated symlinks and unsafe hard-linked
-or read-only replacements, and roll back already replaced files when a later write
-fails. Multi-file replacement is rollback-aware rather than globally atomic; a
+Writes recheck all planned inputs, reject generated symlinks, changed inputs
+discovered only through a symlink, and unsafe hard-linked or read-only
+replacements, and roll back already replaced files when a later write fails.
+Multi-file replacement is rollback-aware rather than globally atomic; a
 non-cooperating external writer can still race the final portable filesystem check.
 Reports distinguish original, validated candidate, and final on-disk hashes. If a
 post-write test command changes a planned file, the run exits nonzero and records the

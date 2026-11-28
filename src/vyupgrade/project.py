@@ -7,7 +7,11 @@ DEFAULT_INCLUDE = {".vy", ".vyi"}
 DEFAULT_EXCLUDES = {".git", ".venv", "venv", "build", "dist", "__pycache__"}
 
 
-def discover_files(paths: tuple[Path, ...], *, excluded_roots: tuple[Path, ...] = ()) -> list[Path]:
+def discover_files(
+    paths: tuple[Path, ...], *, excluded_roots: tuple[Path, ...] = ()
+) -> tuple[list[Path], dict[Path, Path]]:
+    """Return resolved input files and, for each reached only through a symbolic
+    link, that link."""
     files: list[Path] = []
     excluded = tuple(
         dict.fromkeys(
@@ -39,4 +43,8 @@ def discover_files(paths: tuple[Path, ...], *, excluded_roots: tuple[Path, ...] 
             if child.is_file() and child.suffix in DEFAULT_INCLUDE:
                 files.append(child)
 
-    return sorted(dict.fromkeys(file.resolve() for file in files))
+    symlinks = {file.resolve(): file for file in files if file.is_symlink()}
+    for file in files:
+        if not file.is_symlink():
+            symlinks.pop(file.resolve(), None)
+    return sorted(dict.fromkeys(file.resolve() for file in files)), symlinks
