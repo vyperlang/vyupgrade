@@ -236,6 +236,75 @@ def __init__():
     assert json.loads(second_report.read_text())["files"][0]["changed"] is False
 
 
+LEGACY_CONSTRUCTOR = "# @version 0.3.10\n@external\ndef __init__():\n    pass\n"
+
+
+def test_write_mode_does_not_rewrite_through_a_symlinked_input(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    outside = external / "Legacy.vy"
+    outside.write_text(LEGACY_CONSTRUCTOR)
+    link = project / "Legacy.vy"
+    link.symlink_to(outside)
+    report = tmp_path / "report.json"
+
+    code = main([str(project), "--write", "--report-json", str(report)])
+
+    assert outside.read_text() == LEGACY_CONSTRUCTOR
+    assert code == 9
+    assert link.is_symlink()
+    data = json.loads(report.read_text())
+    assert data["write_status"] == "failed"
+    assert f"symbolic link {link}" in data["write_output"]
+
+
+def test_write_mode_rewrites_a_regular_input_in_the_same_layout(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    inside = project / "Legacy.vy"
+    inside.write_text(LEGACY_CONSTRUCTOR)
+
+    assert main([str(project), "--write"]) == 0
+    assert "@deploy\ndef __init__" in inside.read_text()
+
+
+def test_write_mode_rewrites_a_symlink_target_that_is_itself_an_input(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    contract = project / "Legacy.vy"
+    contract.write_text(LEGACY_CONSTRUCTOR)
+    (project / "Alias.vy").symlink_to(contract)
+
+    assert main([str(project), "--write"]) == 0
+    assert "@deploy\ndef __init__" in contract.read_text()
+
+
+def test_unchanged_symlinked_input_does_not_block_the_write(
+    tmp_path: Path, passing_compiler
+) -> None:
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    project.mkdir()
+    external.mkdir()
+    shared = external / "Shared.vyi"
+    shared.write_text("#pragma version 0.4.3\n")
+    (project / "Shared.vyi").symlink_to(shared)
+    contract = project / "Legacy.vy"
+    contract.write_text(LEGACY_CONSTRUCTOR)
+
+    assert main([str(project), "--write"]) == 0
+    assert "@deploy\ndef __init__" in contract.read_text()
+    assert shared.read_text() == "#pragma version 0.4.3\n"
+
+
 def test_write_mode_can_strip_version_pragma(tmp_path: Path, passing_compiler) -> None:
     contract = tmp_path / "Contract.vy"
     contract.write_text(
