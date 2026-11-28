@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--report-json {config.report_json}: {exc}", file=sys.stderr)
             return 4
 
-    files = discover_files(
+    files, symlinked_files = discover_files(
         config.paths,
         excluded_roots=(config.closure_output,) if config.closure_output is not None else (),
     )
@@ -178,7 +178,9 @@ def main(argv: list[str] | None = None) -> int:
         requests += dependency_requests
         closure_report.dependencies = tuple(str(path) for path in sorted(closure.dependencies))
     batch = engine.prepare_migrations(requests, config, snapshot=snapshot)
-    reports, plan, plan_error = _build_migration_plan(batch)
+    reports, plan, plan_error = _build_migration_plan(
+        batch, symlinked_files if config.write else {}
+    )
     if report_path is not None:
         try:
             _validate_report_collisions(report_path, config, batch, plan)
@@ -382,9 +384,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def _build_migration_plan(
     batch: engine.MigrationBatch,
+    symlinked_files: dict[Path, Path],
 ) -> tuple[list[FileReport], MigrationPlan, str | None]:
     reports = batch.reports
-    plan = MigrationPlan()
+    plan = MigrationPlan(symlinked_files)
     try:
         planned_paths = {
             migration.path.resolve()

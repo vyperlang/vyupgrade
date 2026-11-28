@@ -50,7 +50,8 @@ class PlannedWrite:
 class MigrationPlan:
     """A collision-checked, content-addressed set of migration destinations."""
 
-    def __init__(self) -> None:
+    def __init__(self, symlinked_sources: dict[Path, Path] | None = None) -> None:
+        self._symlinked_sources = symlinked_sources or {}
         self._entries: dict[Path, PlannedWrite] = {}
         self._dependencies: dict[Path, bytes] = {}
         self._generated_destinations: set[Path] = set()
@@ -93,6 +94,11 @@ class MigrationPlan:
             )
         candidate_bytes = candidate.encode("utf-8")
         if original_bytes != candidate_bytes:
+            if (link := self._symlinked_sources.get(destination)) is not None:
+                raise PlanConflictError(
+                    f"migration source was reached through symbolic link {link} "
+                    f"and is not rewritten through it: {destination}"
+                )
             _require_replaceable_regular_file(destination, source_stat)
         entry = PlannedWrite(
             destination,

@@ -252,6 +252,7 @@ def test_write_mode_does_not_rewrite_through_a_symlinked_input(
     link.symlink_to(outside)
     report = tmp_path / "report.json"
 
+    assert main([str(project), "--diff"]) == 0
     code = main([str(project), "--write", "--report-json", str(report)])
 
     assert outside.read_text() == LEGACY_CONSTRUCTOR
@@ -1870,7 +1871,7 @@ def test_include_dependencies_never_plans_dependency_writes(
     dependency_requests, _closure = cli._dependency_requests([project_request], config)
     batch = engine.prepare_migrations([project_request, *dependency_requests], config)
 
-    _reports, plan, plan_error = cli._build_migration_plan(batch)
+    _reports, plan, plan_error = cli._build_migration_plan(batch, {})
     diff_code = main(
         [
             str(project),
